@@ -644,6 +644,72 @@ client.save_session(session_id="...", agent="cursor", turns=[...])
 
 ---
 
+## Phase 17 — Activity & Error Logging
+
+**Goal**: a structured, human-readable audit trail of every memory operation — what ran, when, why, and what it returned. Errors from all components go to a single `error.log`; normal activity goes to `activity.log`. Both live in `~/.memory/`.
+
+**Motivation**: today the system is a black box. If wake-up injected the wrong context, or the MCP search returned nothing, there's no easy way to know. A single `tail -f ~/.memory/activity.log` should tell the whole story.
+
+### Log format
+
+**`~/.memory/activity.log`** — one line per operation:
+```
+2026-08-16T10:00:00Z [wake_up]    semantic_search    query="auth bug" results=3 top=abc123 similarity=87.2%
+2026-08-16T10:01:30Z [mcp]        memory_search      query="db schema" results=2 result_bytes=1234
+2026-08-16T10:05:00Z [mcp]        memory_save_fact   content="User prefers pytest" tags=["testing"] id=<uuid>
+2026-08-16T10:10:00Z [save_hook]  upsert_session     session=abc123 turns=24 chunks=4 facts=0
+2026-08-16T10:10:01Z [wake_up]    injected           session=abc123 mode=relevance sessions=2 facts=3
+```
+
+**`~/.memory/error.log`** — one line per error, with traceback on subsequent lines:
+```
+2026-08-16T10:00:00Z [wake_up]    ERROR  semantic_search failed: ImportError: sentence-transformers not installed
+2026-08-16T10:10:05Z [save_hook]  ERROR  embedding skipped: ...traceback...
+```
+
+### Ticket 17-01 — Create `memory/logger.py` — shared logging utility
+
+- `activity_log(component, action, **kwargs)` — appends one structured line to `~/.memory/activity.log`
+  - `component` = `"wake_up"` / `"mcp"` / `"save_hook"` / `"daemon"`
+  - `action` = verb describing what happened (e.g. `"semantic_search"`, `"upsert_session"`)
+  - `**kwargs` = key-value pairs to append (query, results, session, etc.)
+  - Never raises — wraps all I/O in try/except
+- `error_log(component, message, exc=None)` — appends to `~/.memory/error.log`; if `exc` is provided, appends `traceback.format_exc()` on following lines (indented)
+- Creates `~/.memory/` directory if it doesn't exist
+- Write unit tests: correct file is written to; malformed kwargs don't crash; concurrent writes don't corrupt the file (append mode is atomic on POSIX)
+
+### Ticket 17-02 — Instrument `hooks/wake_up.py`
+
+Log calls to `activity_log`:
+- On relevance path: `activity_log("wake_up", "semantic_search", query=prompt[:60], results=len(sessions))`
+- On fact search: `activity_log("wake_up", "fact_search", query=prompt[:60], results=len(facts))`
+- On inject: `activity_log("wake_up", "injected", session=session_id, mode="relevance"|"recency", sessions=N, facts=N)`
+- On fallback triggered: `activity_log("wake_up", "fallback", reason="no_prompt"|"no_results"|"import_error")`
+- Route all current `log_error()` calls to `error_log()` instead
+
+### Ticket 17-03 — Instrument `memory/mcp_server.py`
+
+Log every tool call:
+- `activity_log("mcp", tool_name, query=query[:60], results=N, result_bytes=len(result))`
+- On error: `error_log("mcp", f"{tool_name} failed", exc=e)`
+
+### Ticket 17-04 — Instrument `hooks/save_hook.py`
+
+Log after each phase of the save pipeline:
+- `activity_log("save_hook", "upsert_session", session=session_id, turns=N)`
+- `activity_log("save_hook", "embedding", session=session_id, status="ok"|"skipped")`
+- `activity_log("save_hook", "chunking", session=session_id, chunks=N, status="ok"|"skipped")`
+- Route all current `logging.error()` calls to `error_log()` as well (keep existing logging module calls too — they go to `save_hook.log` which is fine to keep)
+
+### Ticket 17-05 — Add `python3 cli.py logs [--errors] [--tail N]`
+
+- Default: prints last 20 lines of `activity.log`
+- `--errors`: prints `error.log` instead
+- `--tail N`: prints last N lines (default 20)
+- Useful shorthand — avoids the user needing to know the full path
+
+---
+
 ## Phase 15 — Token Economics Measurement
 
 **Goal**: measure whether the memory system is actually saving tokens or costing more. This is an open question — the honest answer is "it depends", and the system should surface enough data to let users judge for themselves.

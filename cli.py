@@ -424,6 +424,36 @@ new Chart(ctx, {{
 
 
 # ---------------------------------------------------------------------------
+# Command: logs
+# ---------------------------------------------------------------------------
+
+# Paths for the two structured log files written by memory.logger.
+ACTIVITY_LOG_PATH = os.path.expanduser("~/.memory/activity.log")
+ERROR_LOG_PATH    = os.path.expanduser("~/.memory/error.log")
+
+
+def cmd_logs(args):
+    """Print the last N lines of activity.log or error.log."""
+    # Choose which log file to read based on the --errors flag.
+    path = ERROR_LOG_PATH if args.errors else ACTIVITY_LOG_PATH
+    label = "error" if args.errors else "activity"
+
+    if not os.path.exists(path):
+        print(f"No {label} log found at {path}")
+        print("The log is created automatically once the memory system runs.")
+        return
+
+    # Read all lines and slice to the last N.
+    with open(path, "r") as f:
+        lines = f.readlines()
+
+    tail = lines[-args.tail:]  # last N lines
+
+    print(f"=== {label}.log (last {len(tail)} lines) ===\n")
+    print("".join(tail), end="")
+
+
+# ---------------------------------------------------------------------------
 # Argument parsing + dispatch
 # ---------------------------------------------------------------------------
 
@@ -461,6 +491,17 @@ def main():
     # dashboard
     sub.add_parser("dashboard", help="Generate and open dashboard.html")
 
+    # logs
+    p_logs = sub.add_parser("logs", help="Print recent activity or error log lines")
+    p_logs.add_argument(
+        "--errors", action="store_true",
+        help="Show error.log instead of activity.log",
+    )
+    p_logs.add_argument(
+        "--tail", type=int, default=20,
+        help="Number of lines to show (default 20)",
+    )
+
     args = parser.parse_args()
 
     # Dispatch to the right function based on which subcommand was typed.
@@ -471,6 +512,7 @@ def main():
         "get-session": cmd_get_session,
         "tail":        cmd_tail,
         "dashboard":   cmd_dashboard,
+        "logs":        cmd_logs,
     }
     dispatch[args.command](args)
 

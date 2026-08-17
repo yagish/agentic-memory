@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # search_facts — FTS5 full-text search over stored facts.
 # init_db — opens (or creates) the SQLite DB with all schema migrations applied.
 from memory.db import init_db, semantic_search_chunks, search_facts
+from memory.logger import activity_log, error_log
 
 
 # Paths — expanduser() converts "~" to the actual home directory at runtime
@@ -191,14 +192,24 @@ def fetch_relevant_context(
     # Sort sessions so the most relevant (highest similarity) appears first.
     sessions.sort(key=lambda s: s["similarity"], reverse=True)
 
+    # Log the semantic search result so the activity log shows what was found.
+    activity_log(
+        "wake_up", "semantic_search",
+        query=prompt, results=len(sessions),
+        top=sessions[0]["session_id"] if sessions else "none",
+        similarity=sessions[0]["similarity"] if sessions else 0,
+    )
+
     # Search stored facts using FTS5 keyword matching.
     # FTS5 raises sqlite3.OperationalError for queries containing special
     # characters like + - * : ( ), so we wrap in try/except and fall back to [].
     facts: list[dict] = []
     try:
         facts = search_facts(conn, prompt, limit=FACT_SEARCH_LIMIT)
+        activity_log("wake_up", "fact_search", query=prompt, results=len(facts))
     except sqlite3.OperationalError as e:
         log_error(f"facts FTS5 search failed (query may contain special chars): {e}")
+        error_log("wake_up", f"FTS5 fact search failed for query: {prompt[:60]}", exc=e)
 
     return sessions, facts
 
@@ -323,12 +334,14 @@ def get_wake_up_digest(
     if prompt and conn is not None:
         try:
             sessions, facts = fetch_relevant_context(conn, prompt)
-        except Exception:
+        except Exception as e:
             # Log the failure but do not re-raise — we fall back gracefully below.
             log_error(
                 f"relevance retrieval failed, using recency fallback: "
                 f"{traceback.format_exc()}"
             )
+            error_log("wake_up", "relevance retrieval failed; falling back to recency", exc=e)
+            activity_log("wake_up", "fallback", reason="retrieval_error")
             sessions = []
             facts = None
 
@@ -340,7 +353,16 @@ def get_wake_up_digest(
         sessions = fetch_recent_sessions(session_id)
         # Reset facts to None — the recency path does not include a facts section.
         facts = None
+        # Log why the fallback was triggered.
+        reason = "no_prompt" if not prompt else "no_results"
+        activity_log("wake_up", "fallback", reason=reason, recency_sessions=len(sessions))
 
+    mode = "recency" if facts is None else "relevance"
+    activity_log(
+        "wake_up", "injected",
+        session=session_id, mode=mode,
+        sessions=len(sessions), facts=len(facts) if facts else 0,
+    )
     return build_digest(identity, sessions, facts)
 
 

@@ -31,6 +31,7 @@ from memory.db import (
     store_chunk,
     delete_chunks_for_session,
 )
+from memory.logger import activity_log, error_log
 
 
 # Where the memory database lives on disk.
@@ -186,6 +187,9 @@ def save_session(payload: dict, dry_run: bool = False) -> None:
         started_at=started_at or updated_at,
         updated_at=updated_at,
     )
+    # Log the session save so the activity log shows when each session was stored.
+    activity_log("save_hook", "upsert_session", session=session_id, turns=len(turns))
+
     # --- Phase 5: store a semantic embedding alongside the transcript ---
     # We catch all errors here so that a missing model or import never
     # prevents the hook from exiting 0 and unblocking Claude.
@@ -201,9 +205,14 @@ def save_session(payload: dict, dry_run: bool = False) -> None:
             vector = embed(full_text)
             store_embedding(conn, session_id, vector)
             logging.info("stored embedding for session %s", session_id)
-    except Exception:
+            activity_log("save_hook", "embedding", session=session_id, status="ok")
+        else:
+            activity_log("save_hook", "embedding", session=session_id, status="skipped_empty")
+    except Exception as e:
         # Log the problem but never let it block the hook.
         logging.warning("embedding skipped: %s", traceback.format_exc())
+        activity_log("save_hook", "embedding", session=session_id, status="skipped_error")
+        error_log("save_hook", f"embedding failed for session {session_id}", exc=e)
 
     # --- Phase 7: store sub-session chunks for finer-grained semantic search ---
     # Chunking splits the transcript into overlapping windows and embeds each
@@ -226,9 +235,12 @@ def save_session(payload: dict, dry_run: bool = False) -> None:
             store_chunk(conn, session_id, chunk_index, chunk_text, chunk_vector)
 
         logging.info("saved %d chunks for session %s", len(chunk_texts), session_id)
-    except Exception:
+        activity_log("save_hook", "chunking", session=session_id, chunks=len(chunk_texts), status="ok")
+    except Exception as e:
         # Log the failure but allow the hook to complete normally.
         logging.warning("chunking skipped: %s", traceback.format_exc())
+        activity_log("save_hook", "chunking", session=session_id, status="skipped_error")
+        error_log("save_hook", f"chunking failed for session {session_id}", exc=e)
 
     conn.close()
 

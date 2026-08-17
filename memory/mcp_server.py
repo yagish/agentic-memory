@@ -19,6 +19,8 @@ import sys
 # Add the project root to Python's module search path so we can import memory.db.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from memory.logger import activity_log, error_log
+
 from memory.db import (
     init_db,
     search as db_search,
@@ -94,6 +96,7 @@ def memory_status() -> dict:
 
     # Log that this tool was called so the dashboard can count retrievals.
     log_retrieval(conn, "memory_status", None, len(str(result)))
+    activity_log("mcp", "memory_status", sessions=total_sessions, turns=total_turns)
     conn.close()
     return result
 
@@ -124,6 +127,7 @@ def memory_search(query: str, limit: int = 10) -> list:
     conn = get_conn()
     results = db_search(conn, query, limit=limit)
     log_retrieval(conn, "memory_search", query, len(str(results)))
+    activity_log("mcp", "memory_search", query=query, results=len(results), result_bytes=len(str(results)))
     conn.close()
     return results
 
@@ -175,6 +179,7 @@ def memory_get_session(session_id: str) -> dict:
         "transcript": json.loads(row["transcript"]),
     }
     log_retrieval(conn, "memory_get_session", session_id, len(str(result)))
+    activity_log("mcp", "memory_get_session", session=session_id, turns=result.get("turn_count"))
     conn.close()
     return result
 
@@ -243,6 +248,7 @@ def memory_semantic_search(query: str, limit: int = 5) -> dict:
         "results": results,
     }
     log_retrieval(conn, "memory_semantic_search", query, len(str(result)))
+    activity_log("mcp", "memory_semantic_search", query=query, results=len(results), result_bytes=len(str(result)))
     conn.close()
     return result
 
@@ -278,6 +284,7 @@ def memory_save_fact(content: str, tags: list[str] | None = None) -> dict:
     # Log the first 100 characters of the content as the "query" for the retrievals table.
     # This gives the dashboard a meaningful preview of what was saved.
     log_retrieval(conn, "memory_save_fact", content[:100], len(fact_id))
+    activity_log("mcp", "memory_save_fact", content=content, tags=str(tags or []), id=fact_id)
     conn.close()
     return {"id": fact_id, "content": content, "tags": tags or []}
 
@@ -309,6 +316,7 @@ def memory_update_fact(
     updated = update_fact(conn, fact_id, content=content, tags=tags)
 
     log_retrieval(conn, "memory_update_fact", fact_id, len(str(updated)))
+    activity_log("mcp", "memory_update_fact", id=fact_id, updated=updated)
     conn.close()
     return {"updated": updated, "fact_id": fact_id}
 
@@ -334,6 +342,7 @@ def memory_delete_fact(fact_id: str) -> dict:
     deleted = delete_fact(conn, fact_id)
 
     log_retrieval(conn, "memory_delete_fact", fact_id, len(str(deleted)))
+    activity_log("mcp", "memory_delete_fact", id=fact_id, deleted=deleted)
     conn.close()
     return {"deleted": deleted, "fact_id": fact_id}
 
@@ -361,6 +370,7 @@ def memory_list_facts(tag: str | None = None, limit: int = 20) -> list:
     # Log "(all)" as the query when no tag filter was applied — gives the dashboard
     # a readable label instead of a blank entry.
     log_retrieval(conn, "memory_list_facts", tag or "(all)", len(str(results)))
+    activity_log("mcp", "memory_list_facts", tag=tag or "(all)", results=len(results))
     conn.close()
     return results
 
