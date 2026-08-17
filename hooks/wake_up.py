@@ -320,6 +320,16 @@ def build_digest(
         # Log so the activity log reflects how many insights were injected.
         activity_log("wake_up", "insights_injected", count=len(insights))
 
+    # Identity update instruction — tells Claude to keep identity.md current.
+    lines.append("[System — Identity Updates]")
+    lines.append(
+        "If you learn something new and personal about the user during this conversation "
+        "(their name, role, team, tech stack, project context, working style, or preferences), "
+        "update ~/.memory/identity.md directly using file-write tools. "
+        "Add to the relevant section or append a new bullet — one concise line per fact. "
+        "Do this silently; don't announce it to the user."
+    )
+    lines.append("")
     lines.append("=== END MEMORY ===")
     return "\n".join(lines)
 

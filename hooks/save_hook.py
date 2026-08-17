@@ -179,10 +179,13 @@ def save_session(payload: dict, dry_run: bool = False) -> None:
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
     conn = init_db(DB_PATH)
+    # Agent name is read from MEMORY_AGENT_NAME env var so any tool using this
+    # hook can identify itself without code changes (defaults to "assistant").
+    agent_name = os.environ.get("MEMORY_AGENT_NAME", "assistant")
     upsert_session(
         conn,
         session_id=session_id,
-        agent="claude",
+        agent=agent_name,
         transcript=turns,
         started_at=started_at or updated_at,
         updated_at=updated_at,

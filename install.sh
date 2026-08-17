@@ -100,22 +100,39 @@ mkdir -p "$HOME/.memory"
 echo ""
 echo "Memory directory: $HOME/.memory/"
 
-# Step 4: Write starter ~/.memory/identity.md (only if it doesn't already exist)
+# Step 4: Build ~/.memory/identity.md via interactive questions (only if it doesn't already exist)
 if [ ! -f "$HOME/.memory/identity.md" ]; then
-    cat > "$HOME/.memory/identity.md" << 'EOF'
-# Identity
+    echo ""
+    echo "Setting up your identity profile..."
+    echo "(Your AI assistant will use this to remember who you are across sessions)"
+    echo "(Press Enter to skip any question)"
+    echo ""
 
-Name: (your name)
-Role: (your role, e.g. "Senior software engineer at Acme Corp")
+    read -r -p "  Your name: " _NAME
+    read -r -p "  Your role  (e.g. 'Senior engineer at Acme'): " _ROLE
+    read -r -p "  Primary languages / tech  (e.g. 'Python, TypeScript, AWS'): " _TECH
+    read -r -p "  Experience level  (e.g. 'Beginner', '5 years Python', 'Senior'): " _EXP
+    read -r -p "  Communication style  (e.g. 'concise', 'detailed with examples'): " _STYLE
 
-## About me
-(A few sentences about your background, expertise, and working style)
+    # Build the file; omit blank fields rather than writing placeholder text.
+    {
+        echo "# Identity"
+        echo ""
+        [ -n "$_NAME" ]  && echo "Name: $_NAME"
+        [ -n "$_ROLE" ]  && echo "Role: $_ROLE"
+        echo ""
+        echo "## About me"
+        [ -n "$_TECH" ]  && echo "Primary tech stack: $_TECH"
+        [ -n "$_EXP" ]   && echo "Experience: $_EXP"
+        echo ""
+        echo "## Preferences"
+        [ -n "$_STYLE" ] && echo "- Communication style: $_STYLE"
+        echo ""
+        echo "<!-- Your AI assistant will add more facts here as it learns them during conversations -->"
+    } > "$HOME/.memory/identity.md"
 
-## Preferences
-- (e.g. "I prefer concise explanations over long prose")
-- (e.g. "Always show the file path when referencing code")
-EOF
-    echo "Created ~/.memory/identity.md — edit it to personalise your memory profile."
+    echo ""
+    echo "  + Created ~/.memory/identity.md"
 fi
 
 # Step 5: Patch ~/.claude/settings.json — add hooks (idempotent)
@@ -195,7 +212,7 @@ else:
     print(f"  + Registered MCP server 'memory': {server_path}")
 PYEOF
 
-# Step 7: Update com.memory.daemon.plist with real paths
+# Step 7: Update com.memory.daemon.plist and start the background daemon
 echo ""
 echo "Updating launchd plist..."
 sed -i.bak \
@@ -204,17 +221,28 @@ sed -i.bak \
     "$INSTALL_DIR/com.memory.daemon.plist"
 rm -f "$INSTALL_DIR/com.memory.daemon.plist.bak"
 echo "  + Updated com.memory.daemon.plist with real paths"
+
+echo ""
+echo "Starting background daemon..."
+python3 "$INSTALL_DIR/cli.py" daemon start && echo "  + Daemon started (logs: ~/.memory/daemon.log)" \
+    || echo "  ! Daemon failed to start — run 'python3 $INSTALL_DIR/cli.py daemon status' to diagnose"
+
 echo "  (To auto-start daemon at login: cp $INSTALL_DIR/com.memory.daemon.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/com.memory.daemon.plist)"
 
 # Step 8: Print success summary
 echo ""
-echo "Installation complete!"
-echo "  Memory DB will be stored at: $HOME/.memory/memory.db"
-echo "  Identity profile:            $HOME/.memory/identity.md"
-echo "  Activity log:                $HOME/.memory/activity.log"
+echo "================================================================"
+echo "  agentic-memory installed successfully!"
 echo ""
-echo "Next steps:"
-echo "  1. Edit ~/.memory/identity.md with your profile"
-echo "  2. Restart Claude Code for hooks and MCP server to take effect"
-echo "  3. Optional: python3 $INSTALL_DIR/cli.py daemon start"
-echo "  4. Optional: python3 $INSTALL_DIR/cli.py ingest-server start"
+echo "  Memory DB:        $HOME/.memory/memory.db"
+echo "  Identity profile: $HOME/.memory/identity.md"
+echo "  Activity log:     $HOME/.memory/activity.log"
+echo "  Daemon log:       $HOME/.memory/daemon.log"
+echo "================================================================"
+echo ""
+echo "One step remaining:"
+echo "  Restart Claude Code for hooks and MCP server to take effect."
+echo ""
+echo "Optional — for other agents (Cursor, LangChain, custom scripts):"
+echo "  python3 $INSTALL_DIR/cli.py ingest-server start"
+echo "  (lets other tools POST sessions to the same memory DB via localhost:7747)"
