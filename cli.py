@@ -382,14 +382,19 @@ def cmd_dashboard(_args):
 <script>
 const ctx = document.getElementById('sessionChart').getContext('2d');
 new Chart(ctx, {{
-  type: 'bar',
+  type: 'line',
   data: {{
     labels: {chart_labels},
     datasets: [{{
       label: 'Sessions',
       data: {chart_values},
-      backgroundColor: '#7c3aed',
-      borderRadius: 4,
+      borderColor: '#7c3aed',
+      backgroundColor: 'rgba(124, 58, 237, 0.15)',
+      borderWidth: 2,
+      pointRadius: 3,
+      pointBackgroundColor: '#7c3aed',
+      fill: true,
+      tension: 0.3,
     }}]
   }},
   options: {{
