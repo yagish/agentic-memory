@@ -539,3 +539,168 @@ Phase 12 (consolidation)   ←  can start any time after Phase 7
 **Recommended order**: 7-01 → 7-02 → 7-03 → 8-01 → 8-02 → 9-01 → 9-02 → 10-01 → 11-01 → 11-02 → 12-01 → 12-02 → 13-01 → 13-03 → 13-02 → 13-04 → 13-05
 
 Phase 13 depends on Phase 12 (consolidation must exist before the daemon re-uses it), and on Phase 9 (fact extraction must exist before re-extraction). Phase 13-02 (the daemon loop) can start once 13-01 and 13-03 are done.
+
+---
+
+## Phase 14 — Plugin Installer
+
+**Goal**: make the system installable by anyone with a single command. Currently hooks and MCP config contain hardcoded absolute paths to this repo, so the system only works for the original developer.
+
+### Ticket 14-01 — Write `install.sh`
+
+The installer runs from wherever the user cloned the repo. It:
+
+1. Detects `INSTALL_DIR` = the directory containing `install.sh` (via `$(cd "$(dirname "$0")"; pwd)`)
+2. Checks Python 3.8+ is available, exits with a clear message if not
+3. Installs Python dependencies: `pip3 install mcp fastmcp sentence-transformers`
+4. Creates `~/.memory/` directory and writes a starter `~/.memory/identity.md` template if it doesn't already exist
+5. Patches `~/.claude/settings.json` (global Claude Code settings) to add the two hooks, using Python's `json` module as the parser (jq not universally available). Must merge into any existing hooks, not overwrite them.
+6. Writes (or merges) the MCP server entry into `~/.claude/mcp.json` (Claude Code's global MCP registry) pointing `python3 <INSTALL_DIR>/memory/mcp_server.py`
+7. Prints a clear success summary and tells the user to restart Claude Code
+
+Design constraints:
+- Idempotent: running twice must not duplicate hook entries or break anything
+- Never overwrites existing identity.md (the user may have personalised it)
+- Uses Python for all JSON manipulation — no `jq` dependency
+- Works on macOS and Linux; Windows is out of scope (Claude Code CLI runs on those two)
+
+### Ticket 14-02 — Uninstall option
+
+Add `install.sh --uninstall` that:
+- Removes the two hook entries from `~/.claude/settings.json`
+- Removes the `memory` server entry from `~/.claude/mcp.json`
+- Leaves `~/.memory/` untouched (data preservation — user keeps their history)
+- Prints confirmation of what was removed
+
+---
+
+## Phase 15 — Token Economics Measurement
+
+**Goal**: measure whether the memory system is actually saving tokens or costing more. This is an open question — the honest answer is "it depends", and the system should surface enough data to let users judge for themselves.
+
+### The Economics (design brief)
+
+**What the system costs (tokens added):**
+
+| Source | Est. tokens per session | Notes |
+|---|---|---|
+| Wake-up injection | ~220–350 | Identity (~100) + 5 session previews (~30 each) |
+| MCP tool schemas | ~400 | Added to system prompt when MCP server is active |
+| MCP tool calls | ~50–200 per call | Tool invocation + result overhead |
+| Phase 9 fact extractor | varies | Haiku API call per session save |
+
+**What the system could save (unmeasurable without control group):**
+
+| Scenario | Potential saving | Why unmeasurable |
+|---|---|---|
+| User skips pasting old context | 500–5,000 tokens | We don't know what they would have pasted |
+| Claude skips clarification turns | 400–800 per averted turn | We don't know which turns were averted |
+| Relevant snippet vs re-derivation | 200–2,000 per retrieval | We don't know if Claude would have needed it |
+
+**The honest conclusion**: we cannot claim a net saving without a control group. What we CAN show:
+- Injection overhead per session (what memory adds, guaranteed)
+- Retrieval volume (what was pulled back via MCP)
+- Sessions with zero retrievals (pure overhead, no benefit)
+- Coverage ratio = retrieval bytes / injection bytes (≥1.0 means retrievals pulled back more than was injected; <1.0 means the system is a net cost)
+
+A coverage ratio ≥ 1.0 does not prove savings — the user might not have needed that context — but a ratio consistently < 1.0 is strong evidence the system is costing more than it returns.
+
+### Ticket 15-01 — Log wake-up injection size
+
+Edit `hooks/wake_up.py`: after writing the flag file and before printing the JSON response, compute `injection_tokens = len(digest) // 4` and call `log_retrieval(conn, tool="wake_up_injection", query=None, result_size=injection_tokens)`. This reuses the existing `retrievals` table — no schema change needed. Guard with try/except so a DB failure never blocks the injection.
+
+### Ticket 15-02 — Add token economics to `cli.py status`
+
+Query the `retrievals` table to compute:
+- `injection_total` = SUM(result_size) WHERE tool = 'wake_up_injection'
+- `retrieval_total` = SUM(result_size) WHERE tool != 'wake_up_injection'
+- `coverage_ratio` = retrieval_total / injection_total (or "N/A" if injection_total = 0)
+- `zero_retrieval_sessions` = count of sessions where no MCP tool was called (pure overhead)
+
+Print these in `cmd_status` under a new `=== Token Economics ===` block, with a one-line plain-English interpretation ("retrievals cover X% of injection overhead").
+
+### Ticket 15-03 — Token economics panel in the dashboard
+
+Add a new card to `cli.py dashboard` with:
+- Stat tiles: Injected tokens, Retrieved tokens, Coverage ratio
+- A bar chart (two bars per day: injected vs. retrieved) so the trend is visible over time — is retrieval volume growing faster than injection overhead as the system learns more?
+- A table of sessions with zero retrievals (date, turn count) — these are the cases where the system was pure overhead
+- Honest footnote: "Coverage ratio ≥ 1.0 means retrievals returned more context than was injected. It does not measure tokens saved vs. a baseline — that would require a control group."
+
+### Open question: session-level opt-out
+
+If a user notices coverage < 1.0 (they rarely use MCP retrieval), we could add a `--no-wakeup` flag or a per-project disable to avoid paying injection overhead in projects where memory isn't useful. Record this as a design decision once we see real data.
+
+---
+
+## Phase 16 — Token Efficiency
+
+**Goal**: make the system net token-positive by default. The current push model (inject unconditionally) pays overhead on every session regardless of whether memory is useful. These four tickets convert it to a pull-oriented model that earns its keep.
+
+**Dependency**: Phase 15 token tracking must be in place first so we can measure whether each change actually improves the coverage ratio.
+
+### Break-even target
+
+| Scenario | Current overhead | After Phase 16 |
+|---|---|---|
+| One-off session | ~700 tokens (always paid) | ~0 (gated out) |
+| Ongoing project | ~700 tokens | ~100 tokens (facts + relevance filter) |
+| Averted clarification turn | saves ~400 tokens | saves ~400 tokens |
+
+A single averted clarification on an ongoing project covers the reduced overhead 4×. One-off sessions pay nothing.
+
+---
+
+### Ticket 16-01 — Relevance gate in `wake_up.py`
+
+**Problem**: wake-up injects ~300 tokens into every session, including completely unrelated one-off questions.
+
+**Fix**: embed the user's first prompt using the local `all-MiniLM-L6-v2` model (already loaded for Phase 5), compute cosine similarity against the 10 most recent session embeddings, and only proceed with injection if `max_similarity >= GATE_THRESHOLD` (default: 0.35). If no past session is similar enough, output `{}` (allow, no injection) and log the skip to `wake_up.log`.
+
+Implementation notes:
+- Read the user's first prompt from `payload["userPrompt"]` (available in the hook payload)
+- Reuse `embed()` from `memory/db.py` — it's already loaded in the process
+- The gate adds ~5ms of local CPU; no API call, no network
+- Make `GATE_THRESHOLD` a constant at the top of the file so it's easy to tune
+- Log: `"skipped injection (max_similarity=0.22, threshold=0.35)"` on skips; `"injecting (max_similarity=0.61)"` on inject
+- Write a unit test: a prompt with no related sessions skips; a prompt matching a past session injects
+
+---
+
+### Ticket 16-02 — Project-directory scoping
+
+**Problem**: wake-up and MCP search query all sessions globally. A Python project gets injected with context from a Go project — irrelevant tokens paid, relevant context diluted.
+
+**Fix**:
+- Add a `project_dir` column to the `sessions` table (nullable `TEXT`). Backfill existing rows with `NULL`.
+- In `save_hook.py`: read `project_dir` from the hook payload (Claude Code sends `cwd` in the Stop hook payload) and pass it to `upsert_session()`.
+- In `wake_up.py` `fetch_recent_sessions()`: add `WHERE project_dir = ? OR project_dir IS NULL` so results are scoped to the current working directory.
+- In MCP `memory_search` and `memory_semantic_search`: accept an optional `project_dir` filter parameter.
+- Update the dashboard to show sessions grouped by project.
+
+---
+
+### Ticket 16-03 — Switch L1 digest to extracted facts
+
+**Dependency**: Phase 9 (fact extraction) must be complete.
+
+**Problem**: the L1 wake-up digest injects 5 raw session previews (~150 tokens). A one-line preview of "first user message" carries little signal — it's the cheapest possible summary of a session.
+
+**Fix**: replace session previews with extracted facts filtered to the current project:
+- Query `SELECT content FROM facts WHERE source='extracted' AND session_id IN (recent project sessions) ORDER BY created_at DESC LIMIT 8`
+- Format as a compact bullet list: `• <fact content>` — typically 30–60 chars each
+- Cap the total fact digest at 300 chars to bound the token cost regardless of how many facts accumulate
+- Keep the identity (L0) block unchanged
+- Estimated token cost: ~80 tokens for facts vs. ~150 tokens for raw session previews
+
+If no facts exist yet (Phase 9 not run or new installation), fall back to the current session-preview format.
+
+---
+
+### Ticket 16-04 — Per-project MCP opt-in
+
+**Problem**: the MCP tool schemas (~400 tokens) are added to every Claude session where the server is registered — even sessions that will never use memory retrieval. On a fresh installation with no sessions stored, this is pure overhead.
+
+**Fix**: add a lightweight opt-in check to `mcp_server.py`. On startup, count sessions in the database. If `total_sessions < MIN_SESSIONS_FOR_MCP` (default: 3), the server starts but all tools return a short message: `"Memory index not ready — fewer than 3 sessions stored. Run a few sessions first."` This doesn't remove the schema overhead (that's set by Claude Code, not us) but it prevents wasted API calls before the index has useful data.
+
+Longer term (out of scope for this ticket): document how to scope the MCP server to specific projects using a per-project `.mcp.json` instead of the global `~/.claude/mcp.json`. This lets users opt in project-by-project and avoids paying schema overhead in unrelated workspaces.
