@@ -245,6 +245,16 @@ agentic-memory/
 Phase 1 (schema + db.py) → Phase 2 (hook) → Phase 3 (MCP) → Phase 4 (wake-up) → Phase 5 (vectors)
          ↑                        ↑
      testable alone         testable with live Claude
+
+Completed: 1 → 2 → 3 → 4 → 5 → 6 (CLI) → 7 (chunking) → 8 (facts + MCP write tools)
+
+Next (remaining):
+  10 (relevance wake-up) → 11-01 (RRF hybrid search) → 11-02 (hybrid MCP tool)
+  → 12-01 (consolidation) → 12-02 (decay/pruning)
+  → 13-01 (daemon tables) → 13-03 (topic clusters) → 13-02 (daemon loop)
+  → 13-04 (MCP/wake-up exposure) → 13-05 (launchd)
+
+Note: Phase 9 removed — fact extraction moved into Phase 13 daemon (async, no hook cost).
 ```
 
 Each phase produces something independently verifiable before the next starts.
@@ -334,28 +344,15 @@ Add four new tools:
 
 ---
 
-## Phase 9 — Structured Fact Extraction
+## ~~Phase 9 — Structured Fact Extraction~~ (removed)
 
-**Goal**: after every session save, automatically extract durable facts (decisions, preferences, entities) from the transcript using an LLM call, and store them in the `facts` table.
+**Decision**: automated fact extraction was originally planned in the Stop hook (calling Claude API on every session save). This adds API cost, network dependency, and latency to a path that must complete quickly and offline.
 
-**Dependency**: Phase 8 (facts table + `insert_fact()` must exist first).
+**Resolution**: fact extraction is handled in two better ways:
+1. **Proactively** — Claude calls `memory_save_fact` (Phase 8 MCP tool) mid-conversation when it observes something worth remembering.
+2. **Asynchronously** — the Phase 13 background daemon runs `re_extract_facts()` on unprocessed sessions at its own pace, with no time pressure.
 
-### Ticket 9-01 — Implement `memory/fact_extractor.py`
-
-- `extract_facts(transcript_text) -> list[dict]` — calls Claude API (`claude-haiku-4-5-20251001`, low cost) with a structured prompt
-- Prompt instructs the model to return a JSON array of `{content, tags}` objects
-- Extract only: decisions made, user preferences, reusable patterns, named entities with context
-- Skip: transient task details, code that already lives in files, ephemeral questions
-- Parse and validate the JSON response; return an empty list on failure (never raise)
-- Write unit tests with mocked API responses: valid JSON parsed correctly, malformed JSON returns `[]`
-
-### Ticket 9-02 — Wire fact extraction into `save_hook.py`
-
-- After `upsert_session()` succeeds, call `extract_facts(full_text)`
-- For each returned fact, call `insert_fact(conn, content, tags, source="extracted", session_id=session_id)`
-- Guard with a try/except — extraction failure must never prevent the session save
-- Log extraction count to `save_hook.log` (e.g. "extracted 4 facts from session abc123")
-- Write integration test: a transcript containing a clear decision results in at least one fact row
+The Stop hook remains fast and offline-safe.
 
 ---
 
@@ -402,10 +399,12 @@ Add four new tools:
 
 **Goal**: prevent unbounded database growth and ensure old valuable conversations remain accessible as compressed summaries rather than being lost in noise.
 
+**LLM backend**: all generation uses a local **ollama** model — no cloud API calls. Default model: `llama3.2:3b` (~2GB, ~2-3GB RAM while active, unloads after 5 min idle). Configurable via `MEMORY_OLLAMA_MODEL` env var so users can swap to a smaller (`qwen2.5:1.5b`) or larger model based on their hardware.
+
 ### Ticket 12-01 — Build `memory/consolidation.py` — L2 topic summaries
 
 - `consolidate_old_sessions(conn, days_threshold=30)` — finds sessions older than N days that haven't been summarised
-- For each, calls Claude API to produce a 3–5 sentence summary of key topics, decisions, and outcomes
+- For each, calls **ollama** (`ollama.chat(model=..., messages=[...])`) to produce a 3–5 sentence summary of key topics, decisions, and outcomes
 - Stores the summary in a new `summaries` table:
   ```sql
   CREATE TABLE IF NOT EXISTS summaries (
@@ -436,6 +435,8 @@ Add four new tools:
 **Goal**: a long-running background process that continuously improves the memory system as the user works — re-processing sessions, extracting richer facts, discovering cross-session patterns, and updating the knowledge base without any user intervention.
 
 **Why this matters**: the quality of a memory system should compound over time. More sessions = more signal to learn from. Without a relearning loop, the system is static — a fact extracted from session 1 is never revised even if 50 later sessions add nuance or contradict it. This phase makes the system genuinely self-improving.
+
+**LLM backend**: same ollama setup as Phase 12 (local, offline, no API key). The daemon checks `psutil.cpu_percent()` before running inference and skips a cycle if the machine is under load (threshold: 70%). Poll interval backs off from 5 min → 30 min when nothing new is found, so it's quiet on an idle machine.
 
 ### Ticket 13-01 — Add `processed_at` tracking and an `insights` table to `db.py`
 
@@ -479,9 +480,9 @@ while True:
     sleep(POLL_INTERVAL)  # default 5 minutes
 ```
 
-- `re_extract_facts(conn, session)` — calls Claude API (Haiku) with full transcript; upserts new facts, skips duplicates by content similarity
-- `update_topic_clusters(conn, session)` — embeds the session summary, assigns it to the nearest existing topic cluster or creates a new one; stores cluster assignment in a `topic_clusters` table
-- `generate_cross_session_insights(conn)` — called every N sessions (default: every 10 new sessions); sends a sample of recent facts + session summaries to Claude API asking for patterns, recurring preferences, and skill observations; upserts results into `insights`
+- `re_extract_facts(conn, session)` — calls **ollama** with full transcript; upserts new facts, skips duplicates by content similarity
+- `update_topic_clusters(conn, session)` — embeds the session summary (via `sentence-transformers`, same model as Phase 5), assigns it to the nearest existing topic cluster or creates a new one; stores cluster assignment in a `topic_clusters` table
+- `generate_cross_session_insights(conn)` — called every N sessions (default: every 10 new sessions); sends a sample of recent facts + session summaries to **ollama** asking for patterns, recurring preferences, and skill observations; upserts results into `insights`
 - Poll interval: 5 minutes while sessions are accumulating; backs off to 30 minutes when nothing new is found
 - Writes all activity to `~/.memory/daemon.log`
 - Exits cleanly on SIGTERM; resumes from where it left off (stateless — `daemon_processed_at` is the checkpoint)
@@ -526,19 +527,29 @@ CREATE TABLE IF NOT EXISTS cluster_memberships (
 
 ---
 
-## Updated Build Order (Phases 7–12)
+## Updated Build Order
 
 ```
-Phase 7 (chunking)  →  Phase 8 (fact write tools)  →  Phase 9 (fact extraction)
-       ↓                                                        ↓
-Phase 11 (hybrid search)  ←  Phase 10 (relevance wake-up)  ←  (uses chunks + facts)
+Phase 7 (chunking)  →  Phase 8 (fact write tools)
        ↓
-Phase 12 (consolidation)   ←  can start any time after Phase 7
+Phase 10 (relevance wake-up)  →  Phase 11 (hybrid search)
+       ↓
+Phase 12 (consolidation + decay)   [local ollama — no API]
+       ↓
+Phase 13 (background daemon)       [local ollama — no API]
+       ↓
+Phase 16 (agent-agnostic ingest)   [parallel track — can start after Phase 8]
+       ↓
+Phase 14 (installer)   →   Phase 15 (token economics)
 ```
 
-**Recommended order**: 7-01 → 7-02 → 7-03 → 8-01 → 8-02 → 9-01 → 9-02 → 10-01 → 11-01 → 11-02 → 12-01 → 12-02 → 13-01 → 13-03 → 13-02 → 13-04 → 13-05
+**Recommended order**: 10-01 → 11-01 → 11-02 → 12-01 → 12-02 → 13-01 → 13-03 → 13-02 → 13-04 → 13-05 → 16-01 → 16-02 → 16-03 → 16-04 → 14-01 → 14-02 → 15-01 → 15-02
 
-Phase 13 depends on Phase 12 (consolidation must exist before the daemon re-uses it), and on Phase 9 (fact extraction must exist before re-extraction). Phase 13-02 (the daemon loop) can start once 13-01 and 13-03 are done.
+**Key constraints**:
+- Phase 12 (ollama summarisation) requires `ollama` installed and a model pulled (`ollama pull llama3.2:3b`)
+- Phase 13 daemon depends on Phase 12 (reuses consolidation) and Phase 13-01/03 (tables must exist first)
+- Phase 16 is independent of 12/13 — can be built in parallel
+- Phase 9 removed: fact extraction moved into the Phase 13 daemon (async, no hook overhead, local model)
 
 ---
 
@@ -574,6 +585,65 @@ Add `install.sh --uninstall` that:
 
 ---
 
+## Phase 16 — Agent-agnostic Ingest Interface
+
+**Goal**: decouple the memory store from Claude Code so any agent (Cursor, custom Python scripts, LangChain agents, future CLI tools) can write sessions to and read facts from the same database.
+
+**Problem**: `save_hook.py` reads Claude Code's JSONL transcript format. An agent running in a different framework has no way to write to the memory store without replicating that format.
+
+**Design**: expose a lightweight HTTP ingest endpoint (FastAPI, already available via `fastmcp` deps) alongside the existing MCP server. Any agent posts a session in the canonical shape and gets it stored, chunked, and embedded exactly as if it came from the Stop hook.
+
+### Ticket 16-01 — Define the canonical session shape
+
+The ingest API accepts a single JSON body:
+
+```json
+{
+  "session_id": "string (required)",
+  "agent":      "string (e.g. 'cursor', 'langchain', 'custom') — default 'unknown'",
+  "turns": [
+    {"role": "user",      "content": "..."},
+    {"role": "assistant", "content": "..."}
+  ],
+  "started_at": "ISO timestamp (optional)",
+  "metadata":   {}  // arbitrary key-value, stored as JSON in a new column
+}
+```
+
+- Add `metadata TEXT` column to `sessions` via migration in `db.py`
+- Document the shape in `README.md`
+
+### Ticket 16-02 — Build `memory/ingest_server.py` — HTTP ingest endpoint
+
+- Single POST endpoint: `POST /ingest` — accepts the canonical shape, runs the full save pipeline (upsert → embed → chunk), returns `{"ok": true, "session_id": "..."}`
+- `GET /status` — returns session count, newest session, db size (for health checks)
+- Runs on `localhost:7747` by default (configurable via `MEMORY_INGEST_PORT` env var)
+- Reuses all existing `db.py` functions — no duplication of save logic
+- Write tests: POST a session, assert it appears in `sessions` table and `chunks` table
+
+### Ticket 16-03 — Add `python3 cli.py ingest-server start|stop|status`
+
+- `start` — launches `ingest_server.py` as a background process, writes PID to `~/.memory/ingest.pid`
+- `stop` — sends SIGTERM to the PID
+- `status` — checks if the process is running and prints the port
+- Add ingest server startup to `install.sh` (optional, off by default — user opts in)
+
+### Ticket 16-04 — Add a thin client helper `memory/client.py`
+
+So other agents can ingest without knowing the HTTP API:
+
+```python
+from memory.client import MemoryClient
+client = MemoryClient()  # connects to localhost:7747
+client.save_session(session_id="...", agent="cursor", turns=[...])
+```
+
+- `save_session(session_id, agent, turns, started_at=None, metadata=None)`
+- Raises `ConnectionError` if the ingest server is not running (clear message: "start it with `python3 cli.py ingest-server start`")
+- Write tests with a mock HTTP server
+
+---
+
 ## Phase 15 — Token Economics Measurement
 
 **Goal**: measure whether the memory system is actually saving tokens or costing more. This is an open question — the honest answer is "it depends", and the system should surface enough data to let users judge for themselves.
@@ -587,7 +657,7 @@ Add `install.sh --uninstall` that:
 | Wake-up injection | ~220–350 | Identity (~100) + 5 session previews (~30 each) |
 | MCP tool schemas | ~400 | Added to system prompt when MCP server is active |
 | MCP tool calls | ~50–200 per call | Tool invocation + result overhead |
-| Phase 9 fact extractor | varies | Haiku API call per session save |
+| Daemon (Phase 13) | 0 cloud tokens | Local ollama inference only — no API cost |
 
 **What the system could save (unmeasurable without control group):**
 
