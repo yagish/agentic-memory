@@ -1,7 +1,8 @@
 # test_wake_up.py — tests for the wake-up hook's core logic.
 #
-# We test the pure functions (build_digest, fetch_recent_sessions) directly,
-# not the stdin/stdout hook layer — those are hard to test in isolation and
+# We test the pure functions (build_digest, fetch_recent_sessions,
+# fetch_relevant_context, get_wake_up_digest) directly, not the
+# stdin/stdout hook layer — those are hard to test in isolation and
 # the logic that matters is in the functions themselves.
 #
 # Run with:  python3 -m unittest tests.test_wake_up -v
@@ -9,13 +10,25 @@
 import json
 import os
 import sys
+import tempfile
 import unittest
+from unittest.mock import patch
 
 # Add the project root to the Python path so we can import from hooks/
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from hooks.wake_up import build_digest, fetch_recent_sessions
-from memory.db import init_db, upsert_session
+from hooks.wake_up import (
+    build_digest,
+    fetch_recent_sessions,
+    fetch_relevant_context,
+    get_wake_up_digest,
+)
+from memory.db import init_db, insert_fact, upsert_session
+
+
+# ---------------------------------------------------------------------------
+# Existing tests — kept exactly as before (Phase 1–9 coverage)
+# ---------------------------------------------------------------------------
 
 
 class TestBuildDigest(unittest.TestCase):
@@ -64,13 +77,12 @@ class TestFetchRecentSessions(unittest.TestCase):
     """Tests for fetch_recent_sessions() — querying the DB for past sessions."""
 
     def setUp(self):
-        # Use a real in-memory DB and point DB_PATH at a temp file path
-        # We monkey-patch the module-level DB_PATH for these tests
+        # Use a real in-memory DB and point DB_PATH at a temp file path.
+        # We monkey-patch the module-level DB_PATH for these tests.
         import hooks.wake_up as wu
         self._original_db_path = wu.DB_PATH
 
         # Use a temp file so fetch_recent_sessions can open it
-        import tempfile
         self._tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         self._tmp.close()
         wu.DB_PATH = self._tmp.name
@@ -127,6 +139,222 @@ class TestFetchRecentSessions(unittest.TestCase):
         wu.DB_PATH = "/tmp/nonexistent_memory_test.db"
         results = fetch_recent_sessions("any-session")
         self.assertEqual(results, [])
+
+
+# ---------------------------------------------------------------------------
+# New tests — Phase 10: relevance-based wake-up
+# ---------------------------------------------------------------------------
+
+
+class TestRelevanceWakeUp(unittest.TestCase):
+    """
+    Tests for Phase 10: fetch_relevant_context(), get_wake_up_digest(),
+    and the extended build_digest() with facts support.
+
+    We use a temp-file DB (not :memory:) so that fetch_recent_sessions()
+    — which opens its own connection via the monkey-patched DB_PATH — can
+    read the same sessions we seeded.  fetch_relevant_context receives an
+    explicit conn passed from the test, so its DB access is independent.
+    """
+
+    def setUp(self):
+        # Monkey-patch DB_PATH so fetch_recent_sessions uses our temp file.
+        import hooks.wake_up as wu
+        self._wu = wu
+        self._original_db_path = wu.DB_PATH
+
+        # Create a temp database file for the duration of this test.
+        self._tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self._tmp.close()
+        wu.DB_PATH = self._tmp.name
+
+        # Open a connection to the temp DB and seed it with two sessions:
+        # sess-auth — old, about authentication bugs
+        # sess-ui   — recent, about UI/CSS styling
+        self._conn = init_db(self._tmp.name)
+        upsert_session(
+            self._conn, "sess-auth", "claude",
+            [{"role": "user", "content": "authentication bug with login form"},
+             {"role": "assistant", "content": "Let me look at your auth code."}],
+            "2026-01-01T09:00:00Z", "2026-01-01T09:05:00Z",
+        )
+        upsert_session(
+            self._conn, "sess-ui", "claude",
+            [{"role": "user", "content": "CSS button styling and UI layout"},
+             {"role": "assistant", "content": "Sure, let's look at your CSS."}],
+            "2026-08-15T10:00:00Z", "2026-08-15T10:10:00Z",
+        )
+
+    def tearDown(self):
+        # Restore the original DB_PATH and clean up the temp file.
+        self._conn.close()
+        self._wu.DB_PATH = self._original_db_path
+        os.unlink(self._tmp.name)
+
+    # --- test 1 ---
+
+    @patch("hooks.wake_up.semantic_search_chunks")
+    @patch("hooks.wake_up.search_facts")
+    def test_relevance_beats_recency(self, mock_facts, mock_chunks):
+        """
+        When semantic search says the authentication session is more relevant
+        (lower cosine distance) than the UI session, the authentication session
+        should appear first in the digest — even though the UI session is newer.
+        """
+        # Mock chunk search: authentication session is more relevant (distance 0.1)
+        # than the UI session (distance 0.9).
+        mock_chunks.return_value = [
+            {
+                "session_id": "sess-auth",
+                "chunk_index": 0,
+                "distance":    0.1,        # low distance = highly relevant
+                "text":        "authentication bug with login form",
+                "snippet":     "login authentication bug",
+            },
+            {
+                "session_id": "sess-ui",
+                "chunk_index": 0,
+                "distance":    0.9,        # high distance = less relevant
+                "text":        "CSS button styling",
+                "snippet":     "CSS button styling UI",
+            },
+        ]
+        # Facts search returns nothing for this prompt.
+        mock_facts.return_value = []
+
+        digest = get_wake_up_digest(
+            self._conn, "current-session", "authentication bug", ""
+        )
+
+        # Both snippets must appear in the digest.
+        auth_pos = digest.find("login authentication bug")
+        ui_pos   = digest.find("CSS button styling UI")
+        self.assertGreater(auth_pos, -1, "Authentication snippet should appear in digest")
+        self.assertGreater(ui_pos, -1, "UI snippet should appear in digest")
+
+        # Authentication session (relevant) should be listed before UI session (recent).
+        self.assertLess(
+            auth_pos, ui_pos,
+            "Relevant authentication session should appear before more-recent UI session",
+        )
+
+    # --- test 2 ---
+
+    def test_fallback_on_empty_prompt(self):
+        """
+        When the prompt is empty, get_wake_up_digest skips semantic search entirely
+        and falls back to the recency-based approach (last N sessions by updated_at).
+        The digest should show the most-recent session first and omit the [L2] section.
+        """
+        # Pass an empty prompt — semantic search should NOT be called.
+        digest = get_wake_up_digest(
+            self._conn, "current-session", "", ""
+        )
+
+        # Recency heading must be present (not the relevance heading).
+        self.assertIn("[L1 — Recent Sessions]", digest)
+
+        # No facts section in recency fallback.
+        self.assertNotIn("[L2", digest)
+
+        # UI session (2026-08-15) is more recent — it should appear before
+        # the authentication session (2026-01-01) in the digest.
+        ui_pos   = digest.find("2026-08-15")
+        auth_pos = digest.find("2026-01-01")
+        self.assertGreater(ui_pos, -1, "Recent UI session timestamp should appear in digest")
+        self.assertGreater(auth_pos, -1, "Older auth session timestamp should appear in digest")
+        self.assertLess(
+            ui_pos, auth_pos,
+            "More-recent session should appear first in recency fallback",
+        )
+
+    # --- test 3 ---
+
+    @patch("hooks.wake_up.semantic_search_chunks")
+    def test_fallback_on_import_error(self, mock_chunks):
+        """
+        When semantic_search_chunks raises ImportError (e.g. sentence-transformers
+        not installed), get_wake_up_digest must fall back gracefully to recency.
+        The function should return a valid digest string — not crash.
+        """
+        # Simulate sentence-transformers being absent.
+        mock_chunks.side_effect = ImportError(
+            "sentence-transformers is not installed. Run: pip3 install sentence-transformers"
+        )
+
+        # This call must not raise — it should catch the ImportError and fall back.
+        digest = get_wake_up_digest(
+            self._conn, "current-session", "authentication bug", ""
+        )
+
+        # Must be a non-empty string with the standard markers.
+        self.assertIn("=== MEMORY WAKE-UP ===", digest)
+        self.assertIn("=== END MEMORY ===", digest)
+
+        # Fallback digest must not contain an L2 facts section.
+        self.assertNotIn("[L2", digest)
+
+    # --- test 4 ---
+
+    @patch("hooks.wake_up.semantic_search_chunks")
+    @patch("hooks.wake_up.search_facts")
+    def test_facts_section_present(self, mock_facts, mock_chunks):
+        """
+        When search_facts returns results, build_digest includes a
+        [L2 — Relevant Facts] section with bullet points.
+        """
+        # Return one matching chunk so the relevance path is taken.
+        mock_chunks.return_value = [
+            {
+                "session_id": "sess-auth",
+                "chunk_index": 0,
+                "distance":    0.2,
+                "text":        "authentication bug with login form",
+                "snippet":     "login bug",
+            },
+        ]
+        # Return one fact with tags.
+        mock_facts.return_value = [
+            {
+                "id":         "fact-1",
+                "content":    "User prefers OAuth login over password",
+                "tags":       ["auth", "preferences"],
+                "source":     "agent",
+                "session_id": "sess-auth",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "snippet":    "User prefers [OAuth] login",
+            },
+        ]
+
+        digest = get_wake_up_digest(
+            self._conn, "current-session", "authentication login", ""
+        )
+
+        # Facts section must be present.
+        self.assertIn("[L2 — Relevant Facts]", digest)
+
+        # The fact content must appear in the digest.
+        self.assertIn("User prefers OAuth login over password", digest)
+
+        # Tags must appear in the expected format.
+        self.assertIn("[tags: auth, preferences]", digest)
+
+    # --- test 5 ---
+
+    def test_facts_section_absent_on_fallback(self):
+        """
+        The [L2 — Relevant Facts] section must NOT appear when the recency
+        fallback is used (e.g. when the prompt is empty).
+        """
+        # Empty prompt triggers recency fallback unconditionally.
+        digest = get_wake_up_digest(
+            self._conn, "current-session", "", ""
+        )
+
+        # No L2 section should appear anywhere in the digest.
+        self.assertNotIn("[L2", digest)
+        self.assertNotIn("Relevant Facts", digest)
 
 
 if __name__ == "__main__":
