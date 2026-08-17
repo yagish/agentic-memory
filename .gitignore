@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+dashboard.html
+*.db
+*.log
+.claude/settings.local.json

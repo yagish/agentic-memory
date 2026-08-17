@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "memory": {
+      "command": "python3",
+      "args": ["/Users/ys68052/work/agentic-memory/memory/mcp_server.py"]
+    }
+  }
+}
