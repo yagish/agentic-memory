@@ -26,6 +26,7 @@ from memory.db import (
     search as db_search,
     semantic_search as db_semantic_search,
     semantic_search_chunks as db_semantic_search_chunks,
+    hybrid_search as db_hybrid_search,
     log_retrieval,
     insert_fact,
     update_fact,
@@ -373,6 +374,63 @@ def memory_list_facts(tag: str | None = None, limit: int = 20) -> list:
     activity_log("mcp", "memory_list_facts", tag=tag or "(all)", results=len(results))
     conn.close()
     return results
+
+
+# ---------------------------------------------------------------------------
+# Tool: memory_hybrid_search
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def memory_hybrid_search(query: str, limit: int = 10) -> dict:
+    """
+    Hybrid search: combines full-text (FTS5) keyword search and semantic
+    (embedding-based) search using Reciprocal Rank Fusion (RRF).
+
+    USE THIS AS THE DEFAULT RETRIEVAL TOOL. It almost always outperforms
+    keyword-only (memory_search) or semantic-only (memory_semantic_search)
+    searches because sessions that rank highly in BOTH result lists are
+    promoted. Sessions that match only one approach still appear, but rank
+    lower. If sentence-transformers is not installed, it falls back gracefully
+    to FTS5-only results.
+
+    Args:
+        query — natural-language question or keyword phrase
+        limit — maximum number of sessions to return (default 10)
+
+    Returns a dict with:
+        query   — the query you passed in (echoed back for reference)
+        count   — number of results returned
+        results — list of dicts, each with session_id, agent, updated_at,
+                  snippet, and rrf_score (the fused relevance score)
+    """
+    # Open a connection to the memory database for this request.
+    conn = get_conn()
+
+    # Call the hybrid_search function from db.py, which runs FTS5 + semantic
+    # search and fuses the ranked lists with RRF.
+    results = db_hybrid_search(conn, query, limit=limit)
+
+    # Build the response dict that gets returned to Claude.
+    result = {
+        "query":   query,
+        "count":   len(results),
+        "results": results,
+    }
+
+    # Log this retrieval event to the retrievals table for dashboard reporting.
+    log_retrieval(conn, "memory_hybrid_search", query, len(str(result)))
+
+    # Log to the activity log so hooks and monitoring can track usage.
+    activity_log(
+        "mcp",
+        "memory_hybrid_search",
+        query=query,
+        results=len(results),
+        result_bytes=len(str(result)),
+    )
+
+    conn.close()
+    return result
 
 
 # ---------------------------------------------------------------------------

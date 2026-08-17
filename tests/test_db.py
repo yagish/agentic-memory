@@ -23,6 +23,7 @@ from memory.db import (
     delete_fact,
     search_facts,
     list_facts,
+    hybrid_search,
 )
 
 
@@ -412,6 +413,160 @@ class TestFacts(unittest.TestCase):
         results = list_facts(self.conn)
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["tags"], [])
+
+
+# ---------------------------------------------------------------------------
+# Test group: hybrid_search — Reciprocal Rank Fusion of FTS5 + semantic
+# ---------------------------------------------------------------------------
+
+class TestHybridSearch(unittest.TestCase):
+    """
+    Tests for hybrid_search() in memory/db.py.
+
+    Because sentence-transformers may not be installed in CI, these tests
+    treat the semantic leg as optional. The mock-based tests cover the case
+    where it IS available; the fallback test covers the case where it is NOT.
+    """
+
+    def setUp(self):
+        # A fresh in-memory database is created before each test.
+        # This keeps tests fully isolated — writes in one test do not affect another.
+        self.conn = init_db(":memory:")
+
+    # ---- helper -------------------------------------------------------
+
+    def _insert(self, session_id, text, agent="claude",
+                 started="2026-01-01T00:00:00Z", updated="2026-01-01T00:01:00Z"):
+        """
+        Insert a minimal session with the given text as its transcript content.
+        The transcript format is a list of turn dicts — we keep it simple here.
+        """
+        transcript = [{"role": "user", "content": text}]
+        upsert_session(self.conn, session_id, agent, transcript, started, updated)
+
+    # ---- tests --------------------------------------------------------
+
+    def test_hybrid_prefers_both_match(self):
+        # Insert two sessions. "quantum entanglement physics" is specific enough
+        # that it should appear in FTS5 results for "quantum". A session that
+        # matches only via keywords (not semantically) ranks lower overall.
+        #
+        # We mock semantic_search_chunks so the test does not require the
+        # sentence-transformers library and is deterministic.
+        import unittest.mock as mock
+
+        # Session A: matches on keyword "quantum".
+        # Session B: matches on keyword "quantum" too, but ranked lower in FTS5.
+        self._insert("s-both",  "quantum entanglement physics")
+        self._insert("s-kw",    "quantum mechanics theory")
+
+        # Semantic results: only "s-both" appears (rank 0).
+        # This simulates a session that matches on both keyword and meaning.
+        fake_sem = [
+            {
+                "session_id":  "s-both",
+                "chunk_index": 0,
+                "distance":    0.1,       # low distance = close semantic match
+                "text":        "quantum entanglement physics",
+                "snippet":     "quantum entanglement physics",
+            }
+        ]
+
+        # Patch semantic_search_chunks inside the memory.db module so our call
+        # to hybrid_search uses the fake results instead of the real embedder.
+        with mock.patch("memory.db.semantic_search_chunks", return_value=fake_sem):
+            results = hybrid_search(self.conn, "quantum", limit=10)
+
+        # "s-both" must appear before "s-kw" because it got contributions from
+        # BOTH the FTS5 rank and the semantic rank.
+        self.assertGreater(len(results), 0)
+        session_ids = [r["session_id"] for r in results]
+        self.assertIn("s-both", session_ids)
+
+        # s-both must have a strictly higher rrf_score than s-kw (if s-kw appears).
+        both_score = next(r["rrf_score"] for r in results if r["session_id"] == "s-both")
+        kw_scores  = [r["rrf_score"] for r in results if r["session_id"] == "s-kw"]
+        if kw_scores:
+            # "s-kw" only gets FTS5 contribution; "s-both" gets FTS5 + semantic.
+            self.assertGreater(both_score, kw_scores[0])
+
+    def test_hybrid_deduplicates_sessions(self):
+        # Insert a handful of sessions and check that no session_id appears twice.
+        for i in range(5):
+            self._insert(f"sess-{i}", f"python programming topic {i}")
+
+        # Run hybrid_search — dedup must happen even if the same session_id appears
+        # in both result lists.
+        import unittest.mock as mock
+
+        # Fake semantic results: deliberately repeat "sess-0" as two chunks.
+        # After dedup, only one entry for "sess-0" should survive.
+        fake_sem = [
+            {"session_id": "sess-0", "chunk_index": 0, "distance": 0.1,
+             "text": "python programming topic 0", "snippet": "topic 0"},
+            {"session_id": "sess-0", "chunk_index": 1, "distance": 0.2,
+             "text": "python programming topic 0b", "snippet": "topic 0b"},
+        ]
+        with mock.patch("memory.db.semantic_search_chunks", return_value=fake_sem):
+            results = hybrid_search(self.conn, "python programming", limit=10)
+
+        # Extract all session_id values and check for duplicates.
+        session_ids = [r["session_id"] for r in results]
+        # A set has no duplicates; if the list length equals the set length,
+        # there are no duplicates.
+        self.assertEqual(len(session_ids), len(set(session_ids)))
+
+    def test_hybrid_fallback_fts_only(self):
+        # When semantic_search_chunks raises ImportError (sentence-transformers
+        # not installed), hybrid_search must still return FTS5 results.
+        import unittest.mock as mock
+
+        self._insert("fts-only-session", "machine learning neural network")
+
+        # Simulate the ImportError that happens when sentence-transformers is absent.
+        with mock.patch(
+            "memory.db.semantic_search_chunks",
+            side_effect=ImportError("sentence-transformers not installed"),
+        ):
+            results = hybrid_search(self.conn, "machine learning", limit=10)
+
+        # The function must return results from FTS5 without raising.
+        self.assertIsInstance(results, list)
+        # "fts-only-session" must be in the results because it matched on keywords.
+        session_ids = [r["session_id"] for r in results]
+        self.assertIn("fts-only-session", session_ids)
+
+    def test_hybrid_returns_limit(self):
+        # Insert more sessions than the limit so we can verify truncation.
+        for i in range(10):
+            self._insert(f"limit-sess-{i}", f"database indexing query optimization topic {i}")
+
+        import unittest.mock as mock
+
+        # No semantic results — clean FTS5-only test.
+        with mock.patch("memory.db.semantic_search_chunks", return_value=[]):
+            results = hybrid_search(self.conn, "database indexing query", limit=3)
+
+        # Exactly 3 results must be returned, not more.
+        self.assertEqual(len(results), 3)
+
+    def test_hybrid_snippet_present(self):
+        # Every result dict must have a "snippet" key with a non-empty string.
+        self._insert("snippet-sess", "photosynthesis light chlorophyll plants")
+
+        import unittest.mock as mock
+
+        with mock.patch("memory.db.semantic_search_chunks", return_value=[]):
+            results = hybrid_search(self.conn, "photosynthesis", limit=5)
+
+        # At least one result must be present (the session we inserted matches).
+        self.assertGreater(len(results), 0)
+        for r in results:
+            # Every result must have a "snippet" key.
+            self.assertIn("snippet", r)
+            # The snippet must be a non-empty string — not None and not "".
+            self.assertIsInstance(r["snippet"], str)
+            self.assertGreater(len(r["snippet"]), 0)
 
 
 if __name__ == "__main__":

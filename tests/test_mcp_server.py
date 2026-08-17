@@ -231,5 +231,75 @@ class TestFactTools(unittest.TestCase):
             self.assertIn(key, results[0], f"missing key: {key}")
 
 
+class TestHybridSearchTool(unittest.TestCase):
+    """
+    Tests for the memory_hybrid_search MCP tool.
+
+    We mock db_hybrid_search inside the mcp_server module so the tests run
+    without sentence-transformers and without real FTS5/semantic work.
+    """
+
+    def setUp(self):
+        """
+        Create a temporary database file and redirect mcp_server to use it.
+        We need a real DB file (not :memory:) because get_conn() opens a new
+        connection using DB_PATH — the same pattern used by other test classes here.
+        """
+        import tempfile
+        self.tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp_db.close()
+
+        # Import (or re-use the already-imported) mcp_server module.
+        import memory.mcp_server as srv
+        self._original_db_path = srv.DB_PATH
+        # Redirect the module's DB_PATH to our temp file.
+        srv.DB_PATH = self.tmp_db.name
+        self.srv = srv
+
+    def tearDown(self):
+        # Restore the original DB_PATH and clean up the temp file.
+        self.srv.DB_PATH = self._original_db_path
+        os.unlink(self.tmp_db.name)
+
+    def test_hybrid_search_returns_results(self):
+        # Mock db_hybrid_search to return a deterministic list of one session.
+        # This verifies that the tool correctly wraps the result and counts items.
+        import unittest.mock as mock
+
+        # The fake result that db_hybrid_search will return.
+        fake_results = [
+            {
+                "session_id": "hybrid-session-1",
+                "agent":      "claude",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "snippet":    "some relevant snippet",
+                "rrf_score":  0.032,
+            }
+        ]
+
+        # Patch db_hybrid_search inside the mcp_server module namespace.
+        with mock.patch.object(self.srv, "db_hybrid_search", return_value=fake_results):
+            result = self.srv.memory_hybrid_search("some query", limit=5)
+
+        # The tool must return the expected count and results list.
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["results"], fake_results)
+        # The query must be echoed back.
+        self.assertEqual(result["query"], "some query")
+
+    def test_hybrid_search_empty(self):
+        # When db_hybrid_search returns an empty list (no matches), the tool
+        # must return count=0 and an empty results list — not raise an error.
+        import unittest.mock as mock
+
+        with mock.patch.object(self.srv, "db_hybrid_search", return_value=[]):
+            result = self.srv.memory_hybrid_search("no matches here", limit=10)
+
+        # count must be 0 when there are no results.
+        self.assertEqual(result["count"], 0)
+        # results must be an empty list, not None.
+        self.assertEqual(result["results"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

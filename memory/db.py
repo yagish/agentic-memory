@@ -923,3 +923,152 @@ def list_facts(
         d["tags"] = json.loads(d["tags"] or "[]")
         result.append(d)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Phase 11: Hybrid search — Reciprocal Rank Fusion of FTS5 + semantic results
+# ---------------------------------------------------------------------------
+
+def hybrid_search(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict]:
+    """
+    Combine full-text (FTS5) and semantic (chunk-level) search using
+    Reciprocal Rank Fusion (RRF) to produce a single ranked result list.
+
+    RRF scores each session based on its rank in each individual result list.
+    A session that ranks highly in BOTH lists gets a higher combined score than
+    one that only appears in one list, making the results more robust.
+
+    This is the recommended default retrieval tool — it almost always
+    outperforms keyword-only or semantic-only search on its own.
+
+    Args:
+        conn  — open connection from init_db()
+        query — natural-language search string
+        limit — maximum results to return (default 10)
+
+    Returns:
+        List of dicts with keys: session_id, agent, updated_at, snippet, rrf_score
+        Same shape as search() so callers do not need to branch on result type.
+    """
+    # ------------------------------------------------------------------ #
+    # Step 1: Gather FTS5 keyword results (fetch more than limit so RRF   #
+    # has a broad pool to fuse from).                                      #
+    # ------------------------------------------------------------------ #
+    fts_results = search(conn, query, limit=limit * 3)
+
+    # ------------------------------------------------------------------ #
+    # Step 2: Gather semantic chunk results.                               #
+    # If sentence-transformers is not installed, treat as empty list so   #
+    # hybrid_search degrades gracefully to FTS5-only.                    #
+    # ------------------------------------------------------------------ #
+    try:
+        # Fetch extra chunks so deduplication still leaves plenty of sessions.
+        chunk_results = semantic_search_chunks(conn, query, limit=limit * 3)
+    except ImportError:
+        # sentence-transformers not installed — skip semantic leg entirely.
+        chunk_results = []
+
+    # ------------------------------------------------------------------ #
+    # Step 3: Deduplicate semantic results by session_id.                 #
+    # Keep only the best-scoring chunk (lowest distance) per session.     #
+    # ------------------------------------------------------------------ #
+    # best_chunk maps session_id → the chunk dict with the lowest distance.
+    best_chunk: dict[str, dict] = {}
+    for chunk in chunk_results:
+        sid = chunk["session_id"]
+        # If we haven't seen this session yet, or this chunk is closer, keep it.
+        if sid not in best_chunk or chunk["distance"] < best_chunk[sid]["distance"]:
+            best_chunk[sid] = chunk
+
+    # Convert the dedup map to an ordered list (already sorted by distance
+    # because semantic_search_chunks returns them sorted).
+    sem_results = sorted(best_chunk.values(), key=lambda r: r["distance"])
+
+    # ------------------------------------------------------------------ #
+    # Step 4: Build rank lookup tables for RRF computation.               #
+    # fts_rank[session_id]  = 0-based position in fts_results             #
+    # sem_rank[session_id]  = 0-based position in sem_results             #
+    # ------------------------------------------------------------------ #
+    # enumerate() yields (index, item) pairs starting at 0.
+    fts_rank = {r["session_id"]: i for i, r in enumerate(fts_results)}
+    sem_rank  = {r["session_id"]: i for i, r in enumerate(sem_results)}
+
+    # ------------------------------------------------------------------ #
+    # Step 5: Compute RRF score for every session that appeared in        #
+    # at least one result list.                                           #
+    # RRF formula: score += 1 / (60 + rank + 1)                          #
+    # The constant 60 dampens the effect of low ranks (standard value).  #
+    # ------------------------------------------------------------------ #
+    # Collect the union of all session IDs seen in either result list.
+    all_session_ids = set(fts_rank.keys()) | set(sem_rank.keys())
+
+    # rrf_scores maps session_id → accumulated RRF score.
+    rrf_scores: dict[str, float] = {}
+    for sid in all_session_ids:
+        score = 0.0
+        # Add FTS5 contribution if this session appeared in keyword results.
+        if sid in fts_rank:
+            score += 1.0 / (60 + fts_rank[sid] + 1)
+        # Add semantic contribution if this session appeared in chunk results.
+        if sid in sem_rank:
+            score += 1.0 / (60 + sem_rank[sid] + 1)
+        rrf_scores[sid] = score
+
+    # ------------------------------------------------------------------ #
+    # Step 6: Sort sessions by RRF score (highest first), take top limit. #
+    # ------------------------------------------------------------------ #
+    # sorted() returns a new list; reverse=True puts the highest score first.
+    ranked_ids = sorted(rrf_scores.keys(), key=lambda sid: rrf_scores[sid], reverse=True)
+    top_ids = ranked_ids[:limit]
+
+    # ------------------------------------------------------------------ #
+    # Step 7: Build index structures for fast metadata + snippet lookup.  #
+    # ------------------------------------------------------------------ #
+    # FTS5 results already carry agent, updated_at, and snippet.
+    fts_by_id   = {r["session_id"]: r for r in fts_results}
+    # Semantic results carry the chunk snippet (first 200 chars of the chunk).
+    sem_by_id   = {r["session_id"]: r for r in sem_results}
+
+    # For sessions that only appeared semantically (not in FTS5), we need to
+    # fetch agent and updated_at from the sessions table directly.
+    sem_only_ids = [sid for sid in top_ids if sid not in fts_by_id]
+    sessions_meta: dict[str, dict] = {}
+    if sem_only_ids:
+        # Build a comma-separated placeholder string: "?,?,?" for len ids.
+        placeholders = ",".join("?" * len(sem_only_ids))
+        meta_rows = conn.execute(
+            f"SELECT session_id, agent, updated_at FROM sessions WHERE session_id IN ({placeholders})",
+            sem_only_ids,
+        ).fetchall()
+        # Store as dict for O(1) lookup below.
+        for row in meta_rows:
+            sessions_meta[row["session_id"]] = dict(row)
+
+    # ------------------------------------------------------------------ #
+    # Step 8: Assemble final result list.                                 #
+    # ------------------------------------------------------------------ #
+    output = []
+    for sid in top_ids:
+        # Prefer FTS5 snippet because it has highlighted keywords ([word]).
+        # Fall back to the semantic chunk snippet if this session was not in FTS5.
+        if sid in fts_by_id:
+            fts_row = fts_by_id[sid]
+            agent      = fts_row["agent"]
+            updated_at = fts_row["updated_at"]
+            snippet    = fts_row["snippet"]
+        else:
+            # Session came only from semantic search — look up metadata.
+            meta = sessions_meta.get(sid, {})
+            agent      = meta.get("agent", "")
+            updated_at = meta.get("updated_at", "")
+            snippet    = sem_by_id[sid]["snippet"]
+
+        output.append({
+            "session_id": sid,
+            "agent":      agent,
+            "updated_at": updated_at,
+            "snippet":    snippet,
+            "rrf_score":  rrf_scores[sid],   # useful for debugging / ranking transparency
+        })
+
+    return output
