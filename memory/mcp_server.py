@@ -25,6 +25,11 @@ from memory.db import (
     semantic_search as db_semantic_search,
     semantic_search_chunks as db_semantic_search_chunks,
     log_retrieval,
+    insert_fact,
+    update_fact,
+    delete_fact,
+    search_facts as db_search_facts,
+    list_facts as db_list_facts,
 )
 
 # FastMCP is the simplest way to build an MCP server in Python.
@@ -240,6 +245,124 @@ def memory_semantic_search(query: str, limit: int = 5) -> dict:
     log_retrieval(conn, "memory_semantic_search", query, len(str(result)))
     conn.close()
     return result
+
+
+# ---------------------------------------------------------------------------
+# Tools 5–8: fact CRUD tools (Phase 8)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def memory_save_fact(content: str, tags: list[str] | None = None) -> dict:
+    """
+    Save a structured fact to permanent memory.
+
+    Use this to proactively record something worth remembering across sessions —
+    a user preference, a key decision, a domain fact, or any insight that
+    shouldn't be lost when the conversation ends.
+
+    Args:
+        content — the fact text (e.g. "User prefers dark mode in all editors")
+        tags    — optional list of tag strings for filtering later (e.g. ["preferences", "ui"])
+
+    Returns a dict with:
+        id      — the UUID assigned to this fact (use it to update or delete later)
+        content — the text that was saved
+        tags    — the tag list (empty list if none were provided)
+    """
+    conn = get_conn()
+
+    # insert_fact writes to the database and returns the new fact's UUID.
+    # source="agent" marks that this came through an MCP tool call, not manual entry.
+    fact_id = insert_fact(conn, content, tags=tags, source="agent")
+
+    # Log the first 100 characters of the content as the "query" for the retrievals table.
+    # This gives the dashboard a meaningful preview of what was saved.
+    log_retrieval(conn, "memory_save_fact", content[:100], len(fact_id))
+    conn.close()
+    return {"id": fact_id, "content": content, "tags": tags or []}
+
+
+@mcp.tool()
+def memory_update_fact(
+    fact_id: str,
+    content: str | None = None,
+    tags: list[str] | None = None,
+) -> dict:
+    """
+    Update the content or tags of a previously saved fact.
+
+    Pass only the fields you want to change — omitted fields are left unchanged.
+    updated_at is always refreshed automatically.
+
+    Args:
+        fact_id — the UUID returned by memory_save_fact
+        content — new text for the fact, or omit to leave the text unchanged
+        tags    — new tag list, or omit to leave tags unchanged
+
+    Returns a dict with:
+        updated — True if the fact was found and changed, False if fact_id not found
+        fact_id — the UUID you passed in (echoed back for confirmation)
+    """
+    conn = get_conn()
+
+    # update_fact returns True if the row was found and modified, False otherwise.
+    updated = update_fact(conn, fact_id, content=content, tags=tags)
+
+    log_retrieval(conn, "memory_update_fact", fact_id, len(str(updated)))
+    conn.close()
+    return {"updated": updated, "fact_id": fact_id}
+
+
+@mcp.tool()
+def memory_delete_fact(fact_id: str) -> dict:
+    """
+    Delete a fact from permanent memory.
+
+    The FTS5 search index is updated automatically — deleted facts will no
+    longer appear in memory_search results.
+
+    Args:
+        fact_id — the UUID returned by memory_save_fact
+
+    Returns a dict with:
+        deleted — True if the fact was found and removed, False if fact_id not found
+        fact_id — the UUID you passed in (echoed back for confirmation)
+    """
+    conn = get_conn()
+
+    # delete_fact removes the row and returns True if something was actually deleted.
+    deleted = delete_fact(conn, fact_id)
+
+    log_retrieval(conn, "memory_delete_fact", fact_id, len(str(deleted)))
+    conn.close()
+    return {"deleted": deleted, "fact_id": fact_id}
+
+
+@mcp.tool()
+def memory_list_facts(tag: str | None = None, limit: int = 20) -> list:
+    """
+    List stored facts, optionally filtered to a specific tag.
+
+    Use this to browse what Claude has saved, or to find facts in a category
+    before deciding whether to update or delete them.
+
+    Args:
+        tag   — if given, only return facts that carry this tag string
+        limit — maximum number of facts to return (default 20)
+
+    Returns a list of dicts, each with:
+        id, content, tags, source, session_id, created_at, updated_at
+    """
+    conn = get_conn()
+
+    # db_list_facts returns a list of dicts with tags already parsed back to lists.
+    results = db_list_facts(conn, tag=tag, limit=limit)
+
+    # Log "(all)" as the query when no tag filter was applied — gives the dashboard
+    # a readable label instead of a blank entry.
+    log_retrieval(conn, "memory_list_facts", tag or "(all)", len(str(results)))
+    conn.close()
+    return results
 
 
 # ---------------------------------------------------------------------------

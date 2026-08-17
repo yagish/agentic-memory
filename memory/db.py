@@ -104,6 +104,47 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 """
 
+# _FACTS_SCHEMA stores structured facts that Claude saves proactively mid-conversation.
+# Unlike sessions (which are full transcripts saved passively), facts are small,
+# targeted pieces of information the agent deliberately records — e.g. a user preference,
+# a key decision, or a domain fact worth remembering across sessions.
+# The FTS5 virtual table + triggers keep the full-text search index in sync automatically.
+_FACTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS facts (
+  id         TEXT PRIMARY KEY,   -- UUID, generated at insert time
+  content    TEXT NOT NULL,      -- the fact text (e.g. "User prefers dark mode")
+  tags       TEXT,               -- JSON array of tag strings, e.g. '["python","preferences"]'
+  source     TEXT,               -- who created the fact: "agent" (MCP tool) or "manual"
+  session_id TEXT,               -- optional: which session this fact came from
+  created_at TEXT,               -- ISO UTC timestamp when the fact was first saved
+  updated_at TEXT                -- ISO UTC timestamp of the most recent edit
+);
+
+-- FTS5 virtual table for full-text search over fact content and tags.
+-- "content='facts'" means SQLite reads the text from the facts table via triggers;
+-- the index itself is kept in sync by the three triggers below.
+-- "id UNINDEXED" means the id is carried along for JOINs but not searched.
+CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts
+  USING fts5(id UNINDEXED, content, tags, content='facts');
+
+-- Trigger: when a new fact row is inserted, add it to the FTS index.
+CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
+  INSERT INTO facts_fts(id, content, tags) VALUES (new.id, new.content, new.tags);
+END;
+
+-- Trigger: when a fact row is updated, refresh the FTS index.
+-- We delete the old entry first, then insert the new one.
+CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
+  INSERT INTO facts_fts(facts_fts, id, content, tags) VALUES ('delete', old.id, old.content, old.tags);
+  INSERT INTO facts_fts(id, content, tags) VALUES (new.id, new.content, new.tags);
+END;
+
+-- Trigger: when a fact row is deleted, remove it from the FTS index.
+CREATE TRIGGER IF NOT EXISTS facts_ad AFTER DELETE ON facts BEGIN
+  INSERT INTO facts_fts(facts_fts, id, content, tags) VALUES ('delete', old.id, old.content, old.tags);
+END;
+"""
+
 
 def log_retrieval(conn: sqlite3.Connection, tool: str, query: str, result_size: int) -> None:
     """
@@ -197,6 +238,11 @@ def init_db(path: str) -> sqlite3.Connection:
     # Create the chunks table for sub-session semantic search (Phase 7).
     # This follows the same pattern as _VEC_SCHEMA above.
     conn.executescript(_CHUNK_SCHEMA)
+    conn.commit()
+
+    # Create the facts table for proactive structured fact storage (Phase 8).
+    # This follows the same pattern as _CHUNK_SCHEMA above.
+    conn.executescript(_FACTS_SCHEMA)
     conn.commit()
 
     return conn
@@ -641,3 +687,239 @@ def semantic_search_chunks(conn: sqlite3.Connection, query: str, limit: int = 10
     # Sort by distance ascending (closest match first), then slice to limit.
     scored.sort(key=lambda r: r["distance"])
     return scored[:limit]
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 additions: structured fact storage (CRUD + FTS5 search)
+# ---------------------------------------------------------------------------
+
+def insert_fact(
+    conn: sqlite3.Connection,
+    content: str,
+    tags: list[str] | None = None,
+    source: str = "manual",
+    session_id: str | None = None,
+) -> str:
+    """
+    Save a new structured fact to the database and return its generated ID.
+
+    Facts are small, deliberately saved pieces of information — a user preference,
+    a key decision, or a domain fact worth recalling across sessions.
+
+    Args:
+        conn       — open connection from init_db()
+        content    — the fact text (e.g. "User prefers dark mode")
+        tags       — optional list of tag strings for categorisation
+        source     — "manual" (default) or "agent" (saved via MCP tool)
+        session_id — optional: the session this fact was observed in
+
+    Returns:
+        The UUID string assigned to the new fact row.
+    """
+    import uuid                  # uuid generates a unique, collision-safe ID
+    from datetime import datetime, timezone
+
+    # Generate a new UUID to serve as the primary key for this fact.
+    fact_id = str(uuid.uuid4())
+
+    # Tags are stored as a JSON array string so SQLite can hold them in one column.
+    # json.dumps([]) produces '[]' for an empty list — never NULL.
+    tags_json = json.dumps(tags or [])
+
+    # Both created_at and updated_at start at the same timestamp — the moment of creation.
+    now = datetime.now(timezone.utc).isoformat()
+
+    conn.execute(
+        """
+        INSERT INTO facts (id, content, tags, source, session_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (fact_id, content, tags_json, source, session_id, now, now),
+    )
+    conn.commit()  # flush the write to disk
+
+    return fact_id
+
+
+def update_fact(
+    conn: sqlite3.Connection,
+    fact_id: str,
+    content: str | None = None,
+    tags: list[str] | None = None,
+) -> bool:
+    """
+    Update one or more fields of an existing fact.
+
+    Only the fields passed as non-None are changed. updated_at is always
+    refreshed to the current UTC time so callers can see when an edit occurred.
+
+    Args:
+        conn     — open connection from init_db()
+        fact_id  — the UUID of the fact to update
+        content  — new text for the fact, or None to leave it unchanged
+        tags     — new tag list, or None to leave tags unchanged
+
+    Returns:
+        True if the fact was found and updated, False if fact_id does not exist.
+    """
+    from datetime import datetime, timezone
+
+    # Always stamp the current time on update regardless of what else changed.
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Build the SET clause dynamically — only include fields that were supplied.
+    # Starting with updated_at means we always have at least one field to set.
+    set_clauses = ["updated_at = ?"]
+    values: list = [now]
+
+    if content is not None:
+        # Caller wants to change the fact text.
+        set_clauses.append("content = ?")
+        values.append(content)
+
+    if tags is not None:
+        # Caller wants to change the tags — re-encode to JSON for storage.
+        set_clauses.append("tags = ?")
+        values.append(json.dumps(tags))
+
+    # Append fact_id last — it goes into the WHERE clause.
+    values.append(fact_id)
+
+    cursor = conn.execute(
+        f"UPDATE facts SET {', '.join(set_clauses)} WHERE id = ?",
+        values,
+    )
+    conn.commit()
+
+    # rowcount is the number of rows the UPDATE touched.
+    # 0 means no row with this id existed; anything > 0 means success.
+    return cursor.rowcount > 0
+
+
+def delete_fact(conn: sqlite3.Connection, fact_id: str) -> bool:
+    """
+    Delete one fact from the database.
+
+    The FTS5 trigger (facts_ad) automatically removes the corresponding
+    entry from the search index when the row is deleted.
+
+    Args:
+        conn    — open connection from init_db()
+        fact_id — the UUID of the fact to remove
+
+    Returns:
+        True if the fact was found and deleted, False if fact_id does not exist.
+    """
+    cursor = conn.execute("DELETE FROM facts WHERE id = ?", (fact_id,))
+    conn.commit()
+
+    # rowcount = 0 → no row with this id existed; > 0 → deleted successfully.
+    return cursor.rowcount > 0
+
+
+def search_facts(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict]:
+    """
+    Full-text search across all stored facts.
+
+    Searches the content and tags columns using FTS5 (same engine as session search).
+    Results are ranked by relevance and include a highlighted snippet showing
+    where the match was found.
+
+    Args:
+        conn  — open connection from init_db()
+        query — the words or phrase to search for
+        limit — maximum results to return (default 10)
+
+    Returns:
+        List of dicts with keys: id, content, tags (as list), source, session_id,
+        created_at, updated_at, snippet.
+    """
+    rows = conn.execute(
+        """
+        SELECT
+          f.id,
+          f.content,
+          f.tags,
+          f.source,
+          f.session_id,
+          f.created_at,
+          f.updated_at,
+          -- snippet() extracts the matching portion of text with highlights.
+          -- Column index 1 is 'content' in the facts_fts virtual table definition.
+          -- '[' and ']' wrap matched words; 16 is the surrounding-word context count.
+          snippet(facts_fts, 1, '[', ']', '...', 16) AS snippet
+        FROM facts_fts
+        -- JOIN pulls the real fact row so we get all columns including source.
+        JOIN facts f ON f.id = facts_fts.id
+        WHERE facts_fts MATCH ?   -- MATCH is FTS5's search operator
+        ORDER BY rank             -- rank is FTS5's built-in relevance score
+        LIMIT ?
+        """,
+        (query, limit),
+    ).fetchall()
+
+    result = []
+    for row in rows:
+        d = dict(row)
+        # Convert the stored JSON string back to a Python list for callers.
+        # "[]" is the default for facts with no tags, so this is always safe.
+        d["tags"] = json.loads(d["tags"] or "[]")
+        result.append(d)
+    return result
+
+
+def list_facts(
+    conn: sqlite3.Connection,
+    tag: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """
+    List stored facts, optionally filtered to a specific tag.
+
+    Unlike search_facts() (which does keyword matching), this is a
+    structured filter — it returns all facts that carry the exact tag string,
+    ordered by most recently updated first.
+
+    Args:
+        conn  — open connection from init_db()
+        tag   — if given, only return facts whose tags list contains this string
+        limit — maximum results to return (default 50)
+
+    Returns:
+        List of dicts with keys: id, content, tags (as list), source, session_id,
+        created_at, updated_at. (No snippet — this is a listing, not a search.)
+    """
+    if tag is not None:
+        # json_each() expands the JSON array in the tags column into individual rows.
+        # We filter to only the rows where one of those values equals our tag.
+        # This is more reliable than a LIKE query, which could partially match
+        # a tag that contains another tag as a substring.
+        rows = conn.execute(
+            """
+            SELECT f.id, f.content, f.tags, f.source, f.session_id, f.created_at, f.updated_at
+            FROM facts f, json_each(f.tags) je
+            WHERE je.value = ?
+            ORDER BY f.updated_at DESC
+            LIMIT ?
+            """,
+            (tag, limit),
+        ).fetchall()
+    else:
+        # No tag filter — return all facts, newest first.
+        rows = conn.execute(
+            """
+            SELECT id, content, tags, source, session_id, created_at, updated_at
+            FROM facts
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    result = []
+    for row in rows:
+        d = dict(row)
+        # Parse the JSON tag array back into a Python list for callers.
+        d["tags"] = json.loads(d["tags"] or "[]")
+        result.append(d)
+    return result

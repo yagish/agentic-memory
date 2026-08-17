@@ -18,6 +18,11 @@ from memory.db import (
     get_chunks_for_session,
     delete_chunks_for_session,
     chunk_transcript,
+    insert_fact,
+    update_fact,
+    delete_fact,
+    search_facts,
+    list_facts,
 )
 
 
@@ -261,6 +266,152 @@ class TestChunkTranscript(unittest.TestCase):
         # The non-string content must not appear.
         self.assertNotIn("tool_use", chunks[0])
         self.assertNotIn("nested", chunks[0])
+
+
+# ---------------------------------------------------------------------------
+# Test group 5: facts CRUD functions (Ticket 8-01)
+# ---------------------------------------------------------------------------
+
+class TestFacts(unittest.TestCase):
+
+    def setUp(self):
+        # Each test gets its own fresh in-memory database — no state leaks between tests.
+        self.conn = init_db(":memory:")
+
+    def test_insert_fact_returns_string_id(self):
+        # insert_fact should return a non-empty string (a UUID like "a3f2-...").
+        fact_id = insert_fact(self.conn, "Python uses indentation for code blocks.")
+        self.assertIsInstance(fact_id, str)
+        self.assertGreater(len(fact_id), 0)
+
+    def test_insert_fact_row_is_retrievable(self):
+        # After inserting, the row should exist in the database with the correct content.
+        fact_id = insert_fact(self.conn, "Rust has no garbage collector.", tags=["rust"])
+        row = self.conn.execute(
+            "SELECT content, source FROM facts WHERE id = ?", (fact_id,)
+        ).fetchone()
+        # The row must exist — None means the insert failed.
+        self.assertIsNotNone(row)
+        # Content must be stored verbatim.
+        self.assertEqual(row["content"], "Rust has no garbage collector.")
+        # Default source is "manual".
+        self.assertEqual(row["source"], "manual")
+
+    def test_update_fact_changes_content_and_returns_true(self):
+        # update_fact should overwrite the content field and return True.
+        fact_id = insert_fact(self.conn, "original content")
+        result = update_fact(self.conn, fact_id, content="updated content")
+
+        # The return value signals success: True means the row was found and changed.
+        self.assertTrue(result)
+
+        # Read the row back directly to confirm the content was actually changed.
+        row = self.conn.execute(
+            "SELECT content FROM facts WHERE id = ?", (fact_id,)
+        ).fetchone()
+        self.assertEqual(row["content"], "updated content")
+
+    def test_update_fact_bumps_updated_at(self):
+        # updated_at must be refreshed to a time >= created_at after an update.
+        fact_id = insert_fact(self.conn, "a fact")
+        row_before = self.conn.execute(
+            "SELECT created_at FROM facts WHERE id = ?", (fact_id,)
+        ).fetchone()
+
+        update_fact(self.conn, fact_id, content="changed")
+
+        row_after = self.conn.execute(
+            "SELECT updated_at FROM facts WHERE id = ?", (fact_id,)
+        ).fetchone()
+
+        # ISO timestamp strings sort lexicographically by time, so >= works correctly.
+        self.assertGreaterEqual(row_after["updated_at"], row_before["created_at"])
+
+    def test_update_fact_returns_false_for_unknown_id(self):
+        # update_fact on a non-existent id must return False — not raise an exception.
+        result = update_fact(self.conn, "does-not-exist", content="anything")
+        self.assertFalse(result)
+
+    def test_delete_fact_removes_row_and_returns_true(self):
+        # delete_fact should remove the row from the database and return True.
+        fact_id = insert_fact(self.conn, "a fact to delete")
+        result = delete_fact(self.conn, fact_id)
+
+        # True means the row was found and deleted.
+        self.assertTrue(result)
+
+        # The row must no longer exist in the database.
+        row = self.conn.execute(
+            "SELECT id FROM facts WHERE id = ?", (fact_id,)
+        ).fetchone()
+        self.assertIsNone(row)
+
+    def test_delete_fact_returns_false_for_unknown_id(self):
+        # Deleting a non-existent fact must return False — not raise an exception.
+        result = delete_fact(self.conn, "does-not-exist")
+        self.assertFalse(result)
+
+    def test_search_facts_finds_keyword_in_content(self):
+        # search_facts should locate a fact by a keyword that appears in its content.
+        insert_fact(self.conn, "Python uses indentation for blocks.", tags=["python"])
+        insert_fact(self.conn, "Rust is a systems programming language.")
+
+        # "indentation" only appears in the first fact.
+        results = search_facts(self.conn, "indentation")
+
+        self.assertEqual(len(results), 1)
+        self.assertIn("indentation", results[0]["content"])
+
+    def test_search_facts_result_has_required_keys(self):
+        # Every search result dict must carry all the keys callers depend on.
+        insert_fact(self.conn, "Go is statically typed.", tags=["go"])
+        results = search_facts(self.conn, "statically")
+
+        self.assertEqual(len(results), 1)
+        for key in ("id", "content", "tags", "source", "session_id",
+                    "created_at", "updated_at", "snippet"):
+            self.assertIn(key, results[0], f"missing key: {key}")
+
+    def test_list_facts_no_tag_returns_all(self):
+        # list_facts with no tag filter must return every stored fact.
+        insert_fact(self.conn, "fact one", tags=["a"])
+        insert_fact(self.conn, "fact two", tags=["b"])
+        insert_fact(self.conn, "fact three")
+
+        results = list_facts(self.conn)
+        self.assertEqual(len(results), 3)
+
+    def test_list_facts_with_tag_returns_only_matching(self):
+        # list_facts filtered by tag must exclude facts that do not carry that tag.
+        insert_fact(self.conn, "tagged with a and common", tags=["a", "common"])
+        insert_fact(self.conn, "tagged with b and common", tags=["b", "common"])
+        insert_fact(self.conn, "tagged with only a", tags=["a"])
+
+        # Filter by "a" — should match 2 facts ("a and common", "only a").
+        results = list_facts(self.conn, tag="a")
+        self.assertEqual(len(results), 2)
+
+        # Every returned fact must carry the "a" tag.
+        for r in results:
+            self.assertIn("a", r["tags"])
+
+    def test_tags_round_trip_list_in_list_out(self):
+        # Tags passed as a Python list must come back as a Python list — not a JSON string.
+        tags_in = ["python", "databases", "sql"]
+        fact_id = insert_fact(self.conn, "tags round-trip test", tags=tags_in)
+
+        # list_facts uses the same JSON-parsing code as search_facts.
+        results = list_facts(self.conn)
+        self.assertEqual(len(results), 1)
+        # Sort both sides so the comparison is order-independent.
+        self.assertEqual(sorted(results[0]["tags"]), sorted(tags_in))
+
+    def test_no_tags_defaults_to_empty_list(self):
+        # When no tags are provided, the returned dict must have an empty list — not None.
+        insert_fact(self.conn, "fact with no tags")
+        results = list_facts(self.conn)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["tags"], [])
 
 
 if __name__ == "__main__":
