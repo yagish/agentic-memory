@@ -22,7 +22,15 @@ from datetime import datetime, timezone
 # __file__ is this script's path; we go up one level to reach the project root.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from memory.db import init_db, upsert_session, embed, store_embedding
+from memory.db import (
+    init_db,
+    upsert_session,
+    embed,
+    store_embedding,
+    chunk_transcript,
+    store_chunk,
+    delete_chunks_for_session,
+)
 
 
 # Where the memory database lives on disk.
@@ -196,6 +204,31 @@ def save_session(payload: dict, dry_run: bool = False) -> None:
     except Exception:
         # Log the problem but never let it block the hook.
         logging.warning("embedding skipped: %s", traceback.format_exc())
+
+    # --- Phase 7: store sub-session chunks for finer-grained semantic search ---
+    # Chunking splits the transcript into overlapping windows and embeds each
+    # window separately. This lets semantic search find the right session even
+    # when the relevant content is a small part of a long conversation.
+    # We wrap the whole block in try/except — chunking failure must never
+    # prevent a successful session save.
+    try:
+        # Split the transcript into overlapping text windows.
+        chunk_texts = chunk_transcript(turns)
+
+        # Remove any old chunks for this session so we don't accumulate stale
+        # rows if the transcript grew since the last save.
+        delete_chunks_for_session(conn, session_id)
+
+        # Embed and store each chunk. We index from 0 so chunk_index is stable
+        # even if the transcript grows — the first window is always chunk 0.
+        for chunk_index, chunk_text in enumerate(chunk_texts):
+            chunk_vector = embed(chunk_text) if chunk_text.strip() else None
+            store_chunk(conn, session_id, chunk_index, chunk_text, chunk_vector)
+
+        logging.info("saved %d chunks for session %s", len(chunk_texts), session_id)
+    except Exception:
+        # Log the failure but allow the hook to complete normally.
+        logging.warning("chunking skipped: %s", traceback.format_exc())
 
     conn.close()
 

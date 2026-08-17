@@ -19,7 +19,13 @@ import sys
 # Add the project root to Python's module search path so we can import memory.db.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from memory.db import init_db, search as db_search, semantic_search as db_semantic_search, log_retrieval
+from memory.db import (
+    init_db,
+    search as db_search,
+    semantic_search as db_semantic_search,
+    semantic_search_chunks as db_semantic_search_chunks,
+    log_retrieval,
+)
 
 # FastMCP is the simplest way to build an MCP server in Python.
 # You decorate plain functions with @mcp.tool() and FastMCP handles
@@ -195,8 +201,37 @@ def memory_semantic_search(query: str, limit: int = 5) -> dict:
                    (distance is cosine distance: lower = more similar)
     """
     conn = get_conn()
-    # db_semantic_search returns [] gracefully if sqlite-vec isn't available.
-    results = db_semantic_search(conn, query, limit=limit)
+
+    # Use chunk-level search so we find the closest window within each session,
+    # not a blended whole-session vector. Falls back to [] if the model is missing.
+    try:
+        # Fetch more chunk results than limit so we can collapse duplicates
+        # (multiple chunks from the same session) down to one per session.
+        chunk_results = db_semantic_search_chunks(conn, query, limit=limit * 10)
+    except (ImportError, Exception):
+        # If sentence-transformers isn't installed or anything else fails,
+        # return an empty results list — same graceful behaviour as before.
+        chunk_results = []
+
+    # Group by session_id, keeping only the closest chunk for each session.
+    # Because chunk_results is already sorted by distance ascending, the first
+    # chunk we encounter for each session_id is the best match for that session.
+    seen_sessions: dict[str, dict] = {}
+    for chunk in chunk_results:
+        sid = chunk["session_id"]
+        if sid not in seen_sessions:
+            # Preserve the same keys callers expect (session_id, distance, snippet)
+            # plus chunk_index so callers know which part of the session matched.
+            seen_sessions[sid] = {
+                "session_id":  sid,
+                "chunk_index": chunk["chunk_index"],
+                "distance":    chunk["distance"],
+                "snippet":     chunk["snippet"],
+            }
+
+    # Collect the best-per-session results, sorted by distance, up to limit.
+    results = sorted(seen_sessions.values(), key=lambda r: r["distance"])[:limit]
+
     result = {
         "query":   query,
         "count":   len(results),

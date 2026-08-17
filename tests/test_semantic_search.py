@@ -14,8 +14,19 @@
 import struct
 import unittest
 
-# Import the Phase 5 functions we want to test.
-from memory.db import init_db, upsert_session, embed, store_embedding, semantic_search
+# Import the Phase 5 and Phase 7 functions we want to test.
+from memory.db import (
+    init_db,
+    upsert_session,
+    embed,
+    store_embedding,
+    semantic_search,
+    chunk_transcript,
+    store_chunk,
+    get_chunks_for_session,
+    delete_chunks_for_session,
+    semantic_search_chunks,
+)
 
 
 class TestEmbed(unittest.TestCase):
@@ -161,6 +172,99 @@ class TestSemanticSearch(unittest.TestCase):
         # With limit=1, only one result should come back even if both match.
         results = semantic_search(self.conn, "something", limit=1)
         self.assertLessEqual(len(results), 1)
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 tests: chunk-level semantic search (Ticket 7-03)
+# ---------------------------------------------------------------------------
+
+class TestSemanticSearchChunks(unittest.TestCase):
+    """Tests for semantic_search_chunks() — finding sessions via chunk embeddings."""
+
+    def setUp(self):
+        # Create a fresh database and seed it with one session that has two
+        # very different topics: the first chunk is about astronomy and the
+        # second chunk is about baking. The test verifies that a query about
+        # baking finds the session even though astronomy dominates turn count.
+        self.conn = init_db(":memory:")
+
+        # A session whose first turns discuss astronomy and later turns discuss baking.
+        # We build it so each topic fills a natural chunk boundary.
+        self.session_id = "mixed-session"
+        self.transcript = [
+            {"role": "user",      "content": "Tell me about black holes and event horizons."},
+            {"role": "assistant", "content": "Black holes are regions where gravity is so strong that light cannot escape."},
+            {"role": "user",      "content": "What is the Schwarzschild radius?"},
+            {"role": "assistant", "content": "The Schwarzschild radius defines the event horizon size based on mass."},
+            {"role": "user",      "content": "Fascinating. Now, how do I bake sourdough bread?"},
+            {"role": "assistant", "content": "Sourdough bread requires a starter culture of wild yeast and lactic acid bacteria."},
+            {"role": "user",      "content": "What hydration ratio should I use for the dough?"},
+            {"role": "assistant", "content": "A 75% hydration dough works well for beginners — use 750 grams water per 1000 grams flour."},
+        ]
+
+        # Save the session to the sessions table.
+        upsert_session(
+            self.conn, self.session_id, "claude", self.transcript,
+            "2026-01-01T00:00:00Z", "2026-01-01T00:01:00Z",
+        )
+
+        # Chunk the transcript with window=4, overlap=1 → 2 chunks:
+        #   chunk 0: turns 0-3 (astronomy)
+        #   chunk 1: turns 3-7 (baking)
+        chunk_texts = chunk_transcript(self.transcript, window=4, overlap=1)
+
+        # Remove stale chunks (none yet, but mirrors what save_hook does).
+        delete_chunks_for_session(self.conn, self.session_id)
+
+        # Embed and store each chunk.
+        for idx, text in enumerate(chunk_texts):
+            vec = embed(text) if text.strip() else None
+            store_chunk(self.conn, self.session_id, idx, text, vec)
+
+        # Track how many chunks were stored for the count assertion test.
+        self.stored_chunk_count = len(chunk_texts)
+
+    def test_query_in_second_chunk_returns_correct_session(self):
+        # A query about sourdough bread should match the second chunk (baking)
+        # and return the session_id — even though the first chunk (astronomy) is
+        # larger and would dominate a whole-session embedding.
+        results = semantic_search_chunks(self.conn, "sourdough bread baking yeast", limit=5)
+
+        # There must be at least one result.
+        self.assertGreater(len(results), 0)
+
+        # The top result must be from our mixed session — the baking chunk matched.
+        session_ids = [r["session_id"] for r in results]
+        self.assertIn(self.session_id, session_ids)
+
+    def test_chunk_count_in_db_matches_expected(self):
+        # After the setUp save, the chunks table must contain exactly as many
+        # rows as chunk_transcript() produced. This confirms store_chunk() and
+        # delete_chunks_for_session() round-trip correctly.
+        chunks = get_chunks_for_session(self.conn, self.session_id)
+        self.assertEqual(len(chunks), self.stored_chunk_count)
+
+    def test_result_has_required_keys(self):
+        # Every result dict must contain the mandatory fields.
+        results = semantic_search_chunks(self.conn, "bread flour water", limit=5)
+        if results:
+            keys = results[0].keys()
+            self.assertIn("session_id",  keys)
+            self.assertIn("chunk_index", keys)
+            self.assertIn("distance",    keys)
+            self.assertIn("snippet",     keys)
+
+    def test_results_ordered_by_distance_ascending(self):
+        # Results must be sorted by cosine distance, closest first.
+        results = semantic_search_chunks(self.conn, "event horizon gravity", limit=10)
+        distances = [r["distance"] for r in results]
+        self.assertEqual(distances, sorted(distances))
+
+    def test_empty_db_returns_empty_list(self):
+        # A fresh database with no chunk embeddings must return [].
+        fresh_conn = init_db(":memory:")
+        results = semantic_search_chunks(fresh_conn, "anything", limit=5)
+        self.assertEqual(results, [])
 
 
 if __name__ == "__main__":

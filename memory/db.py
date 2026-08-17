@@ -88,6 +88,22 @@ CREATE TABLE IF NOT EXISTS retrievals (
 );
 """
 
+# _CHUNK_SCHEMA stores sub-session chunks for finer-grained semantic search.
+# Instead of one vector per whole session, we split the transcript into
+# overlapping windows and store one vector per window (chunk).
+# This lets semantic search find the right session even when the matching
+# content is buried deep in a long conversation.
+_CHUNK_SCHEMA = """
+CREATE TABLE IF NOT EXISTS chunks (
+  id          TEXT PRIMARY KEY,   -- "{session_id}:{chunk_index}" — unique per chunk
+  session_id  TEXT NOT NULL REFERENCES sessions(session_id),
+  chunk_index INTEGER NOT NULL,   -- 0-based position of this chunk in the session
+  text        TEXT NOT NULL,      -- concatenated turn text for this window
+  embedding   BLOB,               -- packed float32 embedding, or NULL if not yet embedded
+  created_at  TEXT                -- ISO UTC timestamp when this chunk was stored
+);
+"""
+
 
 def log_retrieval(conn: sqlite3.Connection, tool: str, query: str, result_size: int) -> None:
     """
@@ -176,6 +192,11 @@ def init_db(path: str) -> sqlite3.Connection:
 
     # Create the retrievals table for tracking MCP tool usage.
     conn.executescript(_RETRIEVAL_SCHEMA)
+    conn.commit()
+
+    # Create the chunks table for sub-session semantic search (Phase 7).
+    # This follows the same pattern as _VEC_SCHEMA above.
+    conn.executescript(_CHUNK_SCHEMA)
     conn.commit()
 
     return conn
@@ -405,5 +426,218 @@ def semantic_search(conn: sqlite3.Connection, query: str, limit: int = 10) -> li
         })
 
     # Sort by distance (closest first) and return up to `limit` results.
+    scored.sort(key=lambda r: r["distance"])
+    return scored[:limit]
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 additions: sub-session chunking + chunk-level semantic search
+# ---------------------------------------------------------------------------
+
+def chunk_transcript(turns: list[dict], window: int = 6, overlap: int = 1) -> list[str]:
+    """
+    Split a transcript into overlapping text windows (chunks).
+
+    Instead of embedding the whole session as one blob, we slide a window
+    of `window` turns across the transcript, advancing by (window - overlap)
+    turns each step. Each window becomes one chunk string. This gives
+    semantic search a finer-grained target — a query about topic X can match
+    the specific chunk where X was discussed, not just the overall session.
+
+    Args:
+        turns   — list of {"role": "user"/"assistant", "content": "..."}
+        window  — how many turns to include in each chunk (default 6)
+        overlap — how many turns to repeat between consecutive chunks (default 1)
+
+    Returns:
+        List of strings, one per chunk. Always returns at least [""] so that
+        callers never have to handle an empty list.
+    """
+    # Filter out turns whose content is not a plain string.
+    # Tool call turns can have list/dict content — we skip those silently
+    # because they add noise and aren't human-readable text.
+    text_turns = [t for t in turns if isinstance(t.get("content"), str)]
+
+    # If there are no usable turns, return a single empty string.
+    # Callers should still store this chunk so the session is represented.
+    if not text_turns:
+        return [""]
+
+    # step = how far we advance the window start between chunks.
+    # overlap=1 means the last 1 turn of chunk N is the first turn of chunk N+1.
+    step = window - overlap
+
+    # Build each chunk by concatenating turn text with role prefixes.
+    chunks = []
+    start = 0
+    while start < len(text_turns):
+        # Slice the window — may be smaller than `window` at the end of the transcript.
+        window_turns = text_turns[start : start + window]
+
+        # Build the chunk string: "user: ...\nassistant: ...\n" for each turn.
+        lines = [f"{t['role']}: {t['content']}" for t in window_turns]
+        chunk_text = "\n".join(lines)
+        chunks.append(chunk_text)
+
+        # If the current window already reaches the end of the transcript,
+        # there are no new turns for the next chunk — stop.
+        # Without this guard a 6-turn transcript with window=6 would produce
+        # a second chunk containing only the overlap turn, which adds no value.
+        if start + window >= len(text_turns):
+            break
+
+        # Advance by step. If step <= 0 the caller passed bad args; clamp to 1
+        # to avoid an infinite loop.
+        start += max(step, 1)
+
+    return chunks
+
+
+def store_chunk(
+    conn: sqlite3.Connection,
+    session_id: str,
+    chunk_index: int,
+    text: str,
+    embedding: list[float] | None,
+) -> None:
+    """
+    Insert or replace one chunk row in the chunks table.
+
+    The chunk's primary key is "{session_id}:{chunk_index}" so that
+    re-running the hook for the same session replaces old chunks
+    rather than accumulating duplicates.
+
+    Args:
+        conn        — open connection from init_db()
+        session_id  — the session this chunk belongs to
+        chunk_index — 0-based position of this chunk in the session
+        text        — the concatenated turn text for this window
+        embedding   — 384-float list, or None if embedding was skipped
+    """
+    from datetime import datetime, timezone
+
+    # Build the composite primary key — unique per (session, chunk position).
+    chunk_id = f"{session_id}:{chunk_index}"
+
+    # Convert the float list to a binary blob, or use None if no embedding.
+    blob = _pack_vector(embedding) if embedding is not None else None
+
+    # created_at records when this chunk was stored — useful for debugging.
+    created_at = datetime.now(timezone.utc).isoformat()
+
+    # INSERT OR REPLACE: if the row already exists (same id), overwrite it.
+    # This is the upsert pattern used throughout db.py.
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO chunks (id, session_id, chunk_index, text, embedding, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (chunk_id, session_id, chunk_index, text, blob, created_at),
+    )
+    conn.commit()
+
+
+def get_chunks_for_session(conn: sqlite3.Connection, session_id: str) -> list[dict]:
+    """
+    Return all chunks for a session, ordered by chunk_index ascending.
+
+    Used by tests and by semantic_search_chunks() to inspect stored chunks.
+
+    Args:
+        conn       — open connection from init_db()
+        session_id — the session to fetch chunks for
+
+    Returns:
+        List of dicts with keys: id, session_id, chunk_index, text, embedding, created_at.
+        Returns [] if no chunks exist for this session.
+    """
+    rows = conn.execute(
+        """
+        SELECT id, session_id, chunk_index, text, embedding, created_at
+        FROM chunks
+        WHERE session_id = ?
+        ORDER BY chunk_index ASC
+        """,
+        (session_id,),
+    ).fetchall()
+
+    # Convert each sqlite3.Row to a plain dict so callers can use dict syntax.
+    return [dict(r) for r in rows]
+
+
+def delete_chunks_for_session(conn: sqlite3.Connection, session_id: str) -> None:
+    """
+    Delete all chunks belonging to a session.
+
+    Called before re-chunking a session so stale chunks from the previous
+    save don't accumulate. Silently does nothing if no chunks exist yet.
+
+    Args:
+        conn       — open connection from init_db()
+        session_id — whose chunks to remove
+    """
+    conn.execute("DELETE FROM chunks WHERE session_id = ?", (session_id,))
+    conn.commit()
+
+
+def semantic_search_chunks(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict]:
+    """
+    Find sessions whose content is semantically similar to the query,
+    searching at chunk granularity rather than whole-session granularity.
+
+    This produces more precise results than session-level search because a
+    50-turn conversation is split into overlapping 6-turn windows. A query
+    about topic X matches the window where X was actually discussed, not a
+    blended average of the whole session.
+
+    Results are one entry per chunk (not per session). Use the session_id
+    field to group them. Returns top `limit` chunks by cosine distance.
+
+    Args:
+        conn  — open connection from init_db()
+        query — natural-language search string
+        limit — max results to return (default 10)
+
+    Returns:
+        List of dicts with keys: session_id, chunk_index, distance, text, snippet
+        Raises ImportError if sentence-transformers is not installed.
+    """
+    if not _ST_AVAILABLE:
+        raise ImportError(
+            "sentence-transformers is not installed. "
+            "Run: pip3 install sentence-transformers"
+        )
+
+    # Embed the query into a vector so we can compare it against chunk vectors.
+    query_vector = embed(query)
+
+    # Fetch all chunk rows that have an embedding stored.
+    # Chunks without embeddings (embedding IS NULL) are skipped — they can't
+    # participate in cosine distance computation.
+    rows = conn.execute(
+        """
+        SELECT session_id, chunk_index, text, embedding
+        FROM chunks
+        WHERE embedding IS NOT NULL
+        """
+    ).fetchall()
+
+    if not rows:
+        return []
+
+    # Compute cosine distance between the query vector and each chunk embedding.
+    scored = []
+    for row in rows:
+        dist = _cosine_distance(query_vector, bytes(row["embedding"]))
+        scored.append({
+            "session_id":  row["session_id"],
+            "chunk_index": row["chunk_index"],
+            "distance":    dist,
+            "text":        row["text"],
+            # snippet is a preview of the chunk — first 200 characters.
+            "snippet":     row["text"][:200],
+        })
+
+    # Sort by distance ascending (closest match first), then slice to limit.
     scored.sort(key=lambda r: r["distance"])
     return scored[:limit]
