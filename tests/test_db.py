@@ -24,6 +24,10 @@ from memory.db import (
     search_facts,
     list_facts,
     hybrid_search,
+    # Phase 12 helpers
+    insert_summary,
+    sessions_needing_prune,
+    prune_transcript,
 )
 
 
@@ -567,6 +571,57 @@ class TestHybridSearch(unittest.TestCase):
             # The snippet must be a non-empty string — not None and not "".
             self.assertIsInstance(r["snippet"], str)
             self.assertGreater(len(r["snippet"]), 0)
+
+
+# ---------------------------------------------------------------------------
+# Test group: Phase 12 summaries helpers (sessions_needing_prune, prune_transcript)
+# ---------------------------------------------------------------------------
+
+# A far-past date that is always older than any threshold used in tests.
+_OLD_DATE = "2020-01-01T00:00:00+00:00"
+
+
+class TestSummaries(unittest.TestCase):
+
+    def setUp(self):
+        # Each test gets its own fresh in-memory database.
+        self.conn = init_db(":memory:")
+
+        # Insert a session old enough to qualify under any threshold.
+        # The transcript must be non-empty so the SQL filter does not exclude it.
+        upsert_session(
+            self.conn, "old-sess", "claude",
+            [{"role": "user", "content": "hello"}],
+            _OLD_DATE, _OLD_DATE,
+        )
+
+    def test_sessions_needing_prune_requires_summary(self):
+        # A session without a summary row must NOT be returned by sessions_needing_prune.
+        # Pruning is only allowed once a summary has been created — we never want to
+        # silently discard a transcript without a corresponding summary existing.
+
+        # old-sess has no summary — it must not appear.
+        results = sessions_needing_prune(self.conn, days_threshold=1)
+        session_ids = [r["session_id"] for r in results]
+
+        self.assertNotIn("old-sess", session_ids)
+
+    def test_prune_returns_turn_count(self):
+        # prune_transcript() must return the correct turn_count from before the prune.
+        # This is logged by the caller so it should reflect the real number of turns.
+
+        # old-sess was inserted with 1 turn (the "hello" message).
+        # turn_count is set automatically by upsert_session (len of transcript list).
+        turn_count = prune_transcript(self.conn, "old-sess")
+
+        # The turn_count returned must match what was stored.
+        self.assertEqual(turn_count, 1)
+
+        # Also confirm the transcript is now '[]' after the prune.
+        row = self.conn.execute(
+            "SELECT transcript FROM sessions WHERE session_id = ?", ("old-sess",)
+        ).fetchone()
+        self.assertEqual(row["transcript"], "[]")
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import json       # used to convert Python dicts ↔ text for storage
 import math       # used for cosine similarity calculation (sqrt, dot product)
 import sqlite3    # Python's built-in SQLite driver — no install needed
 import struct     # used to pack float32 arrays into bytes for SQLite blob storage
+from datetime import datetime, timezone, timedelta   # for timestamp arithmetic in consolidation helpers
 
 # Try to import SentenceTransformer — the library that converts text into vectors.
 # If not installed, embed() will raise a clear ImportError with a helpful message.
@@ -146,6 +147,18 @@ END;
 """
 
 
+# _SUMMARIES_SCHEMA stores LLM-generated summaries of old sessions (Phase 12).
+# Once a summary exists, the raw transcript can safely be pruned to save space.
+_SUMMARIES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS summaries (
+    session_id  TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
+    summary     TEXT NOT NULL,
+    model       TEXT NOT NULL DEFAULT 'llama3.2:3b',
+    created_at  TEXT NOT NULL
+);
+"""
+
+
 def log_retrieval(conn: sqlite3.Connection, tool: str, query: str, result_size: int) -> None:
     """
     Record one MCP tool call in the retrievals table.
@@ -243,6 +256,11 @@ def init_db(path: str) -> sqlite3.Connection:
     # Create the facts table for proactive structured fact storage (Phase 8).
     # This follows the same pattern as _CHUNK_SCHEMA above.
     conn.executescript(_FACTS_SCHEMA)
+    conn.commit()
+
+    # Create the summaries table for LLM-generated session summaries (Phase 12).
+    # Summaries are stored here once ollama has processed an old session.
+    conn.executescript(_SUMMARIES_SCHEMA)
     conn.commit()
 
     return conn
@@ -1072,3 +1090,151 @@ def hybrid_search(conn: sqlite3.Connection, query: str, limit: int = 10) -> list
         })
 
     return output
+
+
+# ---------------------------------------------------------------------------
+# Phase 12 additions: summaries table helpers for consolidation and decay
+# ---------------------------------------------------------------------------
+
+def insert_summary(conn: sqlite3.Connection, session_id: str, summary: str, model: str) -> None:
+    """
+    Store a generated summary for a session in the summaries table.
+
+    Uses INSERT OR REPLACE so that if a summary already exists for this
+    session_id (e.g. from a previous run), it is overwritten with the new one.
+
+    Args:
+        conn       — open connection from init_db()
+        session_id — the session whose transcript was summarised
+        summary    — the generated summary text (2-3 sentences)
+        model      — the ollama model that generated the summary, e.g. "llama3.2:3b"
+    """
+    # datetime.now(timezone.utc).isoformat() gives an ISO 8601 UTC timestamp.
+    conn.execute(
+        "INSERT OR REPLACE INTO summaries (session_id, summary, model, created_at) VALUES (?, ?, ?, ?)",
+        (session_id, summary, model, datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()
+
+
+def get_summary(conn: sqlite3.Connection, session_id: str) -> str | None:
+    """
+    Return the summary text for a session, or None if not yet summarised.
+
+    Args:
+        conn       — open connection from init_db()
+        session_id — the session to look up
+
+    Returns:
+        The summary string if one exists, or None if no summary has been stored.
+    """
+    row = conn.execute(
+        "SELECT summary FROM summaries WHERE session_id = ?", (session_id,)
+    ).fetchone()
+    # row is None if no summary exists; row["summary"] is the text if it does.
+    return row["summary"] if row else None
+
+
+def sessions_needing_summary(conn: sqlite3.Connection, days_threshold: int) -> list[dict]:
+    """
+    Return sessions older than days_threshold that have no summary yet.
+
+    A session qualifies if:
+      - Its updated_at is before the cutoff date (older than days_threshold)
+      - It has no row in the summaries table yet (LEFT JOIN + NULL check)
+      - Its transcript is non-null and non-empty (not '[]')
+
+    Results are ordered oldest-first so the most urgent sessions are processed first.
+
+    Args:
+        conn           — open connection from init_db()
+        days_threshold — sessions older than this many days are returned
+
+    Returns:
+        List of dicts with keys: session_id, updated_at, turn_count, transcript.
+    """
+    # timedelta(days=days_threshold) subtracts that many days from the current time.
+    # .isoformat() converts to a string like "2026-07-17T10:00:00+00:00" for SQL comparison.
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days_threshold)).isoformat()
+
+    rows = conn.execute(
+        """
+        SELECT s.session_id, s.updated_at, s.turn_count, s.transcript
+        FROM sessions s
+        LEFT JOIN summaries su ON su.session_id = s.session_id
+        WHERE s.updated_at < ? AND su.session_id IS NULL
+          AND s.transcript IS NOT NULL AND s.transcript != '[]'
+        ORDER BY s.updated_at ASC
+        """,
+        (cutoff,),
+    ).fetchall()
+
+    # Convert each sqlite3.Row to a plain dict for easy access by callers.
+    return [dict(r) for r in rows]
+
+
+def sessions_needing_prune(conn: sqlite3.Connection, days_threshold: int) -> list[dict]:
+    """
+    Return sessions older than days_threshold that have a summary and a non-null transcript.
+
+    A session is ready for pruning if:
+      - Its updated_at is before the cutoff date (older than days_threshold)
+      - It has a row in the summaries table (INNER JOIN — summary must exist first)
+      - Its transcript is non-null and non-empty (there is still data to prune)
+
+    Args:
+        conn           — open connection from init_db()
+        days_threshold — sessions older than this many days are returned
+
+    Returns:
+        List of dicts with keys: session_id, updated_at, turn_count.
+    """
+    # Build the cutoff timestamp the same way as sessions_needing_summary.
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days_threshold)).isoformat()
+
+    rows = conn.execute(
+        """
+        SELECT s.session_id, s.updated_at, s.turn_count
+        FROM sessions s
+        INNER JOIN summaries su ON su.session_id = s.session_id
+        WHERE s.updated_at < ?
+          AND s.transcript IS NOT NULL AND s.transcript != '[]'
+        ORDER BY s.updated_at ASC
+        """,
+        (cutoff,),
+    ).fetchall()
+
+    return [dict(r) for r in rows]
+
+
+def prune_transcript(conn: sqlite3.Connection, session_id: str) -> int:
+    """
+    Null out the transcript for a session by setting it to '[]'.
+
+    Called after a summary has been generated and stored. The session row
+    itself is preserved (metadata like updated_at and turn_count stay intact)
+    but the raw transcript text is discarded to save space.
+
+    Args:
+        conn       — open connection from init_db()
+        session_id — the session whose transcript should be cleared
+
+    Returns:
+        The old turn_count value (before pruning) so callers can log it.
+    """
+    # Fetch the old turn_count before we wipe the transcript.
+    row = conn.execute(
+        "SELECT turn_count FROM sessions WHERE session_id = ?", (session_id,)
+    ).fetchone()
+
+    # Default to 0 if the session doesn't exist (shouldn't happen in normal use).
+    turn_count = row["turn_count"] if row else 0
+
+    # Set transcript to '[]' — an empty JSON array — rather than NULL.
+    # This keeps the column type consistent and avoids NULL checks in other queries.
+    conn.execute(
+        "UPDATE sessions SET transcript = '[]' WHERE session_id = ?", (session_id,)
+    )
+    conn.commit()
+
+    return turn_count

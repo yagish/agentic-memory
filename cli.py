@@ -18,6 +18,7 @@ import webbrowser    # opens the dashboard HTML in the default browser
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from memory.db import init_db, search, semantic_search
+from memory.consolidation import consolidate_old_sessions, prune_old_transcripts
 
 
 # Where the database lives — must match the hook and MCP server.
@@ -454,6 +455,44 @@ def cmd_logs(args):
 
 
 # ---------------------------------------------------------------------------
+# Command: consolidate (Phase 12)
+# ---------------------------------------------------------------------------
+
+def cmd_consolidate(args):
+    """Summarise sessions older than --days days using local ollama."""
+    # Open the database (exits with a clear message if it doesn't exist).
+    conn = get_conn()
+
+    # Call the consolidation function which does the heavy lifting.
+    # dry_run=True means nothing is written — just printed.
+    result = consolidate_old_sessions(conn, days_threshold=args.days, dry_run=args.dry_run)
+    conn.close()
+
+    # Print a human-readable summary of what was done.
+    # result["summarised"] is the count of sessions that got a new summary.
+    # result["skipped"] covers dry-run entries, errors, and empty transcripts.
+    print(f"Summarised {result['summarised']} sessions. "
+          f"Skipped {result['skipped']} (already done, empty, or error).")
+
+
+# ---------------------------------------------------------------------------
+# Command: prune (Phase 12)
+# ---------------------------------------------------------------------------
+
+def cmd_prune(args):
+    """Null out raw transcripts for summarised sessions older than --days days."""
+    # Open the database (exits with a clear message if it doesn't exist).
+    conn = get_conn()
+
+    # Call the prune function. Only sessions with an existing summary are pruned.
+    result = prune_old_transcripts(conn, days_threshold=args.days, dry_run=args.dry_run)
+    conn.close()
+
+    # Print how many transcripts were cleared.
+    print(f"Pruned transcripts for {result['pruned']} sessions.")
+
+
+# ---------------------------------------------------------------------------
 # Argument parsing + dispatch
 # ---------------------------------------------------------------------------
 
@@ -502,6 +541,34 @@ def main():
         help="Number of lines to show (default 20)",
     )
 
+    # consolidate — summarise old sessions with local ollama (Phase 12)
+    p_consolidate = sub.add_parser(
+        "consolidate",
+        help="Summarise sessions older than --days days using local ollama",
+    )
+    p_consolidate.add_argument(
+        "--days", type=int, default=30,
+        help="Sessions updated more than this many days ago are candidates (default 30)",
+    )
+    p_consolidate.add_argument(
+        "--dry-run", action="store_true",
+        help="Print what would be done without writing anything",
+    )
+
+    # prune — delete raw transcripts that already have a summary (Phase 12)
+    p_prune = sub.add_parser(
+        "prune",
+        help="Null out raw transcripts for summarised sessions older than --days days",
+    )
+    p_prune.add_argument(
+        "--days", type=int, default=90,
+        help="Sessions updated more than this many days ago are candidates (default 90)",
+    )
+    p_prune.add_argument(
+        "--dry-run", action="store_true",
+        help="Print what would be pruned without writing anything",
+    )
+
     args = parser.parse_args()
 
     # Dispatch to the right function based on which subcommand was typed.
@@ -513,6 +580,8 @@ def main():
         "tail":        cmd_tail,
         "dashboard":   cmd_dashboard,
         "logs":        cmd_logs,
+        "consolidate": cmd_consolidate,
+        "prune":       cmd_prune,
     }
     dispatch[args.command](args)
 
