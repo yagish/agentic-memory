@@ -248,8 +248,27 @@ class TestIngestEndpoints(unittest.TestCase):
 
 
     # ------------------------------------------------------------------
-    # Test 7: Pi.ai origin is allowed by CORS middleware
+    # Test 7: GET /pi-script serves the Tampermonkey userscript
     # ------------------------------------------------------------------
+
+    def test_get_pi_script_returns_javascript(self):
+        """
+        GET /pi-script must return the Pi userscript with a JavaScript
+        content-type so Tampermonkey recognises it and shows the install dialog.
+        """
+        response = self.client.get("/pi-script")
+
+        # The file exists in the repo, so the response must be 200.
+        self.assertEqual(response.status_code, 200)
+
+        # Must be served as JavaScript — this is what Tampermonkey looks for.
+        content_type = response.headers.get("content-type", "")
+        self.assertIn("javascript", content_type)
+
+        # The response body must contain the Tampermonkey @match directive so
+        # we know it is actually the userscript and not some other file.
+        self.assertIn("@match", response.text)
+        self.assertIn("pi.ai", response.text)
 
     def test_cors_pi_origin_allowed(self):
         """

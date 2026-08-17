@@ -26,6 +26,7 @@ from datetime import datetime, timezone   # for generating the updated_at timest
 # or has the wrong type, FastAPI returns a 422 error automatically.
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware  # allows browser-based agents to POST
+from fastapi.responses import FileResponse          # for serving the Pi userscript
 from pydantic import BaseModel, field_validator
 import uvicorn   # the ASGI server that actually listens for HTTP connections
 
@@ -246,6 +247,36 @@ def get_status() -> dict:
         "newest_session": newest_session,
         "db_size_bytes": db_size_bytes,
     }
+
+
+@app.get("/pi-script")
+def get_pi_script() -> FileResponse:
+    """
+    Serve the Pi Tampermonkey userscript over HTTP.
+
+    Tampermonkey intercepts .user.js URLs from HTTP servers and shows its
+    install dialog automatically — much more reliably than file:// URLs.
+    The install.sh script opens this endpoint in the browser after loading
+    Tampermonkey, so the user just needs to click Install once.
+    """
+    # The userscript lives at integrations/pi/pi_memory.user.js relative to
+    # the project root.  __file__ is memory/ingest_server.py, so go up twice.
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    script_path = os.path.join(project_root, "integrations", "pi", "pi_memory.user.js")
+
+    if not os.path.exists(script_path):
+        raise HTTPException(
+            status_code=404,
+            detail="Pi userscript not found — make sure integrations/pi/pi_memory.user.js exists",
+        )
+
+    # application/javascript with the .user.js filename is the MIME type
+    # Tampermonkey watches for when deciding to show the install dialog.
+    return FileResponse(
+        script_path,
+        media_type="application/javascript",
+        filename="pi_memory.user.js",
+    )
 
 
 # ---------------------------------------------------------------------------

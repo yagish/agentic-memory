@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Label: unique identifier for this launchd job.
+       Used by launchctl to load, unload, start, and stop the service. -->
+  <key>Label</key>
+  <string>com.memory.ingest</string>
+
+  <!-- ProgramArguments: the command to run.
+       PROJECT_PATH is substituted by install.sh with the real project directory. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>python3</string>
+    <string>PROJECT_PATH/memory/ingest_server.py</string>
+  </array>
+
+  <!-- RunAtLoad: start the server immediately when the plist is loaded,
+       and again on every login after that. -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- KeepAlive: restart automatically if the process exits unexpectedly. -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- StandardOutPath / StandardErrorPath: both go to ingest.log for easy tailing. -->
+  <key>StandardOutPath</key>
+  <string>HOME_PATH/.memory/ingest.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>HOME_PATH/.memory/ingest.log</string>
+</dict>
+</plist>
