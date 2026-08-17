@@ -319,6 +319,14 @@ def init_db(path: str) -> sqlite3.Connection:
         conn.execute("ALTER TABLE sessions ADD COLUMN daemon_processed_at TEXT")
     conn.commit()
 
+    # Add metadata column to sessions if not already present.
+    # metadata stores arbitrary agent-supplied key-value pairs as a JSON string.
+    # We re-read the column set because the previous block may have just added a column.
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+    if "metadata" not in existing_cols:
+        conn.execute("ALTER TABLE sessions ADD COLUMN metadata TEXT")
+    conn.commit()
+
     return conn
 
 
@@ -329,6 +337,7 @@ def upsert_session(
     transcript: list[dict],   # list of {"role": "user"/"assistant", "content": "..."}
     started_at: str,          # ISO 8601 timestamp, e.g. "2026-08-16T10:00:00Z"
     updated_at: str,
+    metadata: dict | None = None,  # optional key-value pairs from the agent (Phase 16)
 ) -> None:
     """
     Save (or update) a conversation session in the database.
@@ -338,6 +347,15 @@ def upsert_session(
 
     The full transcript list is serialised to a JSON string for storage —
     SQLite stores it as text and we decode it back to a list when reading.
+
+    Args:
+        conn       — open connection from init_db()
+        session_id — unique identifier for the conversation
+        agent      — name of the agent (e.g. "claude", "cursor", "unknown")
+        transcript — list of turn dicts with "role" and "content" keys
+        started_at — ISO 8601 timestamp of the first turn
+        updated_at — ISO 8601 timestamp of the most recent turn
+        metadata   — optional dict of extra key-value pairs; stored as JSON string
     """
     # json.dumps converts the Python list of dicts into a JSON string for storage.
     transcript_json = json.dumps(transcript)
@@ -345,19 +363,24 @@ def upsert_session(
     # Each element in the transcript list is one turn, so len() gives total turns.
     turn_count = len(transcript)
 
+    # Serialise metadata dict to JSON, or NULL if no metadata was provided.
+    # json.dumps(None) would produce "null", so we handle None explicitly.
+    metadata_json = json.dumps(metadata) if metadata is not None else None
+
     conn.execute(
         """
-        INSERT INTO sessions (session_id, agent, started_at, updated_at, turn_count, transcript)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO sessions (session_id, agent, started_at, updated_at, turn_count, transcript, metadata)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id) DO UPDATE SET
           agent      = excluded.agent,
           updated_at = excluded.updated_at,
           turn_count = excluded.turn_count,
-          transcript = excluded.transcript
+          transcript = excluded.transcript,
+          metadata   = excluded.metadata
         """,
         # The ?s above are placeholders; SQLite fills them in from this tuple.
         # Using placeholders (not string formatting) prevents SQL injection.
-        (session_id, agent, started_at, updated_at, turn_count, transcript_json),
+        (session_id, agent, started_at, updated_at, turn_count, transcript_json, metadata_json),
     )
     conn.commit()  # flush the write to disk
 

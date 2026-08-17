@@ -506,6 +506,124 @@ _DAEMON_SCRIPT = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "memory", "daemon.py"
 )
 
+# ---------------------------------------------------------------------------
+# Command: ingest-server (Phase 16)
+# ---------------------------------------------------------------------------
+
+# Paths for the ingest server PID file and log file.
+_INGEST_PID_PATH = os.path.expanduser("~/.memory/ingest.pid")
+_INGEST_LOG_PATH  = os.path.expanduser("~/.memory/ingest.log")
+
+# Absolute path to the ingest server script — constructed from this file's location.
+_INGEST_SCRIPT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "memory", "ingest_server.py"
+)
+
+# Port the ingest server listens on — must match ingest_server.py default.
+_INGEST_PORT = int(os.environ.get("MEMORY_INGEST_PORT", "7747"))
+
+
+def _read_ingest_pid() -> int | None:
+    """
+    Read the ingest server PID from ~/.memory/ingest.pid.
+
+    Returns the PID as an integer, or None if the file doesn't exist or
+    contains an invalid value (e.g. leftover from a previous crash).
+    """
+    if not os.path.exists(_INGEST_PID_PATH):
+        return None
+    try:
+        with open(_INGEST_PID_PATH, "r") as f:
+            return int(f.read().strip())
+    except (ValueError, OSError):
+        # File exists but content is not a valid integer — treat as absent.
+        return None
+
+
+def cmd_ingest_server(args):
+    """
+    Manage the HTTP ingest server (Phase 16).
+
+    Subcommands:
+      start   — launch the server in the background, write PID to ~/.memory/ingest.pid
+      stop    — read PID file and send SIGTERM to the server
+      status  — print whether the server is running, its PID, and the port
+    """
+    import signal as sig_mod  # imported locally to avoid shadowing the built-in signal
+
+    # Ensure the ~/.memory directory exists before writing PID/log files.
+    os.makedirs(os.path.expanduser("~/.memory"), exist_ok=True)
+
+    # Read the positional subcommand (start | stop | status).
+    sub = getattr(args, "ingest_sub", None)
+
+    if sub == "start":
+        # --- Check if already running ---
+        pid = _read_ingest_pid()
+        if pid is not None and _is_process_running(pid):
+            print(f"Ingest server is already running (PID {pid}, port {_INGEST_PORT}).")
+            return
+
+        # Open the log file in append mode so previous logs are preserved.
+        log_file = open(_INGEST_LOG_PATH, "a")
+
+        # Popen launches the server as a detached background process.
+        # stdout and stderr both go to the shared log file.
+        proc = subprocess.Popen(
+            [sys.executable, _INGEST_SCRIPT],
+            stdout=log_file,
+            stderr=log_file,
+            # start_new_session=True detaches the server from the current terminal
+            # so it keeps running after the shell exits.
+            start_new_session=True,
+        )
+
+        # Write the PID so stop/status can find the process later.
+        with open(_INGEST_PID_PATH, "w") as f:
+            f.write(str(proc.pid))
+
+        print(f"Ingest server started (PID {proc.pid}, port {_INGEST_PORT}).")
+        print(f"Log: {_INGEST_LOG_PATH}")
+
+    elif sub == "stop":
+        # --- Stop the server by sending SIGTERM ---
+        pid = _read_ingest_pid()
+        if pid is None:
+            print("Ingest server is not running (no PID file found).")
+            return
+
+        if not _is_process_running(pid):
+            print(f"Ingest server PID {pid} is not running. Cleaning up stale PID file.")
+            os.unlink(_INGEST_PID_PATH)
+            return
+
+        try:
+            # SIGTERM asks the server to shut down gracefully.
+            os.kill(pid, sig_mod.SIGTERM)
+            print(f"Sent SIGTERM to ingest server (PID {pid}).")
+            # Remove the PID file — we expect the process to exit shortly.
+            os.unlink(_INGEST_PID_PATH)
+        except OSError as exc:
+            print(f"Failed to stop ingest server (PID {pid}): {exc}")
+
+    elif sub == "status":
+        # --- Show whether the server is running ---
+        pid = _read_ingest_pid()
+        if pid is None:
+            print("Ingest server status: stopped (no PID file).")
+            return
+
+        if _is_process_running(pid):
+            print(f"Ingest server status: running (PID {pid}, port {_INGEST_PORT}).")
+        else:
+            print(f"Ingest server status: stopped (PID {pid} is no longer alive).")
+            # Clean up the stale PID file.
+            os.unlink(_INGEST_PID_PATH)
+
+    else:
+        # Unknown or missing subcommand — print usage help.
+        print("Usage: python3 cli.py ingest-server <start|stop|status>")
+
 
 def _read_pid() -> int | None:
     """
@@ -752,20 +870,34 @@ def main():
         help="Run one processing pass and exit (for testing or manual runs)",
     )
 
+    # ingest-server — manage the HTTP ingest server (Phase 16)
+    p_ingest = sub.add_parser(
+        "ingest-server",
+        help="Start, stop, or check the status of the HTTP ingest server (port 7747)",
+    )
+    # Positional sub-subcommand: start, stop, or status.
+    p_ingest.add_argument(
+        "ingest_sub",
+        choices=["start", "stop", "status"],
+        nargs="?",
+        help="start | stop | status",
+    )
+
     args = parser.parse_args()
 
     # Dispatch to the right function based on which subcommand was typed.
     dispatch = {
-        "status":      cmd_status,
-        "search":      cmd_search,
-        "semantic":    cmd_semantic,
-        "get-session": cmd_get_session,
-        "tail":        cmd_tail,
-        "dashboard":   cmd_dashboard,
-        "logs":        cmd_logs,
-        "consolidate": cmd_consolidate,
-        "prune":       cmd_prune,
-        "daemon":      cmd_daemon,
+        "status":        cmd_status,
+        "search":        cmd_search,
+        "semantic":      cmd_semantic,
+        "get-session":   cmd_get_session,
+        "tail":          cmd_tail,
+        "dashboard":     cmd_dashboard,
+        "logs":          cmd_logs,
+        "consolidate":   cmd_consolidate,
+        "prune":         cmd_prune,
+        "daemon":        cmd_daemon,
+        "ingest-server": cmd_ingest_server,
     }
     dispatch[args.command](args)
 

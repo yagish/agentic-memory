@@ -676,5 +676,70 @@ class TestPhase13DbHelpers(unittest.TestCase):
         self.assertIn("sess-cluster", members)
 
 
+# ---------------------------------------------------------------------------
+# Test group: Phase 16 — metadata column
+# ---------------------------------------------------------------------------
+
+class TestUpsertSessionMetadata(unittest.TestCase):
+    """Tests for the metadata parameter added to upsert_session() in Phase 16."""
+
+    def setUp(self):
+        # Create a fresh in-memory database for each test.
+        self.conn = init_db(":memory:")
+
+    def test_upsert_session_with_metadata(self):
+        """
+        Upserting a session with a metadata dict must store that dict as a
+        JSON string in the metadata column.
+        """
+        # The metadata dict simulates agent-supplied key-value pairs.
+        meta = {"source": "cursor", "project": "my-app", "version": 3}
+
+        # Save the session with metadata attached.
+        upsert_session(
+            self.conn,
+            "s-meta",
+            "cursor",
+            [{"role": "user", "content": "Hello from Cursor."}],
+            "2026-08-17T00:00:00Z",
+            "2026-08-17T00:01:00Z",
+            metadata=meta,
+        )
+
+        # Read the raw metadata column back from the database.
+        row = self.conn.execute(
+            "SELECT metadata FROM sessions WHERE session_id = 's-meta'"
+        ).fetchone()
+
+        # The column must not be NULL.
+        self.assertIsNotNone(row["metadata"])
+
+        # Decoding the stored JSON must produce the original dict.
+        stored = json.loads(row["metadata"])
+        self.assertEqual(stored, meta)
+
+    def test_upsert_session_without_metadata_stores_null(self):
+        """
+        Omitting the metadata argument (default None) must leave the column
+        as NULL — not the string "null".
+        """
+        # Call without the metadata keyword argument.
+        upsert_session(
+            self.conn,
+            "s-no-meta",
+            "claude",
+            [{"role": "user", "content": "No metadata here."}],
+            "2026-08-17T00:00:00Z",
+            "2026-08-17T00:01:00Z",
+        )
+
+        row = self.conn.execute(
+            "SELECT metadata FROM sessions WHERE session_id = 's-no-meta'"
+        ).fetchone()
+
+        # The metadata column must be NULL (Python None) when not provided.
+        self.assertIsNone(row["metadata"])
+
+
 if __name__ == "__main__":
     unittest.main()
