@@ -25,6 +25,7 @@ from datetime import datetime, timezone   # for generating the updated_at timest
 # Pydantic is used for request validation — if a required field is missing
 # or has the wrong type, FastAPI returns a 422 error automatically.
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware  # allows browser-based agents to POST
 from pydantic import BaseModel, field_validator
 import uvicorn   # the ASGI server that actually listens for HTTP connections
 
@@ -49,6 +50,24 @@ PORT = int(os.environ.get("MEMORY_INGEST_PORT", "7747"))
 # Create the FastAPI application instance.
 # The title and version appear in the auto-generated /docs page.
 app = FastAPI(title="Memory Ingest Server", version="1.0.0")
+
+# ── CORS — allow browser-based agents to POST from their domains ──────────────
+# Browsers enforce the Same-Origin Policy: a page at https://pi.ai cannot
+# fetch http://localhost:7747 unless the server explicitly says it's OK.
+# CORSMiddleware adds the necessary Access-Control-* response headers.
+#
+# Override the allowed list with MEMORY_INGEST_CORS_ORIGINS (comma-separated):
+#   export MEMORY_INGEST_CORS_ORIGINS="https://pi.ai,https://github.com"
+_default_origins = "https://pi.ai,https://copilot.microsoft.com,https://github.com"
+_origins_raw = os.environ.get("MEMORY_INGEST_CORS_ORIGINS", _default_origins)
+_allowed_origins = [o.strip() for o in _origins_raw.split(",") if o.strip()]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allowed_origins,   # the sites that may call us
+    allow_methods=["GET", "POST"],    # only the verbs we actually handle
+    allow_headers=["Content-Type"],   # only the header the integrations send
+)
 
 
 # ---------------------------------------------------------------------------

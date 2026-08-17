@@ -247,5 +247,34 @@ class TestIngestEndpoints(unittest.TestCase):
         self.assertEqual(stored_meta, meta)
 
 
+    # ------------------------------------------------------------------
+    # Test 7: Pi.ai origin is allowed by CORS middleware
+    # ------------------------------------------------------------------
+
+    def test_cors_pi_origin_allowed(self):
+        """
+        A preflight OPTIONS request from https://pi.ai must receive the
+        Access-Control-Allow-Origin header back, allowing the browser bookmarklet
+        and userscript to POST to the server cross-origin.
+        """
+        # Browsers send a preflight OPTIONS request before the actual POST to check
+        # whether the server allows the cross-origin request.
+        response = self.client.options(
+            "/ingest",
+            headers={
+                "Origin":                         "https://pi.ai",
+                "Access-Control-Request-Method":  "POST",
+                "Access-Control-Request-Headers": "Content-Type",
+            },
+        )
+
+        # 200 or 204 — both are valid CORS preflight response codes.
+        self.assertIn(response.status_code, (200, 204))
+
+        # The response must explicitly allow the Pi origin.
+        acao = response.headers.get("access-control-allow-origin", "")
+        self.assertEqual(acao, "https://pi.ai")
+
+
 if __name__ == "__main__":
     unittest.main()
