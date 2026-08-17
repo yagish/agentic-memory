@@ -274,45 +274,6 @@ python3 cli.py ingest-server status
 
 ---
 
-## Pi integration
-
-Your Pi conversations can be saved to the same memory store so Claude can reference what you and Pi already discussed.
-
-**Prerequisites:** the ingest server must be running (it receives sessions from the browser):
-
-```bash
-python3 cli.py ingest-server start
-```
-
-If you ran `install.sh`, the launchd agent keeps it running automatically after login.
-
-### Option A — bookmarklet (click to save after each conversation)
-
-1. Generate the bookmark URL:
-   ```bash
-   python3 integrations/pi/make_bookmarklet.py
-   ```
-2. Open the generated file `integrations/pi/bookmarklet_url.txt`, select all, and copy.
-3. Create a new bookmark in your browser (name it "Save to Memory").
-4. Paste the copied text as the bookmark **URL** (not the name).
-5. Go to [pi.ai](https://pi.ai), have a conversation, then click the bookmark.
-6. A confirmation alert will appear: "Saved N turns to memory."
-
-### Option B — Tampermonkey userscript (fully automatic, no clicking)
-
-1. Install [Tampermonkey](https://www.tampermonkey.net) for your browser.
-2. Open Tampermonkey > Dashboard > **+** (new script tab).
-3. Delete the placeholder code and paste the entire contents of `integrations/pi/pi_memory.user.js`.
-4. Save (Ctrl+S).
-
-The script watches the Pi page for new messages. 15 seconds after each response, it automatically POSTs the conversation to the ingest server. You'll see `[pi-memory] saved N turns` in the browser console (F12 > Console).
-
-### How Pi sessions appear in Claude
-
-Once saved, Pi sessions are stored alongside Claude sessions in the same database. The wake-up hook searches across all sessions — so when you start a Claude session on a topic you discussed with Pi, those Pi turns surface in the memory digest automatically. You do not need to do anything extra; the search is agent-agnostic.
-
----
-
 ## Using from another agent
 
 Any agent (Cursor, LangChain, custom scripts) can write sessions to the same store.

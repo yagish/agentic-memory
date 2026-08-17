@@ -55,7 +55,7 @@ SAMPLE_TURNS = [
 # ---------------------------------------------------------------------------
 
 class TestIngestEndpoints(unittest.TestCase):
-    """Integration tests for POST /ingest and GET /status."""
+    """Integration tests for POST /ingest, /recall, /answer, and GET /status."""
 
     def setUp(self):
         """
@@ -246,53 +246,71 @@ class TestIngestEndpoints(unittest.TestCase):
         stored_meta = json.loads(row["metadata"])
         self.assertEqual(stored_meta, meta)
 
-
     # ------------------------------------------------------------------
-    # Test 7: GET /pi-script serves the Tampermonkey userscript
+    # Test 7: POST /answer returns a direct answer for repeated prompts
     # ------------------------------------------------------------------
 
-    def test_get_pi_script_returns_javascript(self):
-        """
-        GET /pi-script must return the Pi userscript with a JavaScript
-        content-type so Tampermonkey recognises it and shows the install dialog.
-        """
-        response = self.client.get("/pi-script")
+    def test_post_answer_returns_direct_match(self):
+        self.client.post("/ingest", json={
+            "session_id": "sess-answer-1",
+            "agent": "assistant",
+            "turns": SAMPLE_TURNS,
+        })
 
-        # The file exists in the repo, so the response must be 200.
+        response = self.client.post("/answer", json={
+            "query": "What is the capital of France?",
+        })
+
         self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["ok"])
+        self.assertTrue(body["answered"])
+        self.assertEqual(body["match"]["answer"], "The capital of France is Paris.")
 
-        # Must be served as JavaScript — this is what Tampermonkey looks for.
-        content_type = response.headers.get("content-type", "")
-        self.assertIn("javascript", content_type)
+    # ------------------------------------------------------------------
+    # Test 8: POST /answer returns answered=false when no strong match exists
+    # ------------------------------------------------------------------
 
-        # The response body must contain the Tampermonkey @match directive so
-        # we know it is actually the userscript and not some other file.
-        self.assertIn("@match", response.text)
-        self.assertIn("pi.ai", response.text)
+    def test_post_answer_returns_false_for_unrelated_query(self):
+        self.client.post("/ingest", json={
+            "session_id": "sess-answer-2",
+            "agent": "assistant",
+            "turns": SAMPLE_TURNS,
+        })
 
-    def test_cors_pi_origin_allowed(self):
-        """
-        A preflight OPTIONS request from https://pi.ai must receive the
-        Access-Control-Allow-Origin header back, allowing the browser bookmarklet
-        and userscript to POST to the server cross-origin.
-        """
-        # Browsers send a preflight OPTIONS request before the actual POST to check
-        # whether the server allows the cross-origin request.
-        response = self.client.options(
-            "/ingest",
-            headers={
-                "Origin":                         "https://pi.ai",
-                "Access-Control-Request-Method":  "POST",
-                "Access-Control-Request-Headers": "Content-Type",
-            },
-        )
+        response = self.client.post("/answer", json={
+            "query": "Explain the French revolution",
+        })
 
-        # 200 or 204 — both are valid CORS preflight response codes.
-        self.assertIn(response.status_code, (200, 204))
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["ok"])
+        self.assertFalse(body["answered"])
+        self.assertIsNone(body["match"])
 
-        # The response must explicitly allow the Pi origin.
-        acao = response.headers.get("access-control-allow-origin", "")
-        self.assertEqual(acao, "https://pi.ai")
+    # ------------------------------------------------------------------
+    # Test 9: POST /recall returns a wake-up digest
+    # ------------------------------------------------------------------
+
+    def test_post_recall_returns_digest(self):
+        self.client.post("/ingest", json={
+            "session_id": "sess-recall-1",
+            "agent": "assistant",
+            "turns": SAMPLE_TURNS,
+        })
+
+        response = self.client.post("/recall", json={
+            "query": "capital of France",
+            "session_id": "current-session",
+        })
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["ok"])
+        self.assertIn("=== MEMORY WAKE-UP ===", body["digest"])
+        self.assertIn("[L0 — Identity]", body["digest"])
+        self.assertIn("[L1", body["digest"])
+
 
 
 if __name__ == "__main__":

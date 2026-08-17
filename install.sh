@@ -214,7 +214,7 @@ echo "  + Daemon loaded (starts on login, logs: ~/.memory/daemon.log)"
 
 # ── Step 8: launchd — ingest server ─────────────────────────────────────────
 echo ""
-echo "Installing ingest server (receives Pi and Copilot sessions)..."
+echo "Installing ingest server (receives sessions from other agents)..."
 
 sed -i.bak \
     -e "s|PROJECT_PATH|$INSTALL_DIR|g" \
@@ -227,56 +227,7 @@ launchctl unload "$HOME/Library/LaunchAgents/com.memory.ingest.plist" 2>/dev/nul
 launchctl load   "$HOME/Library/LaunchAgents/com.memory.ingest.plist"
 echo "  + Ingest server loaded on port 7747 (logs: ~/.memory/ingest.log)"
 
-# Wait up to 10 seconds for the ingest server to be ready before we try to
-# open the Pi userscript URL through it.
-echo "  Waiting for ingest server to be ready..."
-_READY=0
-for _i in {1..10}; do
-    if curl -s "http://localhost:7747/status" >/dev/null 2>&1; then
-        _READY=1
-        break
-    fi
-    sleep 1
-done
-if [ "$_READY" -eq 0 ]; then
-    echo "  ! Ingest server did not start in time — Pi step will be skipped."
-    echo "    Run 'python3 $INSTALL_DIR/cli.py ingest-server status' to diagnose."
-fi
-
-# ── Step 9: Pi integration — Tampermonkey userscript ────────────────────────
-echo ""
-echo "================================================================"
-echo "  Pi integration (auto-save Pi conversations to memory)"
-echo "================================================================"
-echo ""
-echo "  This requires Tampermonkey, a free browser extension."
-echo ""
-echo "  Opening Tampermonkey's website now — click 'Add to [Browser]'"
-echo "  to install it, then come back here."
-echo ""
-
-# open is macOS's command to open a URL in the default browser.
-open "https://www.tampermonkey.net" 2>/dev/null || true
-
-read -r -p "  Press Enter once Tampermonkey is installed..." _DUMMY
-echo ""
-
-if [ "$_READY" -eq 1 ]; then
-    # Open the Pi userscript through the local ingest server.
-    # Tampermonkey intercepts HTTP URLs ending in .user.js and shows its
-    # install dialog automatically — no file permission issues.
-    echo "  Opening the Pi memory userscript..."
-    echo "  Tampermonkey's install dialog will appear — click Install."
-    echo ""
-    open "http://localhost:7747/pi-script" 2>/dev/null || true
-    echo "  + Pi userscript install dialog opened"
-else
-    echo "  Ingest server not running — open this URL manually in your browser"
-    echo "  once the server is started:"
-    echo "    http://localhost:7747/pi-script"
-fi
-
-# ── Step 10: Final summary ───────────────────────────────────────────────────
+# ── Step 9: Final summary ────────────────────────────────────────────────────
 echo ""
 echo "================================================================"
 echo "  agentic-memory installed successfully!"
@@ -292,9 +243,8 @@ echo "  Ingest server:    running on port 7747 (auto-restarts on login)"
 echo "================================================================"
 echo ""
 echo "One step remaining:"
-echo "  Restart Claude Code for hooks and MCP server to take effect."
+echo "  Restart your AI coding assistant for hooks and MCP server to take effect."
 echo ""
-echo "  After that — every Claude session is saved automatically."
-echo "  Every Pi session is saved automatically (if you installed the userscript)."
-echo "  Both feed the same memory — so Claude knows what you discussed with Pi."
+echo "  After that — every session is saved automatically."
+echo "  Other agents can POST sessions to the ingest server at localhost:7747."
 echo ""
