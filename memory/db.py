@@ -7,6 +7,7 @@ import math       # used for cosine similarity calculation (sqrt, dot product)
 import sqlite3    # Python's built-in SQLite driver — no install needed
 import struct     # used to pack float32 arrays into bytes for SQLite blob storage
 from datetime import datetime, timezone, timedelta   # for timestamp arithmetic in consolidation helpers
+import uuid                                           # for generating UUIDs in new Phase 13 helpers
 
 # Try to import SentenceTransformer — the library that converts text into vectors.
 # If not installed, embed() will raise a clear ImportError with a helpful message.
@@ -147,6 +148,43 @@ END;
 """
 
 
+# _INSIGHTS_SCHEMA stores cross-session patterns discovered by the daemon (Phase 13).
+# Insights accumulate over time — each call to upsert_insight adds a new row.
+_INSIGHTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS insights (
+  id           TEXT PRIMARY KEY,   -- UUID generated at insert time
+  insight_type TEXT NOT NULL,      -- "pattern", "preference", or "skill"
+  content      TEXT NOT NULL,      -- the insight text
+  evidence     TEXT,               -- JSON array of session_ids that support this insight
+  confidence   REAL,               -- 0.0–1.0 confidence score from the LLM
+  created_at   TEXT,               -- ISO UTC timestamp when first recorded
+  updated_at   TEXT                -- ISO UTC timestamp of last update
+);
+"""
+
+# _TOPIC_CLUSTERS_SCHEMA stores the centroid and metadata for each topic cluster.
+# Each cluster groups sessions whose transcript embeddings are nearby in vector space.
+_TOPIC_CLUSTERS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS topic_clusters (
+  id           TEXT PRIMARY KEY,   -- UUID generated at cluster-creation time
+  label        TEXT NOT NULL,      -- short human-readable label (first 40 chars of first session)
+  centroid     BLOB,               -- packed float32 centroid embedding (rolling average of members)
+  member_count INTEGER DEFAULT 0,  -- number of sessions assigned to this cluster
+  updated_at   TEXT                -- ISO UTC timestamp of the last member update
+);
+"""
+
+# _CLUSTER_MEMBERSHIPS_SCHEMA records which sessions belong to which cluster.
+# A session can only appear once per cluster (PRIMARY KEY constraint).
+_CLUSTER_MEMBERSHIPS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS cluster_memberships (
+  session_id  TEXT NOT NULL REFERENCES sessions(session_id),
+  cluster_id  TEXT NOT NULL REFERENCES topic_clusters(id),
+  distance    REAL,               -- cosine distance from the session embedding to the centroid
+  PRIMARY KEY (session_id, cluster_id)
+);
+"""
+
 # _SUMMARIES_SCHEMA stores LLM-generated summaries of old sessions (Phase 12).
 # Once a summary exists, the raw transcript can safely be pruned to save space.
 _SUMMARIES_SCHEMA = """
@@ -261,6 +299,24 @@ def init_db(path: str) -> sqlite3.Connection:
     # Create the summaries table for LLM-generated session summaries (Phase 12).
     # Summaries are stored here once ollama has processed an old session.
     conn.executescript(_SUMMARIES_SCHEMA)
+    conn.commit()
+
+    # Create Phase 13 tables: insights, topic_clusters, cluster_memberships.
+    conn.executescript(_INSIGHTS_SCHEMA)
+    conn.commit()
+    conn.executescript(_TOPIC_CLUSTERS_SCHEMA)
+    conn.commit()
+    conn.executescript(_CLUSTER_MEMBERSHIPS_SCHEMA)
+    conn.commit()
+
+    # Add daemon_processed_at column to sessions if not already present.
+    # SQLite's ALTER TABLE does not support IF NOT EXISTS, so we check
+    # the pragma first to avoid errors on an existing database.
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+    if "daemon_processed_at" not in existing_cols:
+        # This column is stamped by mark_session_processed() once the daemon
+        # has fully processed a session (extracted facts, assigned cluster).
+        conn.execute("ALTER TABLE sessions ADD COLUMN daemon_processed_at TEXT")
     conn.commit()
 
     return conn
@@ -1204,6 +1260,316 @@ def sessions_needing_prune(conn: sqlite3.Connection, days_threshold: int) -> lis
         (cutoff,),
     ).fetchall()
 
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Phase 13 additions: daemon processing, insights, and topic clustering
+# ---------------------------------------------------------------------------
+
+def get_unprocessed_sessions(conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
+    """
+    Return up to `limit` sessions that the daemon has not yet processed.
+
+    A session is considered unprocessed when daemon_processed_at IS NULL,
+    which is its initial state after being saved by the hook.
+
+    Args:
+        conn  — open connection from init_db()
+        limit — maximum number of sessions to return (default 10)
+
+    Returns:
+        List of dicts with at least session_id, transcript, updated_at.
+    """
+    # ORDER BY updated_at ASC processes oldest sessions first so nothing ages out.
+    rows = conn.execute(
+        """
+        SELECT session_id, transcript, updated_at, turn_count
+        FROM sessions
+        WHERE daemon_processed_at IS NULL
+          AND transcript IS NOT NULL AND transcript != '[]'
+        ORDER BY updated_at ASC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    # Convert sqlite3.Row objects to plain dicts so callers can use dict syntax.
+    return [dict(r) for r in rows]
+
+
+def mark_session_processed(conn: sqlite3.Connection, session_id: str) -> None:
+    """
+    Stamp daemon_processed_at with the current UTC time for a session.
+
+    Called by the daemon after it has extracted facts and assigned the session
+    to a topic cluster, so the session is not re-processed on the next run.
+
+    Args:
+        conn       — open connection from init_db()
+        session_id — the session to stamp
+    """
+    # datetime.now(timezone.utc).isoformat() gives a standard UTC timestamp string.
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "UPDATE sessions SET daemon_processed_at = ? WHERE session_id = ?",
+        (now, session_id),
+    )
+    conn.commit()
+
+
+def upsert_insight(
+    conn: sqlite3.Connection,
+    insight_type: str,
+    content: str,
+    evidence: list[str],
+    confidence: float,
+) -> str:
+    """
+    Insert a new insight row and return its UUID.
+
+    Insights always accumulate — every call creates a new row.  The caller
+    is responsible for deduplication (e.g. by checking content before calling).
+
+    Args:
+        conn         — open connection from init_db()
+        insight_type — "pattern", "preference", or "skill"
+        content      — the insight text (e.g. "User consistently uses Python")
+        evidence     — list of session_ids that support this insight
+        confidence   — 0.0–1.0 confidence score (from the LLM)
+
+    Returns:
+        The UUID string assigned to the new insight row.
+    """
+    # Generate a unique ID for this insight.
+    insight_id = str(uuid.uuid4())
+
+    # Store the evidence list as a JSON array for portability.
+    evidence_json = json.dumps(evidence or [])
+
+    # Both timestamps start at the moment of creation.
+    now = datetime.now(timezone.utc).isoformat()
+
+    conn.execute(
+        """
+        INSERT INTO insights (id, insight_type, content, evidence, confidence, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (insight_id, insight_type, content, evidence_json, confidence, now, now),
+    )
+    conn.commit()
+    return insight_id
+
+
+def list_insights(
+    conn: sqlite3.Connection,
+    insight_type: str | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """
+    Return stored insights, optionally filtered by type.
+
+    Args:
+        conn         — open connection from init_db()
+        insight_type — optional filter: "pattern", "preference", "skill", or "topic_cluster";
+                       pass None to return all types
+        limit        — maximum number of insights to return (default 20)
+
+    Returns:
+        List of dicts with keys: id, insight_type, content, evidence (as list),
+        confidence, created_at, updated_at. Newest first.
+    """
+    if insight_type is not None:
+        # Filter to only the requested type.
+        rows = conn.execute(
+            """
+            SELECT id, insight_type, content, evidence, confidence, created_at, updated_at
+            FROM insights
+            WHERE insight_type = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (insight_type, limit),
+        ).fetchall()
+    else:
+        # No filter — return all insight types.
+        rows = conn.execute(
+            """
+            SELECT id, insight_type, content, evidence, confidence, created_at, updated_at
+            FROM insights
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    result = []
+    for row in rows:
+        d = dict(row)
+        # Parse the JSON evidence list back into a Python list.
+        d["evidence"] = json.loads(d["evidence"] or "[]")
+        result.append(d)
+    return result
+
+
+def assign_to_cluster(
+    conn: sqlite3.Connection,
+    session_id: str,
+    embedding: list[float],
+    label: str = "",
+) -> str:
+    """
+    Assign a session to the nearest topic cluster, or create a new one.
+
+    Steps:
+      1. Load all existing clusters (id, centroid, member_count).
+      2. Compute cosine distance from embedding to each centroid.
+      3. If best distance < 0.3, assign to that cluster; else create a new cluster.
+      4. Update centroid as a rolling average: (old * old_count + new) / (old_count + 1).
+      5. Upsert a row in cluster_memberships.
+      6. Update topic_clusters.member_count and centroid.
+
+    Args:
+        conn       — open connection from init_db()
+        session_id — the session being clustered
+        embedding  — 384-float embedding of the session transcript
+        label      — optional label for a newly-created cluster
+
+    Returns:
+        The cluster_id (UUID) that the session was assigned to.
+    """
+    # ------------------------------------------------------------------ #
+    # Step 1: Load all existing clusters.                                 #
+    # ------------------------------------------------------------------ #
+    cluster_rows = conn.execute(
+        "SELECT id, centroid, member_count, label FROM topic_clusters"
+    ).fetchall()
+
+    # ------------------------------------------------------------------ #
+    # Step 2: Find the nearest cluster by cosine distance.                #
+    # ------------------------------------------------------------------ #
+    # COSINE_THRESHOLD defines the maximum distance for two embeddings to
+    # be considered "the same topic".  0.3 is a sensible default.
+    COSINE_THRESHOLD = 0.3
+
+    best_cluster_id = None
+    best_distance = float("inf")
+
+    for row in cluster_rows:
+        centroid_blob = bytes(row["centroid"])
+        dist = _cosine_distance(embedding, centroid_blob)
+        if dist < best_distance:
+            best_distance = dist
+            best_cluster_id = row["id"]
+
+    # ------------------------------------------------------------------ #
+    # Step 3: Assign to existing cluster or create a new one.             #
+    # ------------------------------------------------------------------ #
+    now = datetime.now(timezone.utc).isoformat()
+
+    if best_cluster_id is not None and best_distance < COSINE_THRESHOLD:
+        # The session is close enough to an existing cluster — join it.
+        cluster_id = best_cluster_id
+    else:
+        # No close cluster found — create a new one with this embedding as centroid.
+        cluster_id = str(uuid.uuid4())
+        # Use the supplied label (fallback to first 40 chars of session_id).
+        cluster_label = label[:40] if label else session_id[:40]
+        initial_centroid = _pack_vector(embedding)
+        conn.execute(
+            """
+            INSERT INTO topic_clusters (id, label, centroid, member_count, updated_at)
+            VALUES (?, ?, ?, 0, ?)
+            """,
+            (cluster_id, cluster_label, initial_centroid, now),
+        )
+
+    # ------------------------------------------------------------------ #
+    # Step 4: Update centroid as a rolling average.                       #
+    # ------------------------------------------------------------------ #
+    row = conn.execute(
+        "SELECT centroid, member_count FROM topic_clusters WHERE id = ?",
+        (cluster_id,),
+    ).fetchone()
+
+    old_count = row["member_count"]
+    old_centroid_blob = bytes(row["centroid"])
+
+    # Unpack the old centroid from its binary blob.
+    n = len(old_centroid_blob) // 4         # 4 bytes per float32
+    old_centroid = list(struct.unpack(f"<{n}f", old_centroid_blob))
+
+    # Rolling average: new_centroid[i] = (old[i] * old_count + new[i]) / (old_count + 1)
+    new_count = old_count + 1
+    new_centroid = [
+        (old_centroid[i] * old_count + embedding[i]) / new_count
+        for i in range(len(embedding))
+    ]
+    new_centroid_blob = _pack_vector(new_centroid)
+
+    # ------------------------------------------------------------------ #
+    # Step 5: Upsert the cluster_memberships row.                         #
+    # ------------------------------------------------------------------ #
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO cluster_memberships (session_id, cluster_id, distance)
+        VALUES (?, ?, ?)
+        """,
+        (session_id, cluster_id, best_distance if best_cluster_id == cluster_id else 0.0),
+    )
+
+    # ------------------------------------------------------------------ #
+    # Step 6: Update the cluster's centroid and member_count.             #
+    # ------------------------------------------------------------------ #
+    conn.execute(
+        """
+        UPDATE topic_clusters
+        SET centroid = ?, member_count = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (new_centroid_blob, new_count, now, cluster_id),
+    )
+    conn.commit()
+
+    return cluster_id
+
+
+def get_cluster_sessions(conn: sqlite3.Connection, cluster_id: str) -> list[str]:
+    """
+    Return all session_ids assigned to a given cluster.
+
+    Args:
+        conn       — open connection from init_db()
+        cluster_id — UUID of the cluster to query
+
+    Returns:
+        List of session_id strings. Empty list if the cluster has no members.
+    """
+    rows = conn.execute(
+        "SELECT session_id FROM cluster_memberships WHERE cluster_id = ?",
+        (cluster_id,),
+    ).fetchall()
+    # Extract the session_id string from each Row object.
+    return [row["session_id"] for row in rows]
+
+
+def get_clusters(conn: sqlite3.Connection) -> list[dict]:
+    """
+    Return all topic clusters.
+
+    Args:
+        conn — open connection from init_db()
+
+    Returns:
+        List of dicts with keys: id, label, member_count, updated_at.
+        The centroid blob is excluded — use assign_to_cluster for centroid access.
+    """
+    rows = conn.execute(
+        """
+        SELECT id, label, member_count, updated_at
+        FROM topic_clusters
+        ORDER BY member_count DESC
+        """
+    ).fetchall()
     return [dict(r) for r in rows]
 
 

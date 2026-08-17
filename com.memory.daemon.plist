@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Label: the unique identifier for this launchd job.
+       Used by launchctl to load, unload, start, and stop the service. -->
+  <key>Label</key>
+  <string>com.memory.daemon</string>
+
+  <!-- ProgramArguments: the command to run.
+       PROJECT_PATH must be substituted with the absolute path to this project
+       before loading into launchd (the Phase 14 install script handles this). -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>python3</string>
+    <string>PROJECT_PATH/memory/daemon.py</string>
+  </array>
+
+  <!-- RunAtLoad: start the daemon immediately when the plist is loaded.
+       This ensures the daemon starts after a system reboot without manual intervention. -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- KeepAlive: restart the daemon automatically if it exits unexpectedly.
+       This means crashes or unexpected terminations are recovered automatically. -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- StandardOutPath: where the daemon's stdout is written.
+       HOME_PATH must be substituted with the real home directory path before loading.
+       Use ~ placeholders here; the install script substitutes real paths. -->
+  <key>StandardOutPath</key>
+  <string>HOME_PATH/.memory/daemon.log</string>
+
+  <!-- StandardErrorPath: where the daemon's stderr is written.
+       Both stdout and stderr go to the same log file for simplicity. -->
+  <key>StandardErrorPath</key>
+  <string>HOME_PATH/.memory/daemon.log</string>
+</dict>
+</plist>

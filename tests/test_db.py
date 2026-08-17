@@ -28,6 +28,10 @@ from memory.db import (
     insert_summary,
     sessions_needing_prune,
     prune_transcript,
+    # Phase 13 helpers
+    list_insights,
+    assign_to_cluster,
+    get_cluster_sessions,
 )
 
 
@@ -622,6 +626,54 @@ class TestSummaries(unittest.TestCase):
             "SELECT transcript FROM sessions WHERE session_id = ?", ("old-sess",)
         ).fetchone()
         self.assertEqual(row["transcript"], "[]")
+
+
+# ---------------------------------------------------------------------------
+# Test group: Phase 13 — insights table and cluster_memberships
+# ---------------------------------------------------------------------------
+
+class TestPhase13DbHelpers(unittest.TestCase):
+    """
+    Tests for the Phase 13 database helpers added to memory/db.py.
+
+    Tests 10 and 11 from the spec:
+      10. test_insights_table_exists — list_insights returns empty list on fresh DB.
+      11. test_cluster_memberships  — get_cluster_sessions returns session after assign.
+    """
+
+    def setUp(self):
+        # Each test gets a fresh in-memory database — no state leaks.
+        self.conn = init_db(":memory:")
+
+    def test_insights_table_exists(self):
+        """
+        list_insights must return an empty list on a fresh database (table exists but has no rows).
+        """
+        # On a brand-new DB, the insights table exists but is empty.
+        results = list_insights(self.conn)
+        # An empty list — not an error — is the correct response.
+        self.assertEqual(results, [])
+
+    def test_cluster_memberships(self):
+        """
+        After assigning a session to a cluster, get_cluster_sessions must return that session_id.
+        """
+        # Create the session row so the foreign-key constraint is satisfied.
+        upsert_session(
+            self.conn, "sess-cluster", "claude",
+            [{"role": "user", "content": "Hello."}],
+            "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00",
+        )
+
+        # Build a synthetic 384-dimensional embedding where every element is 0.5.
+        embedding = [0.5] * 384
+
+        # Assign the session — this creates a new cluster (first session).
+        cluster_id = assign_to_cluster(self.conn, "sess-cluster", embedding, label="test")
+
+        # get_cluster_sessions must include the assigned session.
+        members = get_cluster_sessions(self.conn, cluster_id)
+        self.assertIn("sess-cluster", members)
 
 
 if __name__ == "__main__":

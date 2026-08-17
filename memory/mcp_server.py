@@ -33,6 +33,9 @@ from memory.db import (
     delete_fact,
     search_facts as db_search_facts,
     list_facts as db_list_facts,
+    # Phase 13: daemon-generated insights and topic clusters
+    list_insights as db_list_insights,
+    get_clusters as db_get_clusters,
 )
 
 # FastMCP is the simplest way to build an MCP server in Python.
@@ -431,6 +434,72 @@ def memory_hybrid_search(query: str, limit: int = 10) -> dict:
 
     conn.close()
     return result
+
+
+# ---------------------------------------------------------------------------
+# Tool: memory_list_insights (Phase 13)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def memory_list_insights(insight_type: str | None = None, limit: int = 20) -> list:
+    """
+    List cross-session insights discovered by the background daemon.
+
+    Insights are patterns, preferences, and skills the system learned
+    from analysing multiple conversations over time.  The daemon must
+    have run at least once (and processed at least INSIGHT_EVERY_N=10
+    sessions) before any insights appear.
+
+    Args:
+        insight_type — optional filter: "pattern", "preference", "skill",
+                       or "topic_cluster"; pass None (or omit) to return all types
+        limit        — maximum number of insights to return (default 20)
+
+    Returns a list of dicts, each with:
+        id, insight_type, content, evidence, confidence, created_at
+    """
+    conn = get_conn()
+
+    # Fetch insights from the database, optionally filtered by type.
+    results = db_list_insights(conn, insight_type=insight_type, limit=limit)
+
+    # Log the retrieval so the dashboard can count how often this tool is called.
+    log_retrieval(conn, "memory_list_insights", insight_type or "(all)", len(str(results)))
+    activity_log(
+        "mcp", "memory_list_insights",
+        insight_type=insight_type or "(all)",
+        results=len(results),
+    )
+    conn.close()
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Tool: memory_list_clusters (Phase 13)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def memory_list_clusters() -> list:
+    """
+    List topic clusters discovered by the background daemon.
+
+    The daemon groups sessions by transcript similarity into topic clusters.
+    Each cluster has a label (derived from the first session's text),
+    a member count, and a last-updated timestamp.
+
+    Returns a list of dicts, each with:
+        id, label, member_count, updated_at
+    """
+    conn = get_conn()
+
+    # Fetch all clusters ordered by member_count descending (biggest first).
+    results = db_get_clusters(conn)
+
+    # Log the retrieval for dashboard reporting.
+    log_retrieval(conn, "memory_list_clusters", "(all)", len(str(results)))
+    activity_log("mcp", "memory_list_clusters", results=len(results))
+    conn.close()
+    return results
 
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@
 import argparse      # parses command-line arguments (the words after "python3 cli.py")
 import json          # for pretty-printing dicts
 import os
+import subprocess    # for launching the daemon as a background process
 import sys
 import webbrowser    # opens the dashboard HTML in the default browser
 
@@ -493,6 +494,169 @@ def cmd_prune(args):
 
 
 # ---------------------------------------------------------------------------
+# Command: daemon (Phase 13)
+# ---------------------------------------------------------------------------
+
+# Paths for the daemon PID file and log file.
+_DAEMON_PID_PATH = os.path.expanduser("~/.memory/daemon.pid")
+_DAEMON_LOG_CLI_PATH = os.path.expanduser("~/.memory/daemon.log")
+
+# Absolute path to the daemon script — constructed from this file's location.
+_DAEMON_SCRIPT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "memory", "daemon.py"
+)
+
+
+def _read_pid() -> int | None:
+    """
+    Read the daemon PID from ~/.memory/daemon.pid.
+
+    Returns the PID as an integer, or None if the file doesn't exist or
+    is not a valid integer (e.g. if it was left over from a crash).
+    """
+    # If the PID file doesn't exist, the daemon is not running (or was never started).
+    if not os.path.exists(_DAEMON_PID_PATH):
+        return None
+    try:
+        with open(_DAEMON_PID_PATH, "r") as f:
+            return int(f.read().strip())
+    except (ValueError, OSError):
+        # File exists but content is not a valid integer — treat as absent.
+        return None
+
+
+def _is_process_running(pid: int) -> bool:
+    """
+    Check whether a process with the given PID is currently alive.
+
+    Uses os.kill(pid, 0) which sends no signal but raises OSError if
+    the process does not exist or we lack permission to signal it.
+
+    Args:
+        pid — the process ID to check
+
+    Returns:
+        True if the process is running, False otherwise.
+    """
+    try:
+        # Signal 0 checks process existence without sending a real signal.
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def cmd_daemon(args):
+    """
+    Manage the background relearning daemon.
+
+    Subcommands:
+      start   — launch the daemon in the background, write PID to ~/.memory/daemon.pid
+      stop    — read PID file and send SIGTERM to the daemon
+      status  — print whether the daemon is running and its PID
+      --once  — run one processing pass and exit (useful for testing)
+    """
+    import signal as sig_mod  # imported locally to avoid shadowing built-in signal
+
+    # Ensure the ~/.memory directory exists before writing PID/log files.
+    os.makedirs(os.path.expanduser("~/.memory"), exist_ok=True)
+
+    sub = getattr(args, "daemon_sub", None)
+
+    if sub == "start" or getattr(args, "daemon_once", False):
+        # --- Handle --once mode: run directly in this process and exit ---
+        if getattr(args, "daemon_once", False):
+            # Import and run the daemon synchronously — useful for CI and manual tests.
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from memory.daemon import run as daemon_run
+            print("Running daemon in --once mode…")
+            daemon_run(once=True)
+            print("Done.")
+            return
+
+        # --- Start the daemon as a background process ---
+        pid = _read_pid()
+        if pid is not None and _is_process_running(pid):
+            print(f"Daemon is already running (PID {pid}).")
+            return
+
+        # Open the log file in append mode for stdout and stderr.
+        log_file = open(_DAEMON_LOG_CLI_PATH, "a")
+
+        # Popen launches the daemon as a separate process.
+        # The daemon's stdout and stderr both go to the shared log file.
+        proc = subprocess.Popen(
+            [sys.executable, _DAEMON_SCRIPT],
+            stdout=log_file,
+            stderr=log_file,
+            # start_new_session=True detaches the daemon from the current terminal
+            # so it keeps running after the shell exits.
+            start_new_session=True,
+        )
+
+        # Write the PID so stop/status can find the process later.
+        with open(_DAEMON_PID_PATH, "w") as f:
+            f.write(str(proc.pid))
+
+        print(f"Daemon started (PID {proc.pid}). Log: {_DAEMON_LOG_CLI_PATH}")
+
+    elif sub == "stop":
+        # --- Stop the daemon by sending SIGTERM ---
+        pid = _read_pid()
+        if pid is None:
+            print("Daemon is not running (no PID file found).")
+            return
+
+        if not _is_process_running(pid):
+            print(f"Daemon PID {pid} is not running. Cleaning up stale PID file.")
+            os.unlink(_DAEMON_PID_PATH)
+            return
+
+        try:
+            # Send SIGTERM — the daemon's signal handler will set _shutdown=True
+            # and the loop will exit cleanly after the current session.
+            os.kill(pid, sig_mod.SIGTERM)
+            print(f"Sent SIGTERM to daemon (PID {pid}).")
+            # Remove the PID file since we expect the daemon to exit shortly.
+            os.unlink(_DAEMON_PID_PATH)
+        except OSError as exc:
+            print(f"Failed to stop daemon (PID {pid}): {exc}")
+
+    elif sub == "status":
+        # --- Show whether the daemon is running ---
+        pid = _read_pid()
+        if pid is None:
+            print("Daemon status: stopped (no PID file).")
+            return
+
+        if _is_process_running(pid):
+            print(f"Daemon status: running (PID {pid}).")
+            # Show how many sessions were processed today by counting processed sessions
+            # from the database.
+            if os.path.exists(DB_PATH):
+                conn = init_db(DB_PATH)
+                today = __import__("datetime").date.today().isoformat()
+                count = conn.execute(
+                    """
+                    SELECT COUNT(*) FROM sessions
+                    WHERE daemon_processed_at IS NOT NULL
+                      AND daemon_processed_at >= ?
+                    """,
+                    (today,),
+                ).fetchone()[0]
+                conn.close()
+                print(f"Sessions processed today: {count}")
+        else:
+            print(f"Daemon status: stopped (PID {pid} is no longer alive).")
+            # Clean up the stale PID file.
+            os.unlink(_DAEMON_PID_PATH)
+
+    else:
+        # Unknown or missing subcommand — print usage help.
+        print("Usage: python3 cli.py daemon <start|stop|status|--once>")
+
+
+# ---------------------------------------------------------------------------
 # Argument parsing + dispatch
 # ---------------------------------------------------------------------------
 
@@ -569,6 +733,25 @@ def main():
         help="Print what would be pruned without writing anything",
     )
 
+    # daemon — manage the background relearning daemon (Phase 13)
+    p_daemon = sub.add_parser(
+        "daemon",
+        help="Start, stop, or check the status of the background relearning daemon",
+    )
+    # Positional sub-subcommand: start, stop, status (optional; --once is a flag).
+    p_daemon.add_argument(
+        "daemon_sub",
+        choices=["start", "stop", "status"],
+        nargs="?",                    # optional — omitted when --once is used
+        help="start | stop | status",
+    )
+    p_daemon.add_argument(
+        "--once",
+        dest="daemon_once",
+        action="store_true",
+        help="Run one processing pass and exit (for testing or manual runs)",
+    )
+
     args = parser.parse_args()
 
     # Dispatch to the right function based on which subcommand was typed.
@@ -582,6 +765,7 @@ def main():
         "logs":        cmd_logs,
         "consolidate": cmd_consolidate,
         "prune":       cmd_prune,
+        "daemon":      cmd_daemon,
     }
     dispatch[args.command](args)
 

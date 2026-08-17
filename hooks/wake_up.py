@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # semantic_search_chunks — finds chunks topically similar to a query string.
 # search_facts — FTS5 full-text search over stored facts.
 # init_db — opens (or creates) the SQLite DB with all schema migrations applied.
-from memory.db import init_db, semantic_search_chunks, search_facts
+from memory.db import init_db, semantic_search_chunks, search_facts, list_insights
 from memory.logger import activity_log, error_log
 
 
@@ -218,9 +218,11 @@ def build_digest(
     identity: str,
     sessions: list[dict],
     facts: list[dict] | None = None,
+    insights: list[dict] | None = None,
 ) -> str:
     """
-    Format the wake-up digest from L0 (identity), L1 (sessions), and L2 (facts).
+    Format the wake-up digest from L0 (identity), L1 (sessions), L2 (facts),
+    and optionally L3 (learned insights from the background daemon).
 
     Sessions can be in two formats:
       - Recency format: dict has 'first_user_message' key (from fetch_recent_sessions).
@@ -233,8 +235,13 @@ def build_digest(
       - [] → no [L2] section, but relevance heading (search ran, found nothing)
       - non-empty list → [L2 — Relevant Facts] section with bullet points
 
-    The facts=None default keeps backward compatibility with existing callers
-    that only pass identity and sessions.
+    The 'insights' parameter controls the optional [L3 — Learned Insights] section:
+      - None (default) → no [L3] section (daemon has not run yet or no insights stored)
+      - [] → no [L3] section (daemon ran but found nothing noteworthy)
+      - non-empty list → [L3 — Learned Insights] with one bullet per insight
+
+    The insights=None default keeps backward compatibility with existing callers
+    that don't pass insights.
     """
     # Start with the outer markers so Claude can easily spot the injected block.
     lines = ["=== MEMORY WAKE-UP ===", ""]
@@ -295,6 +302,23 @@ def build_digest(
             else:
                 lines.append(f"• {content}")
         lines.append("")
+
+    # --- L3: Learned Insights section (Phase 13) ---
+    # Only shown when the daemon has generated insights (insights is a non-empty list).
+    # insights=None → omit section entirely (daemon has never run or no insights).
+    # insights=[]   → omit section (daemon ran but found nothing).
+    # insights=[..] → emit the [L3] block with one bullet per insight.
+    if insights:
+        lines.append("[L3 — Learned Insights]")
+        for insight in insights:
+            content      = insight.get("content", "")
+            itype        = insight.get("insight_type", "pattern")
+            confidence   = insight.get("confidence", 0.0)
+            # Format: "• content (type, confidence XX%)"
+            lines.append(f"• {content} ({itype}, confidence {confidence:.0%})")
+        lines.append("")
+        # Log so the activity log reflects how many insights were injected.
+        activity_log("wake_up", "insights_injected", count=len(insights))
 
     lines.append("=== END MEMORY ===")
     return "\n".join(lines)
@@ -358,12 +382,28 @@ def get_wake_up_digest(
         activity_log("wake_up", "fallback", reason=reason, recency_sessions=len(sessions))
 
     mode = "recency" if facts is None else "relevance"
+
+    # --- L3: Load top 3 insights from the daemon (Phase 13) ---
+    # We attempt to read insights only when we have a DB connection.
+    # If the insights table is empty or the DB is unavailable, insights stays None
+    # so build_digest omits the [L3] section gracefully.
+    insights: list[dict] | None = None
+    if conn is not None:
+        try:
+            raw_insights = list_insights(conn, limit=3)
+            if raw_insights:
+                # Only populate the list when there are actual insights to show.
+                insights = raw_insights
+        except Exception:
+            # Never let insight loading crash the wake-up hook.
+            insights = None
+
     activity_log(
         "wake_up", "injected",
         session=session_id, mode=mode,
         sessions=len(sessions), facts=len(facts) if facts else 0,
     )
-    return build_digest(identity, sessions, facts)
+    return build_digest(identity, sessions, facts, insights=insights)
 
 
 def main() -> None:
