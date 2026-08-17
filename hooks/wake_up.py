@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # semantic_search_chunks — finds chunks topically similar to a query string.
 # search_facts — FTS5 full-text search over stored facts.
 # init_db — opens (or creates) the SQLite DB with all schema migrations applied.
-from memory.db import init_db, semantic_search_chunks, search_facts, list_insights
+from memory.db import init_db, semantic_search_chunks, search_facts, list_insights, log_retrieval
 from memory.logger import activity_log, error_log
 
 
@@ -449,6 +449,19 @@ def main() -> None:
 
         # Build the digest using relevance search (or recency fallback).
         digest = get_wake_up_digest(conn, session_id, prompt, identity)
+
+        # Log the injection size to the retrievals table so token economics
+        # can be tracked. We estimate tokens by dividing character count by 4
+        # (a standard rough approximation). This reuses the existing retrievals
+        # table — no schema change needed.
+        try:
+            injection_tokens = len(digest) // 4
+            if conn is not None:
+                log_retrieval(conn, "wake_up_injection", None, injection_tokens)
+            activity_log("wake_up", "injection_size", chars=len(digest), est_tokens=injection_tokens)
+        except Exception:
+            # Never let logging block the injection — silently ignore failures.
+            pass
 
         if conn is not None:
             conn.close()

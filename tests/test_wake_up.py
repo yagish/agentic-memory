@@ -357,5 +357,79 @@ class TestRelevanceWakeUp(unittest.TestCase):
         self.assertNotIn("Relevant Facts", digest)
 
 
+# ---------------------------------------------------------------------------
+# Phase 15: injection-size logging test
+# ---------------------------------------------------------------------------
+
+import io
+from unittest.mock import MagicMock, patch
+
+import hooks.wake_up as _wu_module
+
+
+class TestInjectionSizeLogged(unittest.TestCase):
+    """Test that main() logs the injection size via log_retrieval."""
+
+    def test_injection_size_logged(self):
+        """
+        When main() runs for a new session, it must call log_retrieval with
+        tool='wake_up_injection' and result_size = len(digest) // 4.
+        We mock get_wake_up_digest so the digest is a fixed string and we
+        mock init_db so a fake connection is provided (conn is not None).
+        """
+        # A digest of exactly 400 characters → 400 // 4 = 100 est. tokens.
+        fake_digest = "x" * 400
+
+        # Use a session ID that is unlikely to collide with a real flag file.
+        session_id = "test-injection-logging-phase15"
+        flag_path  = f"/tmp/memory_injected_{session_id}"
+
+        # Remove a stale flag file from a previous test run if one exists.
+        if os.path.exists(flag_path):
+            os.remove(flag_path)
+
+        try:
+            payload = json.dumps({"session_id": session_id, "prompt": "hello"})
+
+            # os.path.exists is called twice in main():
+            #   1. flag_path check  → must return False so we don't skip
+            #   2. DB_PATH check    → must return True so conn is attempted
+            # We fake DB_PATH to a sentinel value and match only that.
+            fake_db_path = "/fake/nonexistent_for_test.db"
+
+            def fake_exists(path):
+                """Return True only for our fake DB path; False for everything else."""
+                return path == fake_db_path
+
+            with patch("sys.stdin",  io.StringIO(payload)), \
+                 patch("sys.exit"), \
+                 patch.object(_wu_module, "DB_PATH",    fake_db_path), \
+                 patch("os.path.exists",                side_effect=fake_exists), \
+                 patch.object(_wu_module, "init_db",    return_value=MagicMock()) as mock_init_db, \
+                 patch.object(_wu_module, "get_wake_up_digest", return_value=fake_digest), \
+                 patch.object(_wu_module, "log_retrieval") as mock_log_retrieval, \
+                 patch.object(_wu_module, "activity_log"):
+
+                _wu_module.main()
+
+            # log_retrieval must have been called exactly once.
+            mock_log_retrieval.assert_called_once()
+
+            # Verify the positional arguments:
+            #   arg[0] = conn (MagicMock)
+            #   arg[1] = tool = 'wake_up_injection'
+            #   arg[2] = query = None
+            #   arg[3] = result_size = 100  (400 chars // 4)
+            call_args = mock_log_retrieval.call_args[0]
+            self.assertEqual(call_args[1], "wake_up_injection")
+            self.assertIsNone(call_args[2])
+            self.assertEqual(call_args[3], 100)
+
+        finally:
+            # Clean up the flag file written by main() during the test.
+            if os.path.exists(flag_path):
+                os.remove(flag_path)
+
+
 if __name__ == "__main__":
     unittest.main()

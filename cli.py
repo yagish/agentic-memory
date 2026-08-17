@@ -42,6 +42,59 @@ def get_conn():
 # Command: status
 # ---------------------------------------------------------------------------
 
+def _get_token_economics(conn):
+    """
+    Query the retrievals table for injection and retrieval token totals.
+
+    Returns a dict with:
+      injection_total   — sum of est. tokens injected by wake_up_injection rows
+      retrieval_total   — sum of est. tokens returned by MCP tool calls
+      coverage_ratio    — retrieval_total / injection_total, or None if no injections
+      injection_count   — number of wake-up injection events recorded
+      retrieval_count   — number of distinct MCP tool queries recorded
+    """
+    # Total estimated tokens injected via wake-up (all 'wake_up_injection' rows).
+    row = conn.execute(
+        "SELECT COALESCE(SUM(result_size), 0) FROM retrievals WHERE tool = 'wake_up_injection'"
+    ).fetchone()
+    injection_total = row[0]
+
+    # Total estimated tokens returned by MCP tool calls (everything that is NOT
+    # a wake-up injection).
+    row = conn.execute(
+        "SELECT COALESCE(SUM(result_size), 0) FROM retrievals WHERE tool != 'wake_up_injection'"
+    ).fetchone()
+    retrieval_total = row[0]
+
+    # Coverage ratio: how much context was retrieved per token injected.
+    # A ratio >= 1.0 means retrievals returned at least as much context as was injected.
+    if injection_total > 0:
+        coverage_ratio = retrieval_total / injection_total
+    else:
+        # No injections recorded yet — ratio is undefined.
+        coverage_ratio = None
+
+    # Count how many wake-up injection events are recorded (proxy for sessions seen).
+    row2 = conn.execute(
+        "SELECT COUNT(*) FROM retrievals WHERE tool = 'wake_up_injection'"
+    ).fetchone()
+    injection_count = row2[0]
+
+    # Count how many distinct MCP tool queries have been logged.
+    row3 = conn.execute(
+        "SELECT COUNT(DISTINCT query) FROM retrievals WHERE tool != 'wake_up_injection'"
+    ).fetchone()
+    retrieval_count = row3[0]
+
+    return {
+        "injection_total":  injection_total,
+        "retrieval_total":  retrieval_total,
+        "coverage_ratio":   coverage_ratio,
+        "injection_count":  injection_count,
+        "retrieval_count":  retrieval_count,
+    }
+
+
 def cmd_status(_args):
     """Print a summary of everything stored in the database."""
     conn = get_conn()
@@ -59,6 +112,13 @@ def cmd_status(_args):
     ).fetchone()[0]
     estimated_tokens = char_count // 4
 
+    # Gather token economics data before closing the connection.
+    # We wrap in try/except so a missing or empty table never crashes status.
+    try:
+        econ = _get_token_economics(conn)
+    except Exception:
+        econ = None
+
     conn.close()
 
     print("=== Memory Status ===")
@@ -69,6 +129,27 @@ def cmd_status(_args):
     print(f"  Retrievals logged : {total_retrievals}")
     print(f"  Oldest session    : {date_row[0] or 'none'}")
     print(f"  Newest session    : {date_row[1] or 'none'}")
+
+    # Token economics section — shows injection overhead vs. retrieval yield.
+    if econ is not None:
+        print("\n=== Token Economics ===")
+        print(f"  Wake-up injections:    {econ['injection_count']} sessions")
+        print(f"  Est. tokens injected:  {econ['injection_total']:,}")
+        print(f"  Est. tokens retrieved: {econ['retrieval_total']:,}")
+        if econ['coverage_ratio'] is not None:
+            # Format as a decimal ratio and a percentage (e.g. 1.25x  125%).
+            ratio_pct = econ['coverage_ratio'] * 100
+            print(f"  Coverage ratio:        {econ['coverage_ratio']:.2f}x ({ratio_pct:.0f}%)")
+            # Plain-English sentence so readers do not have to interpret the number.
+            if econ['coverage_ratio'] >= 1.0:
+                interp = "retrievals returned more context than was injected"
+            elif econ['coverage_ratio'] >= 0.5:
+                interp = "retrievals cover about half of injection overhead"
+            else:
+                interp = "retrievals cover less than half of injection overhead"
+            print(f"  Interpretation:        {interp}")
+        else:
+            print(f"  Coverage ratio:        N/A (no injections recorded yet)")
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +333,32 @@ def cmd_dashboard(_args):
         """
     ).fetchall()
 
+    # Token economics — gathered here while the connection is still open.
+    # We wrap in try/except so a missing or empty retrievals table never
+    # crashes the dashboard generation.
+    try:
+        dash_econ = _get_token_economics(conn)
+    except Exception:
+        dash_econ = None
+
     conn.close()
+
+    # --- Build token economics strings for the dashboard card ---
+    # Convert the economics dict to display-ready strings so the HTML template
+    # stays clean (no conditionals inside the f-string).
+    if dash_econ is not None:
+        econ_injection_total  = f"{dash_econ['injection_total']:,}"
+        econ_retrieval_total  = f"{dash_econ['retrieval_total']:,}"
+        if dash_econ['coverage_ratio'] is not None:
+            econ_coverage_ratio_str = f"{dash_econ['coverage_ratio']:.2f}x"
+        else:
+            # No injections have been logged yet.
+            econ_coverage_ratio_str = "N/A"
+    else:
+        # Economics data unavailable — show dashes so the card still renders.
+        econ_injection_total     = "—"
+        econ_retrieval_total     = "—"
+        econ_coverage_ratio_str  = "—"
 
     # --- Build chart data as JSON strings for embedding in HTML ---
 
@@ -379,6 +485,28 @@ def cmd_dashboard(_args):
     <thead><tr><th>Tool</th><th>Query</th><th>Result size</th><th>Called at</th></tr></thead>
     <tbody>{recent_retrieval_rows_html or '<tr><td colspan="4">No retrievals yet</td></tr>'}</tbody>
   </table>
+</div>
+
+<div class="card">
+  <h2>Token Economics</h2>
+  <div class="stats">
+    <div class="stat">
+      <div class="value">{econ_injection_total}</div>
+      <div class="label">Est. tokens injected</div>
+    </div>
+    <div class="stat">
+      <div class="value">{econ_retrieval_total}</div>
+      <div class="label">Est. tokens retrieved</div>
+    </div>
+    <div class="stat">
+      <div class="value">{econ_coverage_ratio_str}</div>
+      <div class="label">Coverage ratio</div>
+    </div>
+  </div>
+  <p style="font-size:0.8rem;color:#64748b;margin-top:0.75rem;">
+    Coverage ratio &ge; 1.0 means retrievals returned more context than was injected.
+    It does not measure tokens saved vs. a baseline &mdash; that would require a control group.
+  </p>
 </div>
 
 <script>
