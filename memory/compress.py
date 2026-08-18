@@ -70,25 +70,69 @@ class CompressResult:
 
 # ── Ollama lifecycle ──────────────────────────────────────────────────────────
 
-def _ensure_ollama() -> None:
+def _ensure_ollama(model: str | None = None) -> None:
     """
-    Confirm ollama is reachable. If not, start it via `open -a Ollama` (macOS)
-    and wait up to 30 s. Raises RuntimeError if it never comes up.
+    Confirm ollama is reachable and the required model is pulled.
+    If Ollama is not running, start it and wait up to 30 s.
+    Raises RuntimeError with an actionable message on any failure.
     """
     def _is_up() -> bool:
-        # Check if ollama API is responding.
         try:
             with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2):
                 return True
         except Exception:
             return False
 
+    def _check_model(m: str) -> None:
+        try:
+            with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2) as r:
+                tags = json.loads(r.read())
+            names = [entry.get("name", "") for entry in tags.get("models", [])]
+            if not any(n == m or n.startswith(m.split(":")[0]) for n in names):
+                raise RuntimeError(
+                    f"Model '{m}' is not pulled. Run: ollama pull {m}"
+                )
+        except RuntimeError:
+            raise
+        except Exception:
+            pass  # can't verify — let the generate call surface the error
+
+    def _pull_model(m: str) -> None:
+        ollama_bin = None
+        for candidate in ["/opt/homebrew/bin/ollama", "/usr/local/bin/ollama"]:
+            if os.path.isfile(candidate):
+                ollama_bin = candidate
+                break
+        if ollama_bin is None:
+            return
+        try:
+            subprocess.run([ollama_bin, "pull", m], timeout=300, check=True)
+        except Exception:
+            pass  # pull failed — let the generate call surface the error
+
     if _is_up():
+        if model:
+            try:
+                _check_model(model)
+            except RuntimeError:
+                _pull_model(model)
+                _check_model(model)  # raises if pull failed
         return
 
-    # Ollama is not running — try to launch it on macOS.
+    # Try to find the ollama binary and start the server.
+    ollama_bin = None
+    for candidate in ["/opt/homebrew/bin/ollama", "/usr/local/bin/ollama"]:
+        if os.path.isfile(candidate):
+            ollama_bin = candidate
+            break
+    if ollama_bin is None:
+        raise RuntimeError(
+            "Ollama is not running and could not be found. "
+            "Install via: brew install ollama"
+        )
     try:
-        subprocess.Popen(["open", "-a", "Ollama"])
+        subprocess.Popen([ollama_bin, "serve"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception as exc:
         raise RuntimeError(
             f"Ollama is not running and could not be started: {exc}"
@@ -127,6 +171,13 @@ def _call_ollama(prompt: str, model: str) -> str:
     try:
         with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
             data = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise RuntimeError(
+                f"Model '{model}' not found in Ollama. "
+                f"Pull it first: ollama pull {model}"
+            ) from exc
+        raise RuntimeError(f"Ollama HTTP error {exc.code}: {exc}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Ollama unavailable: {exc}") from exc
     if "response" not in data:
@@ -265,8 +316,8 @@ def compress_memory(
     """
     m = model or _DEFAULT_MODEL
 
-    # Ensure ollama is running before making any LLM calls.
-    _ensure_ollama()
+    # Ensure ollama is running and the model is pulled before making any LLM calls.
+    _ensure_ollama(m)
 
     # Step 1: Load sessions.
     sessions = get_all_sessions_for_compression(conn)

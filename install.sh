@@ -95,7 +95,32 @@ echo "Installing Python dependencies..."
 pip3 install --quiet --user mcp fastmcp sentence-transformers fastapi uvicorn pydantic psutil setproctitle
 echo "  + Dependencies installed"
 
-# ── Step 3: Memory directory ─────────────────────────────────────────────────
+# ── Step 3: Ollama model ─────────────────────────────────────────────────────
+OLLAMA_MODEL="${MEMORY_OLLAMA_MODEL:-llama3.2:3b}"
+echo ""
+echo "Checking Ollama model ($OLLAMA_MODEL)..."
+OLLAMA_BIN=""
+for _candidate in /opt/homebrew/bin/ollama /usr/local/bin/ollama; do
+    if [ -f "$_candidate" ]; then
+        OLLAMA_BIN="$_candidate"
+        break
+    fi
+done
+if [ -z "$OLLAMA_BIN" ]; then
+    echo "  ! ollama not found — skipping model pull (install via: brew install ollama)"
+elif ! "$OLLAMA_BIN" list 2>/dev/null | grep -q "^${OLLAMA_MODEL%%:*}"; then
+    echo "  Pulling $OLLAMA_MODEL (this may take a few minutes)..."
+    if "$OLLAMA_BIN" pull "$OLLAMA_MODEL"; then
+        echo "  + Model $OLLAMA_MODEL ready"
+    else
+        echo "  ! Model pull failed — retry manually: ollama pull $OLLAMA_MODEL"
+        echo "  ! Compression will auto-pull on first use."
+    fi
+else
+    echo "  = Model $OLLAMA_MODEL already present"
+fi
+
+# ── Step 4: Memory directory ─────────────────────────────────────────────────
 mkdir -p "$HOME/.memory"
 echo ""
 echo "Memory directory: $HOME/.memory/"
@@ -205,6 +230,11 @@ echo "Installing background daemon (auto-extracts facts, builds insights)..."
 # Homebrew/framework Python.  Using the absolute path avoids that mismatch.
 PYTHON3_EXEC="$(python3 -c 'import sys; print(sys.executable)')"
 
+# Capture the user site-packages path so we can inject it into launchd's env.
+# launchd runs with a minimal environment and doesn't add --user site-packages
+# to sys.path automatically, which breaks imports of fastapi, uvicorn, etc.
+PYTHON_USER_SITE="$($PYTHON3_EXEC -c 'import site; print(site.getusersitepackages())')"
+
 # Write the daemon plist directly so paths are always correct, regardless of
 # whether the source template has been modified by a previous install run.
 cat > "$HOME/Library/LaunchAgents/com.memory.daemon.plist" << PLIST_EOF
@@ -219,6 +249,13 @@ cat > "$HOME/Library/LaunchAgents/com.memory.daemon.plist" << PLIST_EOF
     <string>$PYTHON3_EXEC</string>
     <string>$INSTALL_DIR/memory/daemon.py</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONPATH</key>
+    <string>$PYTHON_USER_SITE</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -252,6 +289,13 @@ cat > "$HOME/Library/LaunchAgents/com.memory.ingest.plist" << PLIST_EOF
     <string>$PYTHON3_EXEC</string>
     <string>$INSTALL_DIR/memory/ingest_server.py</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONPATH</key>
+    <string>$PYTHON_USER_SITE</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -284,6 +328,13 @@ cat > "$HOME/Library/LaunchAgents/com.memory.query.plist" << PLIST_EOF
     <string>$PYTHON3_EXEC</string>
     <string>$INSTALL_DIR/memory/dashboard_server.py</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONPATH</key>
+    <string>$PYTHON_USER_SITE</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>

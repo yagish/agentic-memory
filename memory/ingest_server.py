@@ -401,6 +401,12 @@ def post_compress() -> dict:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    import logging
     import setproctitle
     setproctitle.setproctitle("AgenticMemoryIngest")
-    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
+    logging.basicConfig(
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+        level=logging.INFO,
+    )
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="info")

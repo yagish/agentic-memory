@@ -44,6 +44,7 @@ _LOG_FILES: dict[str, str] = {
     "daemon": os.path.expanduser("~/.memory/daemon.log"),
     "query":  os.path.expanduser("~/.memory/query.log"),
     "ingest": os.path.expanduser("~/.memory/ingest.log"),
+    "ollama": "/opt/homebrew/var/log/ollama.log",
 }
 
 # launchd service labels for launchctl kickstart.
@@ -57,14 +58,14 @@ _LAUNCHCTL_LABELS: dict[str, str] = {
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
 def _check_ollama() -> tuple[bool, str | None]:
-    """Return (running, model_name). Tries /api/ps then /api/tags."""
+    """Return (running, model_name|None). Running = API responds 200."""
     for path in ("/api/ps", "/api/tags"):
         try:
             with urllib.request.urlopen(f"http://localhost:11434{path}", timeout=2) as r:
                 if r.status == 200:
                     models = json.loads(r.read()).get("models", [])
-                    if models:
-                        return True, models[0].get("name")
+                    model = models[0].get("name") if models else None
+                    return True, model
         except Exception:
             pass
     return False, None
@@ -340,8 +341,16 @@ def get_logs(service: str, lines: int = 200) -> dict:
 def post_restart(service: str) -> dict:
     """Restart a memory service via launchctl kickstart, or open Ollama."""
     if service == "ollama":
+        ollama_bin = None
+        for candidate in ["/opt/homebrew/bin/ollama", "/usr/local/bin/ollama"]:
+            if os.path.isfile(candidate):
+                ollama_bin = candidate
+                break
+        if ollama_bin is None:
+            raise HTTPException(status_code=500, detail="ollama binary not found")
         try:
-            subprocess.Popen(["open", "-a", "Ollama"])
+            subprocess.Popen([ollama_bin, "serve"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return {"ok": True, "service": service}
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
@@ -398,6 +407,12 @@ app.include_router(memory_router)
 app.include_router(ops_router)
 
 if __name__ == "__main__":
+    import logging
     import setproctitle
     setproctitle.setproctitle("AgenticMemoryDashboard")
-    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
+    logging.basicConfig(
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+        level=logging.INFO,
+    )
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="info")
