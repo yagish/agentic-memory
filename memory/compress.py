@@ -16,7 +16,9 @@
 
 import json
 import os
+import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -64,6 +66,43 @@ class CompressResult:
     sessions_compressed: int  # how many sessions were folded in
     model: str                # ollama model used
     created_at: str           # ISO UTC timestamp of this run
+
+
+# ── Ollama lifecycle ──────────────────────────────────────────────────────────
+
+def _ensure_ollama() -> None:
+    """
+    Confirm ollama is reachable. If not, start it via `open -a Ollama` (macOS)
+    and wait up to 30 s. Raises RuntimeError if it never comes up.
+    """
+    def _is_up() -> bool:
+        # Check if ollama API is responding.
+        try:
+            with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2):
+                return True
+        except Exception:
+            return False
+
+    if _is_up():
+        return
+
+    # Ollama is not running — try to launch it on macOS.
+    try:
+        subprocess.Popen(["open", "-a", "Ollama"])
+    except Exception as exc:
+        raise RuntimeError(
+            f"Ollama is not running and could not be started: {exc}"
+        ) from exc
+
+    # Poll until it is ready (up to 30 s).
+    for _ in range(30):
+        time.sleep(1)
+        if _is_up():
+            return
+
+    raise RuntimeError(
+        "Ollama was launched but did not become ready within 30 seconds."
+    )
 
 
 # ── Ollama client ─────────────────────────────────────────────────────────────
@@ -225,6 +264,9 @@ def compress_memory(
         RuntimeError if there are no sessions to compress or ollama is unreachable.
     """
     m = model or _DEFAULT_MODEL
+
+    # Ensure ollama is running before making any LLM calls.
+    _ensure_ollama()
 
     # Step 1: Load sessions.
     sessions = get_all_sessions_for_compression(conn)
