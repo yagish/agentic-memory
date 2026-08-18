@@ -24,6 +24,7 @@ from memory.db import (
     search_facts,
     list_facts,
     hybrid_search,
+    find_direct_answer,
     # Phase 12 helpers
     insert_summary,
     sessions_needing_prune,
@@ -575,6 +576,66 @@ class TestHybridSearch(unittest.TestCase):
             # The snippet must be a non-empty string — not None and not "".
             self.assertIsInstance(r["snippet"], str)
             self.assertGreater(len(r["snippet"]), 0)
+
+
+# ---------------------------------------------------------------------------
+# Test group: direct-answer lookup for repeated prompts
+# ---------------------------------------------------------------------------
+
+class TestDirectAnswerLookup(unittest.TestCase):
+
+    def setUp(self):
+        self.conn = init_db(":memory:")
+        upsert_session(
+            self.conn,
+            "qa-1",
+            "pi",
+            [
+                {"role": "user", "content": "What is the capital of France?"},
+                {"role": "assistant", "content": "The capital of France is Paris."},
+            ],
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:00:00Z",
+        )
+        upsert_session(
+            self.conn,
+            "qa-2",
+            "pi",
+            [
+                {"role": "user", "content": "How do I run the tests?"},
+                {"role": "assistant", "content": "Run python3 -m pytest -q."},
+            ],
+            "2026-01-02T00:00:00Z",
+            "2026-01-02T00:00:00Z",
+        )
+
+    def test_find_direct_answer_exact_match(self):
+        result = find_direct_answer(self.conn, "What is the capital of France?")
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result["session_id"], "qa-1")
+        self.assertEqual(result["answer"], "The capital of France is Paris.")
+        self.assertGreaterEqual(result["similarity"], 0.99)
+
+    def test_find_direct_answer_ignores_punctuation_variants(self):
+        result = find_direct_answer(self.conn, "what is the capital of france")
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result["session_id"], "qa-1")
+
+    def test_find_direct_answer_returns_none_for_weak_match(self):
+        result = find_direct_answer(self.conn, "Tell me about French history")
+        self.assertIsNone(result)
+
+    def test_find_direct_answer_can_exclude_current_session(self):
+        result = find_direct_answer(
+            self.conn,
+            "How do I run the tests?",
+            exclude_session_id="qa-2",
+        )
+        self.assertIsNone(result)
 
 
 # ---------------------------------------------------------------------------

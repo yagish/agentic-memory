@@ -154,6 +154,46 @@ class MemoryClient:
 
         return self._post("/ingest", payload)
 
+    def recall(self, query: str, session_id: str | None = None) -> dict:
+        """
+        POST /recall — build a memory wake-up digest for a prompt.
+
+        Args:
+            query      — the user's prompt text
+            session_id — optional current session ID to exclude from retrieval
+
+        Returns:
+            {
+              "ok": True,
+              "mode": "relevance" | "recency",
+              "digest": "=== MEMORY WAKE-UP === ...",
+              "session_count": <int>,
+              "fact_count": <int>,
+              "insight_count": <int>
+            }
+        """
+        payload: dict = {"query": query}
+        if session_id is not None:
+            payload["session_id"] = session_id
+        return self._post("/recall", payload)
+
+    def direct_answer(
+        self,
+        query: str,
+        session_id: str | None = None,
+        min_score: float = 0.93,
+    ) -> dict:
+        """
+        POST /answer — try to answer a prompt directly from memory.
+
+        This is useful for prompt interception in other agents: if the same
+        question was answered before, the caller can short-circuit the LLM.
+        """
+        payload: dict = {"query": query, "min_score": min_score}
+        if session_id is not None:
+            payload["session_id"] = session_id
+        return self._post("/answer", payload)
+
     def status(self) -> dict:
         """
         GET /status — return the server's health summary.

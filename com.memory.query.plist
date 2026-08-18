@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Label: unique identifier for this launchd job. -->
+  <key>Label</key>
+  <string>com.memory.query</string>
+
+  <!-- ProgramArguments: the query server script.
+       install.sh writes the absolute python3 path at install time. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Library/Frameworks/Python.framework/Versions/3.13/bin/python3</string>
+    <string>/Users/ys68052/work/agentic-memory/memory/query_server.py</string>
+  </array>
+
+  <!-- RunAtLoad: start immediately when plist is loaded, and on every login. -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- KeepAlive: restart automatically if the process exits unexpectedly. -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- Both stdout and stderr go to query.log for easy tailing. -->
+  <key>StandardOutPath</key>
+  <string>/Users/ys68052/.memory/query.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/ys68052/.memory/query.log</string>
+</dict>
+</plist>

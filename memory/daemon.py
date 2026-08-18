@@ -20,6 +20,7 @@ import json              # for encoding request body and decoding JSON responses
 import os               # for environment variable access and path expansion
 import signal           # for handling SIGTERM / SIGINT gracefully
 import struct           # for packing float arrays into blobs (used indirectly via db)
+import subprocess       # for starting and stopping the ollama process
 import sys              # for sys.path manipulation at the bottom
 import time             # for sleep between polling cycles
 import urllib.error      # for catching connection errors to ollama
@@ -75,6 +76,9 @@ CPU_THRESHOLD = 70
 # Global flag set by signal handlers so the main loop can exit cleanly.
 _shutdown = False
 
+# Base URL for the local ollama HTTP API (used for both health checks and inference).
+_OLLAMA_BASE = "http://localhost:11434"
+
 
 # ---------------------------------------------------------------------------
 # Signal handling
@@ -124,6 +128,102 @@ def _daemon_log(message: str) -> None:
     except Exception:
         # Logging must never crash the daemon — silently ignore errors here.
         pass
+
+
+# ---------------------------------------------------------------------------
+# Ollama lifecycle — start on demand, stop when done
+# ---------------------------------------------------------------------------
+
+def _is_ollama_running() -> bool:
+    """
+    Return True if the local ollama server is responding to HTTP requests.
+
+    We hit /api/tags (lists downloaded models) rather than /api/generate
+    because it's cheap and doesn't require a model to be loaded.
+    """
+    try:
+        # timeout=2 so we don't block the daemon for long if ollama is down.
+        with urllib.request.urlopen(f"{_OLLAMA_BASE}/api/tags", timeout=2) as resp:
+            return resp.status == 200
+    except Exception:
+        # Any error (connection refused, timeout, etc.) means ollama is not up.
+        return False
+
+
+def _start_ollama_if_needed() -> "subprocess.Popen | None":
+    """
+    Start the ollama server if it isn't already running.
+
+    Returns the Popen object for the ollama process if WE started it,
+    or None if ollama was already running (in which case we leave it alone)
+    or if the start attempt failed.
+
+    The caller must call _stop_ollama() on the returned Popen object
+    once it is done with LLM calls.
+    """
+    # If ollama is already up, do nothing — we don't own that process.
+    if _is_ollama_running():
+        _daemon_log("ollama already running — will not stop it after extraction")
+        return None
+
+    # Try to start 'ollama serve' as a background process.
+    try:
+        proc = subprocess.Popen(
+            ["ollama", "serve"],
+            # Discard ollama's own stdout/stderr — it's noisy and goes to daemon.log
+            # otherwise, polluting our fact-extraction log.
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        # ollama is not installed or not in PATH — can't do LLM extraction.
+        _daemon_log("ollama binary not found in PATH — skipping fact extraction")
+        return None
+    except Exception as exc:
+        _daemon_log(f"failed to launch ollama: {exc}")
+        return None
+
+    _daemon_log(f"started ollama (PID {proc.pid}) for fact extraction")
+
+    # Wait up to 12 seconds for ollama to become ready before we try to use it.
+    # Each iteration sleeps 1 second, so we try 12 times.
+    for attempt in range(12):
+        time.sleep(1)
+        if _is_ollama_running():
+            _daemon_log(f"ollama ready after {attempt + 1}s")
+            return proc
+
+    # If ollama didn't become ready in time, kill it and give up.
+    _daemon_log("ollama did not become ready in 12s — killing it")
+    try:
+        proc.terminate()
+        proc.wait(timeout=5)
+    except Exception:
+        pass
+    return None
+
+
+def _stop_ollama(proc: "subprocess.Popen") -> None:
+    """
+    Terminate the ollama process we started.
+
+    Sends SIGTERM (graceful) and waits up to 5 seconds.
+    If it doesn't exit, sends SIGKILL.
+
+    Args:
+        proc — the Popen object returned by _start_ollama_if_needed()
+    """
+    try:
+        proc.terminate()   # SIGTERM — asks ollama to shut down gracefully
+        proc.wait(timeout=5)
+        _daemon_log(f"stopped ollama (PID {proc.pid}) — freeing memory")
+    except subprocess.TimeoutExpired:
+        # SIGTERM wasn't enough — force-kill.
+        _daemon_log(f"ollama (PID {proc.pid}) did not stop; sending SIGKILL")
+        proc.kill()
+        proc.wait()
+    except Exception as exc:
+        _daemon_log(f"error stopping ollama: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -491,6 +591,11 @@ def run(once: bool = False) -> None:
         sessions = get_unprocessed_sessions(conn, limit=10)
 
         if sessions:
+            # Start ollama only while we need it for LLM inference.
+            # _start_ollama_if_needed() returns the Popen object we own (we must stop it),
+            # or None if ollama was already running (we leave it alone) or failed to start.
+            _ollama_proc = _start_ollama_if_needed()
+
             # Process each unprocessed session in turn.
             for session in sessions:
                 if _shutdown:
@@ -523,6 +628,11 @@ def run(once: bool = False) -> None:
                 except Exception as exc:
                     error_log("daemon", "cross-session insight generation failed", exc=exc)
                     _daemon_log(f"insight generation error: {exc}")
+
+            # Stop ollama if the daemon started it — free its memory now that
+            # inference is done for this cycle.
+            if _ollama_proc is not None:
+                _stop_ollama(_ollama_proc)
 
             # Sleep for the normal interval since there was work to do.
             poll = POLL_INTERVAL

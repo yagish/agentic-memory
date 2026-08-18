@@ -4,9 +4,11 @@
 
 import json       # used to convert Python dicts ↔ text for storage
 import math       # used for cosine similarity calculation (sqrt, dot product)
+import re         # used to normalise text for direct-answer matching
 import sqlite3    # Python's built-in SQLite driver — no install needed
 import struct     # used to pack float32 arrays into bytes for SQLite blob storage
 from datetime import datetime, timezone, timedelta   # for timestamp arithmetic in consolidation helpers
+from difflib import SequenceMatcher                  # fuzzy matching for direct-answer lookup
 import uuid                                           # for generating UUIDs in new Phase 13 helpers
 
 # Try to import SentenceTransformer — the library that converts text into vectors.
@@ -1169,6 +1171,163 @@ def hybrid_search(conn: sqlite3.Connection, query: str, limit: int = 10) -> list
         })
 
     return output
+
+
+# ---------------------------------------------------------------------------
+# Phase 17: direct-answer lookup for prompt interception
+# ---------------------------------------------------------------------------
+
+def _normalise_for_match(text: str) -> str:
+    """
+    Lower-case and strip punctuation so repeated user questions match reliably.
+
+    Example:
+        "What's the capital of France?" → "what s the capital of france"
+    """
+    lowered = (text or "").lower()
+    stripped = re.sub(r"[^a-z0-9\s]", " ", lowered)
+    return re.sub(r"\s+", " ", stripped).strip()
+
+
+def _token_overlap_score(a: str, b: str) -> float:
+    """Return Jaccard overlap of the normalised token sets for two strings."""
+    a_tokens = set(_normalise_for_match(a).split())
+    b_tokens = set(_normalise_for_match(b).split())
+    if not a_tokens or not b_tokens:
+        return 0.0
+    return len(a_tokens & b_tokens) / len(a_tokens | b_tokens)
+
+
+def _qa_match_score(query: str, candidate_question: str) -> float:
+    """
+    Score how closely a new prompt matches a previously asked user question.
+
+    The score is deliberately conservative because this powers a direct-answer
+    fast path that bypasses the LLM. Exact or near-exact repeats should score
+    high; loosely related prompts should not.
+    """
+    query_norm = _normalise_for_match(query)
+    cand_norm  = _normalise_for_match(candidate_question)
+
+    if not query_norm or not cand_norm:
+        return 0.0
+
+    if query_norm == cand_norm:
+        return 1.0
+
+    shorter, longer = sorted((query_norm, cand_norm), key=len)
+    containment = 0.0
+    if shorter and shorter in longer:
+        # Only treat containment as a strong signal when the strings are almost
+        # the same length; otherwise a short generic phrase would over-match.
+        ratio = len(shorter) / max(len(longer), 1)
+        if ratio >= 0.85:
+            containment = 0.97
+        elif ratio >= 0.70:
+            containment = 0.94
+
+    fuzzy = SequenceMatcher(None, query_norm, cand_norm).ratio()
+    overlap = _token_overlap_score(query_norm, cand_norm)
+    return max(fuzzy, overlap, containment)
+
+
+def find_direct_answer(
+    conn: sqlite3.Connection,
+    query: str,
+    min_score: float = 0.93,
+    session_limit: int = 200,
+    exclude_session_id: str | None = None,
+) -> dict | None:
+    """
+    Find a previously given assistant answer for a repeated user question.
+
+    This is a deterministic retrieval path for prompt interception: if the user
+    asks essentially the same question again, we can return the stored answer
+    directly instead of spending another LLM turn.
+
+    The function scans recent session transcripts for adjacent user → assistant
+    turn pairs, scores the new query against the historical user turns, and
+    returns the best assistant response only when the match exceeds min_score.
+
+    Returns:
+        None if no sufficiently strong match exists, otherwise a dict with:
+          question, answer, similarity, session_id, agent, updated_at
+    """
+    if not isinstance(query, str) or not query.strip():
+        return None
+
+    if exclude_session_id:
+        rows = conn.execute(
+            """
+            SELECT session_id, agent, updated_at, transcript
+            FROM sessions
+            WHERE session_id != ?
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (exclude_session_id, session_limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT session_id, agent, updated_at, transcript
+            FROM sessions
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (session_limit,),
+        ).fetchall()
+
+    best: dict | None = None
+
+    for row in rows:
+        try:
+            turns = json.loads(row["transcript"] or "[]")
+        except Exception:
+            continue
+
+        for i in range(len(turns) - 1):
+            user_turn = turns[i]
+            assistant_turn = turns[i + 1]
+
+            if user_turn.get("role") != "user":
+                continue
+            if assistant_turn.get("role") != "assistant":
+                continue
+
+            question = str(user_turn.get("content") or "").strip()
+            answer   = str(assistant_turn.get("content") or "").strip()
+            if not question or not answer:
+                continue
+
+            score = _qa_match_score(query, question)
+            if score < min_score:
+                continue
+
+            candidate = {
+                "question":   question,
+                "answer":     answer,
+                "similarity": round(score, 4),
+                "session_id": row["session_id"],
+                "agent":      row["agent"],
+                "updated_at": row["updated_at"],
+            }
+
+            if best is None:
+                best = candidate
+                continue
+
+            if candidate["similarity"] > best["similarity"]:
+                best = candidate
+                continue
+
+            if (
+                candidate["similarity"] == best["similarity"]
+                and str(candidate["updated_at"] or "") > str(best["updated_at"] or "")
+            ):
+                best = candidate
+
+    return best
 
 
 # ---------------------------------------------------------------------------

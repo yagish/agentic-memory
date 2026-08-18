@@ -59,7 +59,7 @@ if os.path.exists(MCP_PATH):
 PYEOF
 
     # Unload and remove launchd plists
-    for LABEL in com.memory.daemon com.memory.ingest; do
+    for LABEL in com.memory.daemon com.memory.ingest com.memory.query; do
         PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
         if [ -f "$PLIST" ]; then
             launchctl unload "$PLIST" 2>/dev/null || true
@@ -199,15 +199,38 @@ PYEOF
 echo ""
 echo "Installing background daemon (auto-extracts facts, builds insights)..."
 
-# Substitute real paths into the plist (idempotent — sed replaces placeholders
-# only when they still contain the placeholder text).
-sed -i.bak \
-    -e "s|PROJECT_PATH|$INSTALL_DIR|g" \
-    -e "s|HOME_PATH|$HOME|g" \
-    "$INSTALL_DIR/com.memory.daemon.plist"
-rm -f "$INSTALL_DIR/com.memory.daemon.plist.bak"
+# Detect the absolute path to the Python 3 interpreter that the user actually
+# has.  launchd runs services with a minimal PATH (/usr/bin:/bin) that may
+# resolve 'python3' to the macOS system Python 3.9 rather than the user's
+# Homebrew/framework Python.  Using the absolute path avoids that mismatch.
+PYTHON3_EXEC="$(python3 -c 'import sys; print(sys.executable)')"
 
-cp "$INSTALL_DIR/com.memory.daemon.plist" "$HOME/Library/LaunchAgents/"
+# Write the daemon plist directly so paths are always correct, regardless of
+# whether the source template has been modified by a previous install run.
+cat > "$HOME/Library/LaunchAgents/com.memory.daemon.plist" << PLIST_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.memory.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$PYTHON3_EXEC</string>
+    <string>$INSTALL_DIR/memory/daemon.py</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>$HOME/.memory/daemon.log</string>
+  <key>StandardErrorPath</key>
+  <string>$HOME/.memory/daemon.log</string>
+</dict>
+</plist>
+PLIST_EOF
+
 launchctl unload "$HOME/Library/LaunchAgents/com.memory.daemon.plist" 2>/dev/null || true
 launchctl load   "$HOME/Library/LaunchAgents/com.memory.daemon.plist"
 echo "  + Daemon loaded (starts on login, logs: ~/.memory/daemon.log)"
@@ -216,18 +239,68 @@ echo "  + Daemon loaded (starts on login, logs: ~/.memory/daemon.log)"
 echo ""
 echo "Installing ingest server (receives sessions from other agents)..."
 
-sed -i.bak \
-    -e "s|PROJECT_PATH|$INSTALL_DIR|g" \
-    -e "s|HOME_PATH|$HOME|g" \
-    "$INSTALL_DIR/com.memory.ingest.plist"
-rm -f "$INSTALL_DIR/com.memory.ingest.plist.bak"
+# Same approach: write plist directly with the correct absolute python3 path.
+cat > "$HOME/Library/LaunchAgents/com.memory.ingest.plist" << PLIST_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.memory.ingest</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$PYTHON3_EXEC</string>
+    <string>$INSTALL_DIR/memory/ingest_server.py</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>$HOME/.memory/ingest.log</string>
+  <key>StandardErrorPath</key>
+  <string>$HOME/.memory/ingest.log</string>
+</dict>
+</plist>
+PLIST_EOF
 
-cp "$INSTALL_DIR/com.memory.ingest.plist" "$HOME/Library/LaunchAgents/"
 launchctl unload "$HOME/Library/LaunchAgents/com.memory.ingest.plist" 2>/dev/null || true
 launchctl load   "$HOME/Library/LaunchAgents/com.memory.ingest.plist"
 echo "  + Ingest server loaded on port 7747 (logs: ~/.memory/ingest.log)"
 
-# ── Step 9: Final summary ────────────────────────────────────────────────────
+# ── Step 9: launchd — query server ──────────────────────────────────────────
+echo ""
+echo "Installing query server (serves dashboard + read API on port 7748)..."
+
+cat > "$HOME/Library/LaunchAgents/com.memory.query.plist" << PLIST_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.memory.query</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$PYTHON3_EXEC</string>
+    <string>$INSTALL_DIR/memory/query_server.py</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>$HOME/.memory/query.log</string>
+  <key>StandardErrorPath</key>
+  <string>$HOME/.memory/query.log</string>
+</dict>
+</plist>
+PLIST_EOF
+
+launchctl unload "$HOME/Library/LaunchAgents/com.memory.query.plist" 2>/dev/null || true
+launchctl load   "$HOME/Library/LaunchAgents/com.memory.query.plist"
+echo "  + Query server loaded on port 7748 (logs: ~/.memory/query.log)"
+
+# ── Step 10: Final summary ────────────────────────────────────────────────────
 echo ""
 echo "================================================================"
 echo "  agentic-memory installed successfully!"
@@ -237,14 +310,17 @@ echo "  Identity profile: $HOME/.memory/identity.md"
 echo "  Activity log:     $HOME/.memory/activity.log"
 echo "  Daemon log:       $HOME/.memory/daemon.log"
 echo "  Ingest log:       $HOME/.memory/ingest.log"
+echo "  Query log:        $HOME/.memory/query.log"
 echo ""
 echo "  Daemon:           running (auto-restarts on login)"
-echo "  Ingest server:    running on port 7747 (auto-restarts on login)"
+echo "  Ingest server:    port 7747 — write endpoint for agents"
+echo "  Query server:     port 7748 — dashboard at http://localhost:7748"
 echo "================================================================"
 echo ""
 echo "One step remaining:"
 echo "  Restart your AI coding assistant for hooks and MCP server to take effect."
 echo ""
 echo "  After that — every session is saved automatically."
-echo "  Other agents can POST sessions to the ingest server at localhost:7747."
+echo "  Dashboard: http://localhost:7748"
+echo "  Other agents POST sessions to: http://localhost:7747/ingest"
 echo ""
