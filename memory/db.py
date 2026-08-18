@@ -198,6 +198,19 @@ CREATE TABLE IF NOT EXISTS summaries (
 );
 """
 
+# _COMPRESSED_MEMORY_SCHEMA stores the result of a full compression run.
+# Each compression appends one row; the latest row is the current compressed memory.
+# Sessions included in the run are deleted after a successful save.
+_COMPRESSED_MEMORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS compressed_memory (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    content             TEXT NOT NULL,
+    sessions_compressed INTEGER NOT NULL DEFAULT 0,
+    model               TEXT NOT NULL DEFAULT 'llama3.2:3b',
+    created_at          TEXT NOT NULL
+);
+"""
+
 
 def log_retrieval(conn: sqlite3.Connection, tool: str, query: str, result_size: int) -> None:
     """
@@ -309,6 +322,10 @@ def init_db(path: str) -> sqlite3.Connection:
     conn.executescript(_TOPIC_CLUSTERS_SCHEMA)
     conn.commit()
     conn.executescript(_CLUSTER_MEMBERSHIPS_SCHEMA)
+    conn.commit()
+
+    # Create the compressed_memory table for full compression runs.
+    conn.executescript(_COMPRESSED_MEMORY_SCHEMA)
     conn.commit()
 
     # Add daemon_processed_at column to sessions if not already present.
@@ -1753,6 +1770,137 @@ def get_clusters(conn: sqlite3.Connection) -> list[dict]:
         """
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def save_compressed_memory(
+    conn: sqlite3.Connection,
+    content: str,
+    sessions_compressed: int,
+    model: str,
+) -> None:
+    """
+    Append one compressed-memory row to the compressed_memory table.
+
+    Each call represents a full compression run. The latest row (highest id)
+    is the current compressed memory; older rows are kept for audit purposes.
+
+    Args:
+        conn                — open connection from init_db()
+        content             — the full structured markdown document
+        sessions_compressed — how many sessions were folded into this document
+        model               — which ollama model generated the content
+    """
+    conn.execute(
+        """
+        INSERT INTO compressed_memory (content, sessions_compressed, model, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (content, sessions_compressed, model, datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()
+
+
+def get_compressed_memory(conn: sqlite3.Connection) -> dict | None:
+    """
+    Return the most recent compressed memory row, or None if none exists yet.
+
+    Args:
+        conn — open connection from init_db()
+
+    Returns:
+        Dict with keys: content, sessions_compressed, model, created_at.
+        Returns None if the table is empty.
+    """
+    row = conn.execute(
+        """
+        SELECT content, sessions_compressed, model, created_at
+        FROM compressed_memory
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_all_sessions_for_compression(conn: sqlite3.Connection) -> list[dict]:
+    """
+    Return all sessions eligible for compression, joined with their summaries.
+
+    A session is included if its transcript is non-null and non-empty. The
+    summary column will be None for sessions that the daemon has not yet
+    summarised — compress.py uses the raw transcript in that case.
+
+    Results are ordered oldest-first so the compressed document reflects
+    chronological order of events.
+
+    Args:
+        conn — open connection from init_db()
+
+    Returns:
+        List of dicts with keys: session_id, updated_at, turn_count, transcript, summary.
+    """
+    rows = conn.execute(
+        """
+        SELECT s.session_id, s.updated_at, s.turn_count, s.transcript,
+               su.summary
+        FROM sessions s
+        LEFT JOIN summaries su ON su.session_id = s.session_id
+        WHERE s.transcript IS NOT NULL AND s.transcript != '[]'
+        ORDER BY s.updated_at ASC
+        """
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_sessions(conn: sqlite3.Connection, session_ids: list[str]) -> int:
+    """
+    Delete sessions and ALL associated data, including the FTS5 index entries.
+
+    Handles cleanup in the correct order:
+      1. FTS5 index (no auto-delete trigger exists — must be done manually)
+      2. cluster_memberships, session_vecs, chunks, summaries
+      3. sessions rows themselves
+
+    SQLite foreign key enforcement is off by default, so cascades do not fire;
+    we delete related rows explicitly.
+
+    Args:
+        conn        — open connection from init_db()
+        session_ids — list of session_id strings to delete
+
+    Returns:
+        The number of session rows actually deleted.
+    """
+    if not session_ids:
+        return 0
+
+    placeholders = ",".join("?" * len(session_ids))
+
+    # Step 1: Remove stale FTS5 entries before deleting the base rows.
+    # The 'delete' command requires the exact transcript text to update the index.
+    rows = conn.execute(
+        f"SELECT session_id, transcript FROM sessions WHERE session_id IN ({placeholders})",
+        session_ids,
+    ).fetchall()
+    for row in rows:
+        conn.execute(
+            "INSERT INTO sessions_fts(sessions_fts, session_id, transcript) VALUES ('delete', ?, ?)",
+            (row["session_id"], row["transcript"] or ""),
+        )
+
+    # Step 2: Delete associated rows (no CASCADE because PRAGMA foreign_keys is off).
+    conn.execute(f"DELETE FROM cluster_memberships WHERE session_id IN ({placeholders})", session_ids)
+    conn.execute(f"DELETE FROM session_vecs WHERE session_id IN ({placeholders})", session_ids)
+    conn.execute(f"DELETE FROM chunks WHERE session_id IN ({placeholders})", session_ids)
+    conn.execute(f"DELETE FROM summaries WHERE session_id IN ({placeholders})", session_ids)
+
+    # Step 3: Delete the session rows themselves.
+    cursor = conn.execute(
+        f"DELETE FROM sessions WHERE session_id IN ({placeholders})", session_ids
+    )
+    conn.commit()
+
+    return cursor.rowcount
 
 
 def prune_transcript(conn: sqlite3.Connection, session_id: str) -> int:

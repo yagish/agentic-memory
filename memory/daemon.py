@@ -70,6 +70,10 @@ LONG_POLL_INTERVAL = 30 * 60  # 30 minutes
 # Run cross-session insight generation every N newly-processed sessions.
 INSIGHT_EVERY_N = 10
 
+# Run a full memory compression every N newly-processed sessions.
+# Compression deletes all sessions afterward — set higher than INSIGHT_EVERY_N.
+COMPRESS_EVERY_N = 50
+
 # Skip an inference cycle if the CPU % is above this threshold.
 CPU_THRESHOLD = 70
 
@@ -563,6 +567,9 @@ def run(once: bool = False) -> None:
     # Counter that triggers cross-session insight generation every INSIGHT_EVERY_N sessions.
     sessions_since_insight = 0
 
+    # Counter that triggers full memory compression every COMPRESS_EVERY_N sessions.
+    sessions_since_compression = 0
+
     _daemon_log("daemon started")
 
     while not _shutdown:
@@ -610,6 +617,7 @@ def run(once: bool = False) -> None:
                     update_topic_clusters(conn, session)
                     mark_session_processed(conn, session_id)
                     sessions_since_insight += 1
+                    sessions_since_compression += 1
                 except Exception as exc:
                     error_log(
                         "daemon",
@@ -628,6 +636,22 @@ def run(once: bool = False) -> None:
                 except Exception as exc:
                     error_log("daemon", "cross-session insight generation failed", exc=exc)
                     _daemon_log(f"insight generation error: {exc}")
+
+            # Every COMPRESS_EVERY_N sessions, compress all sessions into one
+            # structured memory document and delete the originals.
+            if sessions_since_compression >= COMPRESS_EVERY_N:
+                try:
+                    from memory.compress import compress_memory  # noqa: PLC0415
+                    result = compress_memory(conn)
+                    sessions_since_compression = 0
+                    # Insight counter resets too — the sessions are gone.
+                    sessions_since_insight = 0
+                    _daemon_log(
+                        f"compressed {result.sessions_compressed} sessions into memory document"
+                    )
+                except Exception as exc:
+                    error_log("daemon", "memory compression failed", exc=exc)
+                    _daemon_log(f"compression error: {exc}")
 
             # Stop ollama if the daemon started it — free its memory now that
             # inference is done for this cycle.

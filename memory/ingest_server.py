@@ -363,6 +363,41 @@ def post_answer(req: AnswerRequest) -> dict:
         raise HTTPException(status_code=500, detail={"ok": False, "error": str(exc)})
 
 
+@app.post("/compress")
+def post_compress() -> dict:
+    """
+    Compress all sessions into a structured memory document and delete them.
+
+    Useful for agents and CLI tools that POST to the ingest server. The
+    dashboard uses the same endpoint on query_server (port 7748) instead.
+
+    Returns the compressed content and session count on success.
+    """
+    from memory.compress import compress_memory  # noqa: PLC0415
+
+    try:
+        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+        conn = init_db(DB_PATH)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail={"ok": False, "error": str(exc)})
+
+    try:
+        result = compress_memory(conn)
+        return {
+            "ok": True,
+            "sessions_compressed": result.sessions_compressed,
+            "model": result.model,
+            "created_at": result.created_at,
+            "content": result.content,
+        }
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail={"ok": False, "error": str(exc)})
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail={"ok": False, "error": str(exc)})
+    finally:
+        conn.close()
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

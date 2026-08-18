@@ -27,7 +27,7 @@ import urllib.request # checking ollama status (no third-party deps)
 # Add project root to path so we can import from the memory package.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse  # returns raw HTML for the dashboard
 import uvicorn
 
@@ -335,6 +335,43 @@ def get_memory_insights() -> dict:
     except Exception:
         pass
     return {"insights": rows, "total": len(rows)}
+
+
+@app.post("/compress")
+def post_compress() -> dict:
+    """
+    Compress all sessions into a structured memory document and delete them.
+
+    This is the only write endpoint on the query server — it exists here so
+    the dashboard (same-origin, port 7748) can trigger compression without
+    a cross-origin fetch to the ingest server.
+
+    Returns the compressed content and session count on success, or raises
+    HTTP 500 if ollama is unreachable or there are no sessions to compress.
+    """
+    # Lazy import so compress.py's sys.path manipulation doesn't run at startup.
+    from memory.compress import compress_memory  # noqa: PLC0415
+
+    try:
+        conn = init_db(DB_PATH)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail={"ok": False, "error": str(exc)})
+
+    try:
+        result = compress_memory(conn)
+        return {
+            "ok": True,
+            "sessions_compressed": result.sessions_compressed,
+            "model": result.model,
+            "created_at": result.created_at,
+            "content": result.content,
+        }
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail={"ok": False, "error": str(exc)})
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail={"ok": False, "error": str(exc)})
+    finally:
+        conn.close()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
