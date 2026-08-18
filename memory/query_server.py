@@ -45,6 +45,20 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 app = FastAPI(title="Memory Query Server", version="1.0.0")
 
+# Log files written by launchd (StandardOutPath in each plist).
+_LOG_FILES: dict[str, str] = {
+    "daemon": os.path.expanduser("~/.memory/daemon.log"),
+    "query":  os.path.expanduser("~/.memory/query.log"),
+    "ingest": os.path.expanduser("~/.memory/ingest.log"),
+}
+
+# launchd service labels used with launchctl kickstart.
+_LAUNCHCTL_LABELS: dict[str, str] = {
+    "daemon": "com.memory.daemon",
+    "query":  "com.memory.query",
+    "ingest": "com.memory.ingest",
+}
+
 
 # ── Helper: ollama status ─────────────────────────────────────────────────────
 
@@ -295,18 +309,19 @@ def get_memory_facts() -> dict:
     try:
         conn = init_db(DB_PATH)
         for f in conn.execute(
-            "SELECT id, content, tags, source_session_id, created_at FROM facts ORDER BY created_at DESC"
+            "SELECT id, content, tags, source, session_id, created_at FROM facts ORDER BY created_at DESC"
         ).fetchall():
             try:
                 tags = json.loads(f["tags"]) if f["tags"] else []
             except Exception:
                 tags = []
             rows.append({
-                "id":                f["id"],
-                "content":           f["content"],
-                "tags":              tags,
-                "source_session_id": f["source_session_id"],
-                "created_at":        f["created_at"],
+                "id":         f["id"],
+                "content":    f["content"],
+                "tags":       tags,
+                "source":     f["source"],
+                "session_id": f["session_id"],
+                "created_at": f["created_at"],
             })
         conn.close()
     except Exception:
@@ -335,6 +350,101 @@ def get_memory_insights() -> dict:
     except Exception:
         pass
     return {"insights": rows, "total": len(rows)}
+
+
+@app.get("/logs/{service}")
+def get_logs(service: str, lines: int = 200) -> dict:
+    """Return the last N lines from a service log file."""
+    if service not in _LOG_FILES:
+        raise HTTPException(status_code=404, detail=f"Unknown service: {service}")
+    path = _LOG_FILES[service]
+    if not os.path.exists(path):
+        return {"lines": [], "service": service, "exists": False}
+    try:
+        result = subprocess.run(
+            ["tail", f"-{lines}", path],
+            capture_output=True, text=True, timeout=5,
+        )
+        return {"lines": result.stdout.splitlines(), "service": service, "exists": True}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/restart/{service}")
+def post_restart(service: str) -> dict:
+    """Restart a memory service via launchctl kickstart, or open Ollama."""
+    if service == "ollama":
+        try:
+            subprocess.Popen(["open", "-a", "Ollama"])
+            return {"ok": True, "service": service}
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+    if service not in _LAUNCHCTL_LABELS:
+        raise HTTPException(status_code=404, detail=f"Unknown service: {service}")
+    label = _LAUNCHCTL_LABELS[service]
+    uid = os.getuid()
+    try:
+        result = subprocess.run(
+            ["launchctl", "kickstart", "-k", f"gui/{uid}/{label}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=result.stderr.strip() or "launchctl kickstart failed",
+            )
+        return {"ok": True, "service": service}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/stats/charts")
+def get_chart_stats() -> dict:
+    """Time-series data for the landing-page charts (last 14 days)."""
+    try:
+        conn = init_db(DB_PATH)
+        sessions_by_day = [
+            dict(r) for r in conn.execute(
+                """
+                SELECT DATE(started_at) AS day, COUNT(*) AS count
+                FROM sessions
+                WHERE started_at >= DATE('now', '-14 days')
+                GROUP BY day ORDER BY day
+                """
+            ).fetchall()
+        ]
+        token_economics = [
+            dict(r) for r in conn.execute(
+                """
+                SELECT DATE(queried_at) AS day,
+                       COALESCE(SUM(CASE WHEN tool = 'wake_up_injection' THEN result_size END), 0) AS memory_tokens,
+                       COALESCE(COUNT(CASE WHEN tool = 'wake_up_injection' THEN 1 END), 0)         AS injections
+                FROM retrievals
+                WHERE queried_at >= DATE('now', '-14 days')
+                GROUP BY day ORDER BY day
+                """
+            ).fetchall()
+        ]
+        facts_by_day = [
+            dict(r) for r in conn.execute(
+                """
+                SELECT DATE(created_at) AS day, COUNT(*) AS count
+                FROM facts
+                WHERE created_at >= DATE('now', '-14 days')
+                GROUP BY day ORDER BY day
+                """
+            ).fetchall()
+        ]
+        conn.close()
+        return {
+            "sessions_by_day": sessions_by_day,
+            "token_economics":  token_economics,
+            "facts_by_day":     facts_by_day,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/compress")
