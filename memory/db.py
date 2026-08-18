@@ -416,25 +416,40 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict]:
         results = search(conn, "quantum entanglement")
         # → [{"session_id": "abc", "agent": "claude", "updated_at": "...", "snippet": "..."}]
     """
-    rows = conn.execute(
-        """
-        SELECT
-          s.session_id,
-          s.agent,
-          s.updated_at,
-          -- snippet() is a built-in FTS5 function that extracts the matching
-          -- portion of text. The '[' and ']' wrap the matched words.
-          -- 16 is the number of surrounding words to include for context.
-          snippet(sessions_fts, 1, '[', ']', '...', 16) AS snippet
-        FROM sessions_fts
-        -- JOIN pulls the real session row so we get agent and updated_at.
-        JOIN sessions s ON s.session_id = sessions_fts.session_id
-        WHERE sessions_fts MATCH ?   -- MATCH is FTS5's search operator
-        ORDER BY rank                -- rank is FTS5's built-in relevance score
-        LIMIT ?
-        """,
-        (query, limit),
-    ).fetchall()
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+              s.session_id,
+              s.agent,
+              s.updated_at,
+              -- snippet() is a built-in FTS5 function that extracts the matching
+              -- portion of text. The '[' and ']' wrap the matched words.
+              -- 16 is the number of surrounding words to include for context.
+              snippet(sessions_fts, 1, '[', ']', '...', 16) AS snippet
+            FROM sessions_fts
+            -- JOIN pulls the real session row so we get agent and updated_at.
+            JOIN sessions s ON s.session_id = sessions_fts.session_id
+            WHERE sessions_fts MATCH ?   -- MATCH is FTS5's search operator
+            ORDER BY rank                -- rank is FTS5's built-in relevance score
+            LIMIT ?
+            """,
+            (query, limit),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        # FTS5 special characters (OR, *, [, etc.) can cause syntax errors.
+        # Fall back to a simple LIKE search so callers always get a result.
+        rows = conn.execute(
+            """
+            SELECT session_id, agent, updated_at,
+                   substr(transcript, 1, 120) AS snippet
+            FROM sessions
+            WHERE transcript LIKE ?
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (f"%{query}%", limit),
+        ).fetchall()
 
     # Convert each sqlite3.Row object into a plain dict for easier use by callers.
     return [dict(r) for r in rows]
@@ -950,29 +965,43 @@ def search_facts(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[
         List of dicts with keys: id, content, tags (as list), source, session_id,
         created_at, updated_at, snippet.
     """
-    rows = conn.execute(
-        """
-        SELECT
-          f.id,
-          f.content,
-          f.tags,
-          f.source,
-          f.session_id,
-          f.created_at,
-          f.updated_at,
-          -- snippet() extracts the matching portion of text with highlights.
-          -- Column index 1 is 'content' in the facts_fts virtual table definition.
-          -- '[' and ']' wrap matched words; 16 is the surrounding-word context count.
-          snippet(facts_fts, 1, '[', ']', '...', 16) AS snippet
-        FROM facts_fts
-        -- JOIN pulls the real fact row so we get all columns including source.
-        JOIN facts f ON f.id = facts_fts.id
-        WHERE facts_fts MATCH ?   -- MATCH is FTS5's search operator
-        ORDER BY rank             -- rank is FTS5's built-in relevance score
-        LIMIT ?
-        """,
-        (query, limit),
-    ).fetchall()
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+              f.id,
+              f.content,
+              f.tags,
+              f.source,
+              f.session_id,
+              f.created_at,
+              f.updated_at,
+              -- snippet() extracts the matching portion of text with highlights.
+              -- Column index 1 is 'content' in the facts_fts virtual table definition.
+              -- '[' and ']' wrap matched words; 16 is the surrounding-word context count.
+              snippet(facts_fts, 1, '[', ']', '...', 16) AS snippet
+            FROM facts_fts
+            -- JOIN pulls the real fact row so we get all columns including source.
+            JOIN facts f ON f.id = facts_fts.id
+            WHERE facts_fts MATCH ?   -- MATCH is FTS5's search operator
+            ORDER BY rank             -- rank is FTS5's built-in relevance score
+            LIMIT ?
+            """,
+            (query, limit),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        # FTS5 special characters in the query cause syntax errors; fall back to LIKE.
+        rows = conn.execute(
+            """
+            SELECT id, content, tags, source, session_id, created_at, updated_at,
+                   substr(content, 1, 120) AS snippet
+            FROM facts
+            WHERE content LIKE ?
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (f"%{query}%", limit),
+        ).fetchall()
 
     result = []
     for row in rows:
@@ -1539,22 +1568,31 @@ def upsert_insight(
     Returns:
         The UUID string assigned to the new insight row.
     """
-    # Generate a unique ID for this insight.
-    insight_id = str(uuid.uuid4())
-
-    # Store the evidence list as a JSON array for portability.
     evidence_json = json.dumps(evidence or [])
-
-    # Both timestamps start at the moment of creation.
     now = datetime.now(timezone.utc).isoformat()
 
-    conn.execute(
-        """
-        INSERT INTO insights (id, insight_type, content, evidence, confidence, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (insight_id, insight_type, content, evidence_json, confidence, now, now),
-    )
+    # Check for an existing insight with the same type and content before inserting.
+    existing = conn.execute(
+        "SELECT id FROM insights WHERE insight_type = ? AND content = ? LIMIT 1",
+        (insight_type, content),
+    ).fetchone()
+
+    if existing:
+        # Update confidence and timestamp rather than accumulating a duplicate row.
+        insight_id = existing["id"]
+        conn.execute(
+            "UPDATE insights SET confidence = ?, evidence = ?, updated_at = ? WHERE id = ?",
+            (confidence, evidence_json, now, insight_id),
+        )
+    else:
+        insight_id = str(uuid.uuid4())
+        conn.execute(
+            """
+            INSERT INTO insights (id, insight_type, content, evidence, confidence, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (insight_id, insight_type, content, evidence_json, confidence, now, now),
+        )
     conn.commit()
     return insight_id
 

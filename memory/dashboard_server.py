@@ -135,26 +135,27 @@ def get_services() -> dict:
 
     try:
         conn = init_db(DB_PATH)
-        total_sessions = conn.execute("SELECT COUNT(*) AS c FROM sessions").fetchone()["c"]
-        total_facts    = conn.execute("SELECT COUNT(*) AS c FROM facts").fetchone()["c"]
-        total_insights = conn.execute("SELECT COUNT(*) AS c FROM insights").fetchone()["c"]
-        chunks_indexed = conn.execute("SELECT COUNT(*) AS c FROM chunks").fetchone()["c"]
+        try:
+            total_sessions = conn.execute("SELECT COUNT(*) AS c FROM sessions").fetchone()["c"]
+            total_facts    = conn.execute("SELECT COUNT(*) AS c FROM facts").fetchone()["c"]
+            total_insights = conn.execute("SELECT COUNT(*) AS c FROM insights").fetchone()["c"]
+            chunks_indexed = conn.execute("SELECT COUNT(*) AS c FROM chunks").fetchone()["c"]
 
-        inj = conn.execute(
-            "SELECT COUNT(*) AS c, SUM(result_size) AS t FROM retrievals WHERE tool = 'wake_up_injection'"
-        ).fetchone()
-        injections         = inj["c"] or 0
-        tokens_from_memory = inj["t"] or 0
-        mcp_retrievals     = conn.execute(
-            "SELECT COUNT(*) AS c FROM retrievals WHERE tool != 'wake_up_injection'"
-        ).fetchone()["c"]
+            inj = conn.execute(
+                "SELECT COUNT(*) AS c, SUM(result_size) AS t FROM retrievals WHERE tool = 'wake_up_injection'"
+            ).fetchone()
+            injections         = inj["c"] or 0
+            tokens_from_memory = inj["t"] or 0
+            mcp_retrievals     = conn.execute(
+                "SELECT COUNT(*) AS c FROM retrievals WHERE tool != 'wake_up_injection'"
+            ).fetchone()["c"]
 
-        for s in conn.execute(
-            "SELECT session_id, turn_count, started_at, updated_at FROM sessions ORDER BY updated_at DESC LIMIT 3"
-        ).fetchall():
-            recent_sessions.append(dict(s))
-
-        conn.close()
+            for s in conn.execute(
+                "SELECT session_id, turn_count, started_at, updated_at FROM sessions ORDER BY updated_at DESC LIMIT 3"
+            ).fetchall():
+                recent_sessions.append(dict(s))
+        finally:
+            conn.close()
     except Exception:
         pass
 
@@ -179,10 +180,12 @@ def get_status() -> dict:
     """Quick health check — server up, session count, DB size."""
     try:
         conn = init_db(DB_PATH)
-        row = conn.execute("SELECT COUNT(*) AS total, MAX(updated_at) AS newest FROM sessions").fetchone()
-        total_sessions = row["total"] if row else 0
-        newest_session = row["newest"] if row else None
-        conn.close()
+        try:
+            row = conn.execute("SELECT COUNT(*) AS total, MAX(updated_at) AS newest FROM sessions").fetchone()
+            total_sessions = row["total"] if row else 0
+            newest_session = row["newest"] if row else None
+        finally:
+            conn.close()
     except Exception:
         total_sessions, newest_session = 0, None
     return {
@@ -198,30 +201,32 @@ def get_chart_stats() -> dict:
     """Time-series data for the landing-page charts (last 14 days)."""
     try:
         conn = init_db(DB_PATH)
-        sessions_by_day = [dict(r) for r in conn.execute(
-            """
-            SELECT DATE(started_at) AS day, COUNT(*) AS count
-            FROM sessions WHERE started_at >= DATE('now', '-14 days')
-            GROUP BY day ORDER BY day
-            """
-        ).fetchall()]
-        token_economics = [dict(r) for r in conn.execute(
-            """
-            SELECT DATE(queried_at) AS day,
-                   COALESCE(SUM(CASE WHEN tool = 'wake_up_injection' THEN result_size END), 0) AS memory_tokens,
-                   COALESCE(COUNT(CASE WHEN tool = 'wake_up_injection' THEN 1 END), 0)         AS injections
-            FROM retrievals WHERE queried_at >= DATE('now', '-14 days')
-            GROUP BY day ORDER BY day
-            """
-        ).fetchall()]
-        facts_by_day = [dict(r) for r in conn.execute(
-            """
-            SELECT DATE(created_at) AS day, COUNT(*) AS count
-            FROM facts WHERE created_at >= DATE('now', '-14 days')
-            GROUP BY day ORDER BY day
-            """
-        ).fetchall()]
-        conn.close()
+        try:
+            sessions_by_day = [dict(r) for r in conn.execute(
+                """
+                SELECT DATE(started_at) AS day, COUNT(*) AS count
+                FROM sessions WHERE started_at >= DATE('now', '-14 days')
+                GROUP BY day ORDER BY day
+                """
+            ).fetchall()]
+            token_economics = [dict(r) for r in conn.execute(
+                """
+                SELECT DATE(called_at) AS day,
+                       COALESCE(SUM(CASE WHEN tool = 'wake_up_injection' THEN result_size END), 0) AS memory_tokens,
+                       COALESCE(COUNT(CASE WHEN tool = 'wake_up_injection' THEN 1 END), 0)         AS injections
+                FROM retrievals WHERE called_at >= DATE('now', '-14 days')
+                GROUP BY day ORDER BY day
+                """
+            ).fetchall()]
+            facts_by_day = [dict(r) for r in conn.execute(
+                """
+                SELECT DATE(created_at) AS day, COUNT(*) AS count
+                FROM facts WHERE created_at >= DATE('now', '-14 days')
+                GROUP BY day ORDER BY day
+                """
+            ).fetchall()]
+        finally:
+            conn.close()
         return {"sessions_by_day": sessions_by_day, "token_economics": token_economics, "facts_by_day": facts_by_day}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -238,20 +243,22 @@ def get_memory_sessions() -> dict:
     rows: list[dict] = []
     try:
         conn = init_db(DB_PATH)
-        for s in conn.execute(
-            "SELECT session_id, agent, turn_count, started_at, updated_at, transcript FROM sessions ORDER BY updated_at DESC"
-        ).fetchall():
-            preview = ""
-            try:
-                turns   = json.loads(s["transcript"])
-                first   = next((t["content"] for t in turns if t.get("role") == "user"), "")
-                preview = first[:200].replace("\n", " ")
-            except Exception:
-                pass
-            rows.append({"session_id": s["session_id"], "agent": s["agent"],
-                         "turn_count": s["turn_count"], "started_at": s["started_at"],
-                         "updated_at": s["updated_at"], "preview": preview})
-        conn.close()
+        try:
+            for s in conn.execute(
+                "SELECT session_id, agent, turn_count, started_at, updated_at, transcript FROM sessions ORDER BY updated_at DESC"
+            ).fetchall():
+                preview = ""
+                try:
+                    turns   = json.loads(s["transcript"])
+                    first   = next((t["content"] for t in turns if t.get("role") == "user"), "")
+                    preview = first[:200].replace("\n", " ")
+                except Exception:
+                    pass
+                rows.append({"session_id": s["session_id"], "agent": s["agent"],
+                             "turn_count": s["turn_count"], "started_at": s["started_at"],
+                             "updated_at": s["updated_at"], "preview": preview})
+        finally:
+            conn.close()
     except Exception:
         pass
     return {"sessions": rows, "total": len(rows)}
@@ -263,13 +270,15 @@ def get_memory_chunks() -> dict:
     rows: list[dict] = []
     try:
         conn = init_db(DB_PATH)
-        for c in conn.execute(
-            "SELECT id, session_id, chunk_index, text, created_at FROM chunks ORDER BY created_at DESC"
-        ).fetchall():
-            rows.append({"id": c["id"], "session_id": c["session_id"],
-                         "chunk_index": c["chunk_index"],
-                         "text": (c["text"] or "")[:300], "created_at": c["created_at"]})
-        conn.close()
+        try:
+            for c in conn.execute(
+                "SELECT id, session_id, chunk_index, text, created_at FROM chunks ORDER BY created_at DESC"
+            ).fetchall():
+                rows.append({"id": c["id"], "session_id": c["session_id"],
+                             "chunk_index": c["chunk_index"],
+                             "text": (c["text"] or "")[:300], "created_at": c["created_at"]})
+        finally:
+            conn.close()
     except Exception:
         pass
     return {"chunks": rows, "total": len(rows)}
@@ -281,17 +290,19 @@ def get_memory_facts() -> dict:
     rows: list[dict] = []
     try:
         conn = init_db(DB_PATH)
-        for f in conn.execute(
-            "SELECT id, content, tags, source, session_id, created_at FROM facts ORDER BY created_at DESC"
-        ).fetchall():
-            try:
-                tags = json.loads(f["tags"]) if f["tags"] else []
-            except Exception:
-                tags = []
-            rows.append({"id": f["id"], "content": f["content"], "tags": tags,
-                         "source": f["source"], "session_id": f["session_id"],
-                         "created_at": f["created_at"]})
-        conn.close()
+        try:
+            for f in conn.execute(
+                "SELECT id, content, tags, source, session_id, created_at FROM facts ORDER BY created_at DESC"
+            ).fetchall():
+                try:
+                    tags = json.loads(f["tags"]) if f["tags"] else []
+                except Exception:
+                    tags = []
+                rows.append({"id": f["id"], "content": f["content"], "tags": tags,
+                             "source": f["source"], "session_id": f["session_id"],
+                             "created_at": f["created_at"]})
+        finally:
+            conn.close()
     except Exception:
         pass
     return {"facts": rows, "total": len(rows)}
@@ -303,14 +314,16 @@ def get_memory_insights() -> dict:
     rows: list[dict] = []
     try:
         conn = init_db(DB_PATH)
-        for i in conn.execute(
-            "SELECT id, insight_type, content, confidence, created_at, updated_at FROM insights ORDER BY updated_at DESC"
-        ).fetchall():
-            rows.append({"id": i["id"], "insight_type": i["insight_type"],
-                         "content": i["content"],
-                         "confidence": round(float(i["confidence"] or 0), 2),
-                         "created_at": i["created_at"], "updated_at": i["updated_at"]})
-        conn.close()
+        try:
+            for i in conn.execute(
+                "SELECT id, insight_type, content, confidence, created_at, updated_at FROM insights ORDER BY updated_at DESC"
+            ).fetchall():
+                rows.append({"id": i["id"], "insight_type": i["insight_type"],
+                             "content": i["content"],
+                             "confidence": round(float(i["confidence"] or 0), 2),
+                             "created_at": i["created_at"], "updated_at": i["updated_at"]})
+        finally:
+            conn.close()
     except Exception:
         pass
     return {"insights": rows, "total": len(rows)}

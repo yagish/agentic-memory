@@ -96,9 +96,16 @@ pip3 install --quiet --user mcp fastmcp sentence-transformers fastapi uvicorn py
 echo "  + Dependencies installed"
 
 # ── Step 3: Ollama model ─────────────────────────────────────────────────────
-OLLAMA_MODEL="${MEMORY_OLLAMA_MODEL:-llama3.2:3b}"
+# Default: qwen2.5:3b downloaded from HuggingFace (avoids ollama registry which
+# may be blocked by corporate proxies). Override via MEMORY_OLLAMA_MODEL env var.
+OLLAMA_MODEL="${MEMORY_OLLAMA_MODEL:-qwen2.5:3b}"
+HF_GGUF_URL="${MEMORY_HF_GGUF_URL:-https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf}"
+MODELS_DIR="$HOME/.memory/models"
+GGUF_FILE="$MODELS_DIR/$(basename "$HF_GGUF_URL")"
+
 echo ""
 echo "Checking Ollama model ($OLLAMA_MODEL)..."
+
 OLLAMA_BIN=""
 for _candidate in /opt/homebrew/bin/ollama /usr/local/bin/ollama; do
     if [ -f "$_candidate" ]; then
@@ -106,18 +113,47 @@ for _candidate in /opt/homebrew/bin/ollama /usr/local/bin/ollama; do
         break
     fi
 done
+
 if [ -z "$OLLAMA_BIN" ]; then
-    echo "  ! ollama not found — skipping model pull (install via: brew install ollama)"
-elif ! "$OLLAMA_BIN" list 2>/dev/null | grep -q "^${OLLAMA_MODEL%%:*}"; then
-    echo "  Pulling $OLLAMA_MODEL (this may take a few minutes)..."
-    if "$OLLAMA_BIN" pull "$OLLAMA_MODEL"; then
-        echo "  + Model $OLLAMA_MODEL ready"
-    else
-        echo "  ! Model pull failed — retry manually: ollama pull $OLLAMA_MODEL"
-        echo "  ! Compression will auto-pull on first use."
-    fi
+    echo "  ! ollama not found — skipping (install via: brew install ollama)"
+elif "$OLLAMA_BIN" list 2>/dev/null | grep -q "^${OLLAMA_MODEL%%:*}"; then
+    echo "  = Model $OLLAMA_MODEL already present in Ollama"
 else
-    echo "  = Model $OLLAMA_MODEL already present"
+    # Check if it can be pulled directly from the Ollama registry first.
+    # If that fails (e.g. corporate proxy), fall back to HuggingFace download.
+    echo "  Trying ollama pull $OLLAMA_MODEL ..."
+    if "$OLLAMA_BIN" pull "$OLLAMA_MODEL" 2>/dev/null; then
+        echo "  + Model $OLLAMA_MODEL ready (via Ollama registry)"
+    else
+        echo "  ! Ollama registry pull failed — downloading GGUF from HuggingFace..."
+        mkdir -p "$MODELS_DIR"
+        if [ -f "$GGUF_FILE" ]; then
+            echo "  = GGUF already downloaded: $GGUF_FILE"
+        else
+            echo "  Downloading $(basename "$HF_GGUF_URL") (~2 GB) ..."
+            if curl -L --progress-bar -o "$GGUF_FILE" "$HF_GGUF_URL"; then
+                echo "  + Downloaded to $GGUF_FILE"
+            else
+                rm -f "$GGUF_FILE"
+                echo "  ! Download failed — retry manually:"
+                echo "    curl -L -o $GGUF_FILE $HF_GGUF_URL"
+                echo "    ollama create $OLLAMA_MODEL -f <(echo 'FROM $GGUF_FILE')"
+                GGUF_FILE=""
+            fi
+        fi
+        if [ -n "$GGUF_FILE" ] && [ -f "$GGUF_FILE" ]; then
+            echo "  Importing into Ollama as $OLLAMA_MODEL ..."
+            MODELFILE_TMP="$(mktemp)"
+            echo "FROM $GGUF_FILE" > "$MODELFILE_TMP"
+            if "$OLLAMA_BIN" create "$OLLAMA_MODEL" -f "$MODELFILE_TMP"; then
+                echo "  + Model $OLLAMA_MODEL ready (imported from HuggingFace GGUF)"
+            else
+                echo "  ! Import failed — retry manually:"
+                echo "    ollama create $OLLAMA_MODEL -f $MODELFILE_TMP"
+            fi
+            rm -f "$MODELFILE_TMP"
+        fi
+    fi
 fi
 
 # ── Step 4: Memory directory ─────────────────────────────────────────────────
@@ -125,7 +161,7 @@ mkdir -p "$HOME/.memory"
 echo ""
 echo "Memory directory: $HOME/.memory/"
 
-# ── Step 4: Identity profile ─────────────────────────────────────────────────
+# ── Step 5: Identity profile ─────────────────────────────────────────────────
 if [ ! -f "$HOME/.memory/identity.md" ]; then
     echo ""
     echo "Setting up your identity profile..."
@@ -159,7 +195,7 @@ if [ ! -f "$HOME/.memory/identity.md" ]; then
     echo "  + Created ~/.memory/identity.md"
 fi
 
-# ── Step 5: Claude Code hooks ─────────────────────────────────────────────────
+# ── Step 6: Claude Code hooks ─────────────────────────────────────────────────
 echo ""
 echo "Configuring ~/.claude/settings.json hooks..."
 export INSTALL_DIR
@@ -197,7 +233,7 @@ else:
     print(f"  = UserPromptSubmit hook already present (no change)")
 PYEOF
 
-# ── Step 6: MCP server ───────────────────────────────────────────────────────
+# ── Step 7: MCP server ───────────────────────────────────────────────────────
 echo ""
 echo "Configuring ~/.claude/mcp.json..."
 python3 << PYEOF
@@ -220,7 +256,7 @@ else:
     print(f"  + Registered MCP server 'memory': {server_path}")
 PYEOF
 
-# ── Step 7: launchd — background daemon ─────────────────────────────────────
+# ── Step 8: launchd — background daemon ─────────────────────────────────────
 echo ""
 echo "Installing background daemon (auto-extracts facts, builds insights)..."
 
@@ -272,7 +308,7 @@ launchctl unload "$HOME/Library/LaunchAgents/com.memory.daemon.plist" 2>/dev/nul
 launchctl load   "$HOME/Library/LaunchAgents/com.memory.daemon.plist"
 echo "  + Daemon loaded (starts on login, logs: ~/.memory/daemon.log)"
 
-# ── Step 8: launchd — ingest server ─────────────────────────────────────────
+# ── Step 9: launchd — ingest server ─────────────────────────────────────────
 echo ""
 echo "Installing ingest server (receives sessions from other agents)..."
 
@@ -312,7 +348,7 @@ launchctl unload "$HOME/Library/LaunchAgents/com.memory.ingest.plist" 2>/dev/nul
 launchctl load   "$HOME/Library/LaunchAgents/com.memory.ingest.plist"
 echo "  + Ingest server loaded on port 7747 (logs: ~/.memory/ingest.log)"
 
-# ── Step 9: launchd — query server ──────────────────────────────────────────
+# ── Step 10: launchd — query server ──────────────────────────────────────────
 echo ""
 echo "Installing query server (serves dashboard + read API on port 7748)..."
 
@@ -351,7 +387,7 @@ launchctl unload "$HOME/Library/LaunchAgents/com.memory.query.plist" 2>/dev/null
 launchctl load   "$HOME/Library/LaunchAgents/com.memory.query.plist"
 echo "  + Query server loaded on port 7748 (logs: ~/.memory/query.log)"
 
-# ── Step 10: Final summary ────────────────────────────────────────────────────
+# ── Step 11: Final summary ────────────────────────────────────────────────────
 echo ""
 echo "================================================================"
 echo "  agentic-memory installed successfully!"

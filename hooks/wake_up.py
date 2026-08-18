@@ -18,6 +18,7 @@
 
 import json
 import os
+import re
 import sqlite3
 import sys
 import traceback
@@ -25,7 +26,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from memory.db import init_db, search_facts, list_insights, log_retrieval
+from memory.db import init_db, search_facts, list_insights, log_retrieval, find_direct_answer
 from memory.logger import activity_log, error_log
 
 DB_PATH       = os.path.expanduser("~/.memory/memory.db")
@@ -68,12 +69,27 @@ def _build_injection(
     identity: str,
     facts: list[dict],
     insights: list[dict] | None,
+    cached_answer: dict | None = None,
 ) -> str:
     lines = ["=== MEMORY ===", ""]
 
+    # Identity always comes first — it is the authoritative ground truth.
     if identity:
-        lines.append("[Identity & Preferences]")
+        lines.append("[Identity & Preferences — always authoritative]")
         lines.append(identity)
+        lines.append("")
+
+    # Cached answer comes after identity so it cannot override it.
+    if cached_answer:
+        similarity = cached_answer.get("similarity", 0)
+        lines.append(f"[Cached Answer — {similarity:.0%} match to this prompt]")
+        lines.append(f"Q: {cached_answer.get('question','')}")
+        lines.append(f"A: {cached_answer.get('answer','')}")
+        lines.append(
+            "(Use this answer if it is consistent with the Identity section above. "
+            "If it contradicts Identity — e.g. wrong name, wrong role — ignore it "
+            "and use the Identity section instead.)"
+        )
         lines.append("")
 
     if facts:
@@ -98,6 +114,13 @@ def _build_injection(
         lines.append("")
 
     lines.append("[System]")
+    if cached_answer:
+        lines.append(
+            "A cached answer was found for this prompt. If it is consistent with "
+            "the Identity section, begin your response with `[From Memory]` on its "
+            "own line, then give the answer. If it conflicts with Identity, discard "
+            "the cached answer and answer from Identity instead (no [From Memory] prefix)."
+        )
     lines.append(
         "If you learn a new personal fact about the user (name, role, tech stack, "
         "preferences, working style), update ~/.memory/identity.md silently."
@@ -110,7 +133,9 @@ def _build_injection(
 def main() -> None:
     try:
         payload    = json.load(sys.stdin)
-        session_id = payload.get("session_id", "unknown")
+        raw_sid    = payload.get("session_id", "unknown")
+        # Sanitize session_id before use in any file path to prevent path traversal.
+        session_id = re.sub(r"[^a-zA-Z0-9_-]", "_", raw_sid)
         prompt     = payload.get("prompt", "").strip()
     except Exception as e:
         _log_error(f"failed to parse stdin: {e}")
@@ -128,6 +153,15 @@ def main() -> None:
     identity = _read_identity()
     facts: list[dict] = []
     insights: list[dict] | None = None
+
+    # Check for a cached answer to this exact prompt (semantic similarity ≥ 0.93).
+    cached_answer: dict | None = None
+    if prompt:
+        try:
+            cached_answer = find_direct_answer(conn, prompt, min_score=0.93,
+                                               exclude_session_id=session_id)
+        except Exception:
+            pass
 
     # Search for facts relevant to this specific prompt.
     if prompt:
@@ -148,12 +182,12 @@ def main() -> None:
         except Exception:
             pass
 
-    # Nothing to inject — skip silently (no identity, no facts, no insights).
-    if not identity and not facts and not insights:
+    # Nothing to inject — skip silently.
+    if not identity and not facts and not insights and not cached_answer:
         conn.close()
         _allow()
 
-    injection = _build_injection(identity, facts, insights)
+    injection = _build_injection(identity, facts, insights, cached_answer)
 
     try:
         est_tokens = len(injection) // 4
@@ -161,6 +195,7 @@ def main() -> None:
         activity_log(
             "wake_up", "injected",
             session=session_id, facts=len(facts),
+            has_cached_answer=bool(cached_answer),
             has_insights=bool(insights), est_tokens=est_tokens,
         )
     except Exception:

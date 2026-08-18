@@ -25,7 +25,7 @@ from memory.logger import activity_log, error_log
 _OLLAMA_URL = "http://localhost:11434/api/generate"
 
 # Default model name — can be overridden via the MEMORY_OLLAMA_MODEL env var.
-_DEFAULT_MODEL = "llama3.2:3b"
+_DEFAULT_MODEL = "qwen2.5:3b"
 
 
 def _call_ollama(prompt_text: str) -> str:

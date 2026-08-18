@@ -14,6 +14,7 @@
 #   DB:     compressed_memory table (each run appends a row; latest = current)
 #   File:   ~/.memory/compressed_memory.md  (human-readable copy)
 
+import atexit
 import json
 import os
 import subprocess
@@ -44,7 +45,7 @@ DB_PATH     = os.path.expanduser("~/.memory/memory.db")
 OUTPUT_PATH = os.path.expanduser("~/.memory/compressed_memory.md")
 
 _OLLAMA_URL    = "http://localhost:11434/api/generate"
-_DEFAULT_MODEL = os.environ.get("MEMORY_OLLAMA_MODEL", "llama3.2:3b")
+_DEFAULT_MODEL = os.environ.get("MEMORY_OLLAMA_MODEL", "qwen2.5:3b")
 
 # Number of sessions to fold into each intermediate summary call.
 _BATCH_SIZE = 10
@@ -131,8 +132,10 @@ def _ensure_ollama(model: str | None = None) -> None:
             "Install via: brew install ollama"
         )
     try:
-        subprocess.Popen([ollama_bin, "serve"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc = subprocess.Popen([ollama_bin, "serve"],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Terminate the process we spawned when this script exits.
+        atexit.register(proc.terminate)
     except Exception as exc:
         raise RuntimeError(
             f"Ollama is not running and could not be started: {exc}"
@@ -391,7 +394,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--model", default=None,
-        help="Ollama model to use (default: llama3.2:3b or MEMORY_OLLAMA_MODEL env var).",
+        help="Ollama model to use (default: qwen2.5:3b or MEMORY_OLLAMA_MODEL env var).",
     )
     args = parser.parse_args()
 

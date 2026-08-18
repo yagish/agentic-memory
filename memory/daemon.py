@@ -53,7 +53,7 @@ from memory.logger import activity_log, error_log
 _OLLAMA_URL = "http://localhost:11434/api/generate"
 
 # Default model name — overridden by the MEMORY_OLLAMA_MODEL env var.
-_DEFAULT_MODEL = "llama3.2:3b"
+_DEFAULT_MODEL = "qwen2.5:3b"
 
 # Where the main memory database lives.
 DB_PATH = os.path.expanduser("~/.memory/memory.db")
@@ -76,6 +76,10 @@ COMPRESS_EVERY_N = 50
 
 # Skip an inference cycle if the CPU % is above this threshold.
 CPU_THRESHOLD = 70
+
+# Delete processed sessions older than this many days.
+# Facts and insights extracted from them are kept; only the raw transcript is removed.
+RETAIN_PROCESSED_DAYS = 30
 
 # Global flag set by signal handlers so the main loop can exit cleanly.
 _shutdown = False
@@ -275,9 +279,9 @@ def _call_ollama(prompt_text: str) -> str:
     )
 
     try:
-        # urlopen() sends the HTTP POST and blocks for up to 30 seconds.
-        # If ollama is not running, this raises urllib.error.URLError immediately.
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        # urlopen() sends the HTTP POST and blocks for up to 120 seconds.
+        # 3B models on CPU can take 30-90 s per call; 30 s was too tight.
+        with urllib.request.urlopen(req, timeout=120) as resp:
             raw = resp.read().decode("utf-8")
     except urllib.error.URLError as exc:
         # Re-raise as RuntimeError so callers have a single exception type.
@@ -322,34 +326,48 @@ def re_extract_facts(conn, session: dict) -> None:
         # If the transcript is malformed, skip this session gracefully.
         turns = []
 
-    # Build a flat text representation of the conversation (first 3000 chars).
-    # Tool-call turns have non-string content — skip those.
-    lines = []
+    # Build a sampled text representation: take user turns spread across the
+    # whole transcript, not just the first N chars. Tool-call turns have
+    # non-string content — skip those. Only user turns are sampled because
+    # assistant turns contain code/explanations that aren't personal facts.
+    user_lines = []
     for turn in turns:
-        role    = turn.get("role", "unknown")
+        if turn.get("role") != "user":
+            continue
         content = turn.get("content", "")
-        if isinstance(content, str):
-            lines.append(f"{role}: {content}")
+        if isinstance(content, str) and content.strip():
+            user_lines.append(content.strip()[:300])  # cap each turn
 
-    transcript_text = "\n".join(lines)[:3000]
+    # Sample evenly across the session: up to 8 user messages spread throughout.
+    if len(user_lines) > 8:
+        step = len(user_lines) // 8
+        user_lines = user_lines[::step][:8]
 
-    # The prompt instructs the model to return ONLY a JSON array of facts.
+    transcript_text = "\n---\n".join(user_lines)[:2000]
+
+    # The prompt focuses strictly on personal facts about the USER.
+    # Code tasks, bug fixes, and implementation details are explicitly excluded.
     prompt = (
-        "Extract factual statements worth remembering from this conversation. "
-        "Focus on: user preferences, technical decisions, recurring patterns, "
-        "and domain knowledge.\n\n"
-        "Return ONLY a JSON array with no other text. "
-        'Each item: {"content": "...", "tags": ["tag1", "tag2"]}. Maximum 5 facts.\n\n'
-        f"Conversation:\n{transcript_text}"
+        "You are extracting personal facts about the USER from their side of a conversation.\n\n"
+        "Extract ONLY:\n"
+        "- Who they are (name, role, company)\n"
+        "- Their technical background and experience level\n"
+        "- Explicit preferences (tools, languages, communication style)\n"
+        "- Working style or habits they mention\n\n"
+        "DO NOT extract: code changes, bug fixes, tasks completed, or implementation details.\n"
+        "If there are no personal facts, return an empty array [].\n\n"
+        "Return ONLY a JSON array. "
+        'Each item: {"content": "User prefers...", "tags": ["preference"]}. Maximum 5 facts.\n\n'
+        f"User messages:\n{transcript_text}"
     )
 
     # Call ollama to generate the fact list.
-    # If ollama fails, we log the error and return without inserting anything.
+    # Re-raise on failure so the outer loop leaves the session unprocessed and retries it.
     try:
         raw_response = _call_ollama(prompt)
     except RuntimeError as exc:
         error_log("daemon", f"ollama call failed for session {session_id}: {exc}", exc=exc)
-        return
+        raise
 
     # Parse the JSON array from the response.
     # The model may include extra text before/after the JSON — we try to
@@ -368,12 +386,7 @@ def re_extract_facts(conn, session: dict) -> None:
         else:
             facts_data = []
 
-    # Load all existing fact content strings so we can skip duplicates.
-    # list_facts returns all facts; we only care about content strings.
-    existing_facts = list_facts(conn, limit=10000)
-    existing_contents = {f["content"] for f in existing_facts}
-
-    # Insert each new fact, skipping any whose content already exists.
+    # Insert each new fact, skipping duplicates via a targeted SQL lookup.
     inserted = 0
     for item in facts_data:
         # Each item must be a dict with at least a "content" key.
@@ -383,12 +396,14 @@ def re_extract_facts(conn, session: dict) -> None:
         tags    = item.get("tags", [])
         if not content:
             continue
-        if content in existing_contents:
-            # Duplicate — skip to avoid re-inserting the same fact.
+        # Check existence with a single indexed lookup instead of loading all facts.
+        exists = conn.execute(
+            "SELECT 1 FROM facts WHERE content = ? LIMIT 1", (content,)
+        ).fetchone()
+        if exists:
             continue
         # Insert the fact with source="daemon" to distinguish from agent-saved facts.
         insert_fact(conn, content, tags=tags, source="daemon", session_id=session_id)
-        existing_contents.add(content)
         inserted += 1
 
     # Log the outcome so the activity log shows what was found.
@@ -541,6 +556,39 @@ def generate_cross_session_insights(conn) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Session cleanup
+# ---------------------------------------------------------------------------
+
+def prune_old_sessions(conn) -> None:
+    """
+    Delete sessions that have been processed by the daemon and are older than
+    RETAIN_PROCESSED_DAYS days. Facts and insights extracted from them are kept.
+
+    This prevents the DB from growing unboundedly while preserving the learned
+    knowledge. Compression (triggered every COMPRESS_EVERY_N sessions) handles
+    bulk cleanup with LLM summarisation; this handles the long tail of old sessions
+    that were processed individually.
+    """
+    rows = conn.execute(
+        """
+        SELECT session_id FROM sessions
+        WHERE daemon_processed_at IS NOT NULL
+          AND daemon_processed_at < DATETIME('now', ? || ' days')
+        """,
+        (f"-{RETAIN_PROCESSED_DAYS}",),
+    ).fetchall()
+
+    if not rows:
+        return
+
+    ids = [r["session_id"] for r in rows]
+    from memory.db import delete_sessions  # noqa: PLC0415
+    deleted = delete_sessions(conn, ids)
+    activity_log("daemon", "prune_sessions", deleted=deleted, retain_days=RETAIN_PROCESSED_DAYS)
+    _daemon_log(f"pruned {deleted} sessions older than {RETAIN_PROCESSED_DAYS} days")
+
+
+# ---------------------------------------------------------------------------
 # Main polling loop
 # ---------------------------------------------------------------------------
 
@@ -652,6 +700,12 @@ def run(once: bool = False) -> None:
                 except Exception as exc:
                     error_log("daemon", "memory compression failed", exc=exc)
                     _daemon_log(f"compression error: {exc}")
+
+            # Prune sessions that have been processed and are older than RETAIN_PROCESSED_DAYS.
+            try:
+                prune_old_sessions(conn)
+            except Exception as exc:
+                error_log("daemon", "session pruning failed", exc=exc)
 
             # Stop ollama if the daemon started it — free its memory now that
             # inference is done for this cycle.

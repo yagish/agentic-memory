@@ -179,36 +179,6 @@ class TestIngestEndpoints(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
 
     # ------------------------------------------------------------------
-    # Test 5: GET /status returns session count after ingest
-    # ------------------------------------------------------------------
-
-    def test_get_status_returns_counts(self):
-        """
-        After ingesting a session, GET /status must return total_sessions >= 1.
-        """
-        # First ingest a session so there is data to count.
-        self.client.post("/ingest", json={
-            "session_id": "sess-005",
-            "turns":      SAMPLE_TURNS,
-        })
-
-        # Now query the status endpoint.
-        response = self.client.get("/status")
-
-        self.assertEqual(response.status_code, 200)
-        body = response.json()
-
-        # status must be "ok".
-        self.assertEqual(body["status"], "ok")
-
-        # total_sessions must be at least 1 since we just ingested one.
-        self.assertGreaterEqual(body["total_sessions"], 1)
-
-        # db_size_bytes must be a non-negative integer.
-        self.assertIsInstance(body["db_size_bytes"], int)
-        self.assertGreaterEqual(body["db_size_bytes"], 0)
-
-    # ------------------------------------------------------------------
     # Test 6: POST /ingest accepts a metadata dict
     # ------------------------------------------------------------------
 

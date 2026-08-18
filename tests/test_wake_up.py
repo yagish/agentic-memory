@@ -1,434 +1,187 @@
 # test_wake_up.py — tests for the wake-up hook's core logic.
 #
-# We test the pure functions (build_digest, fetch_recent_sessions,
-# fetch_relevant_context, get_wake_up_digest) directly, not the
-# stdin/stdout hook layer — those are hard to test in isolation and
-# the logic that matters is in the functions themselves.
+# Tests cover _build_injection() (the formatting function) and main()
+# (the stdin/stdout entry point).
 #
 # Run with:  python3 -m unittest tests.test_wake_up -v
 
+import io
 import json
 import os
 import sys
-import tempfile
 import unittest
-from unittest.mock import patch
-
-# Add the project root to the Python path so we can import from hooks/
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from hooks.wake_up import (
-    build_digest,
-    fetch_recent_sessions,
-    fetch_relevant_context,
-    get_wake_up_digest,
-)
-from memory.db import init_db, insert_fact, upsert_session
-
-
-# ---------------------------------------------------------------------------
-# Existing tests — kept exactly as before (Phase 1–9 coverage)
-# ---------------------------------------------------------------------------
-
-
-class TestBuildDigest(unittest.TestCase):
-    """Tests for build_digest() — the function that formats the wake-up text."""
-
-    def test_digest_contains_identity(self):
-        # The digest should include whatever is in identity.md
-        result = build_digest("Name: Alice\nRole: engineer", [])
-        self.assertIn("Name: Alice", result)
-        self.assertIn("Role: engineer", result)
-
-    def test_digest_contains_session_timestamps(self):
-        # The digest should list each session's timestamp
-        sessions = [
-            {"updated_at": "2026-08-15T10:00:00Z", "turn_count": 4, "first_user_message": "Hello there"},
-        ]
-        result = build_digest("", sessions)
-        self.assertIn("2026-08-15T10:00:00Z", result)
-
-    def test_digest_contains_turn_count(self):
-        # The digest should show how many turns each session had
-        sessions = [
-            {"updated_at": "2026-08-15T10:00:00Z", "turn_count": 12, "first_user_message": "test"},
-        ]
-        result = build_digest("", sessions)
-        self.assertIn("12 turns", result)
-
-    def test_empty_sessions_shows_placeholder(self):
-        # When there are no past sessions, show a friendly message instead of a blank section
-        result = build_digest("", [])
-        self.assertIn("no past sessions found", result)
-
-    def test_missing_identity_shows_placeholder(self):
-        # When identity is empty (file missing), show a helpful hint
-        result = build_digest("", [])
-        self.assertIn("no identity.md found", result)
-
-    def test_digest_has_markers(self):
-        # The digest should be clearly delimited so Claude can spot it
-        result = build_digest("", [])
-        self.assertIn("=== MEMORY WAKE-UP ===", result)
-        self.assertIn("=== END MEMORY ===", result)
-
-
-class TestFetchRecentSessions(unittest.TestCase):
-    """Tests for fetch_recent_sessions() — querying the DB for past sessions."""
-
-    def setUp(self):
-        # Use a real in-memory DB and point DB_PATH at a temp file path.
-        # We monkey-patch the module-level DB_PATH for these tests.
-        import hooks.wake_up as wu
-        self._original_db_path = wu.DB_PATH
-
-        # Use a temp file so fetch_recent_sessions can open it
-        self._tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        self._tmp.close()
-        wu.DB_PATH = self._tmp.name
-
-        # Seed the temp DB with some sessions
-        conn = init_db(self._tmp.name)
-        upsert_session(
-            conn, "sess-old", "claude",
-            [{"role": "user", "content": "Tell me about quantum physics"},
-             {"role": "assistant", "content": "Sure!"}],
-            "2026-08-10T09:00:00Z", "2026-08-10T09:05:00Z"
-        )
-        upsert_session(
-            conn, "sess-new", "claude",
-            [{"role": "user", "content": "What is Python?"},
-             {"role": "assistant", "content": "Python is a language."}],
-            "2026-08-15T10:00:00Z", "2026-08-15T10:10:00Z"
-        )
-        conn.close()
-
-    def tearDown(self):
-        import hooks.wake_up as wu
-        wu.DB_PATH = self._original_db_path
-        os.unlink(self._tmp.name)
-
-    def test_returns_sessions_excluding_current(self):
-        # The current session should not appear in its own wake-up digest
-        results = fetch_recent_sessions("sess-new")
-        ids = [r["session_id"] for r in results]
-        self.assertNotIn("sess-new", ids)
-        self.assertIn("sess-old", ids)
-
-    def test_returns_most_recent_first(self):
-        # Sessions should be ordered newest-first
-        results = fetch_recent_sessions("irrelevant-session-id")
-        self.assertEqual(results[0]["session_id"], "sess-new")
-        self.assertEqual(results[1]["session_id"], "sess-old")
-
-    def test_first_user_message_extracted(self):
-        # The first user message should be pulled from the transcript
-        results = fetch_recent_sessions("irrelevant-session-id")
-        new_session = next(r for r in results if r["session_id"] == "sess-new")
-        self.assertIn("What is Python", new_session["first_user_message"])
-
-    def test_empty_db_returns_empty_list(self):
-        # If the DB has no sessions (other than the current one), return []
-        results = fetch_recent_sessions("sess-old")
-        # Only sess-new remains; should return it
-        self.assertEqual(len(results), 1)
-
-    def test_missing_db_returns_empty_list(self):
-        # If the DB file doesn't exist yet, return [] gracefully
-        import hooks.wake_up as wu
-        wu.DB_PATH = "/tmp/nonexistent_memory_test.db"
-        results = fetch_recent_sessions("any-session")
-        self.assertEqual(results, [])
-
-
-# ---------------------------------------------------------------------------
-# New tests — Phase 10: relevance-based wake-up
-# ---------------------------------------------------------------------------
-
-
-class TestRelevanceWakeUp(unittest.TestCase):
-    """
-    Tests for Phase 10: fetch_relevant_context(), get_wake_up_digest(),
-    and the extended build_digest() with facts support.
-
-    We use a temp-file DB (not :memory:) so that fetch_recent_sessions()
-    — which opens its own connection via the monkey-patched DB_PATH — can
-    read the same sessions we seeded.  fetch_relevant_context receives an
-    explicit conn passed from the test, so its DB access is independent.
-    """
-
-    def setUp(self):
-        # Monkey-patch DB_PATH so fetch_recent_sessions uses our temp file.
-        import hooks.wake_up as wu
-        self._wu = wu
-        self._original_db_path = wu.DB_PATH
-
-        # Create a temp database file for the duration of this test.
-        self._tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        self._tmp.close()
-        wu.DB_PATH = self._tmp.name
-
-        # Open a connection to the temp DB and seed it with two sessions:
-        # sess-auth — old, about authentication bugs
-        # sess-ui   — recent, about UI/CSS styling
-        self._conn = init_db(self._tmp.name)
-        upsert_session(
-            self._conn, "sess-auth", "claude",
-            [{"role": "user", "content": "authentication bug with login form"},
-             {"role": "assistant", "content": "Let me look at your auth code."}],
-            "2026-01-01T09:00:00Z", "2026-01-01T09:05:00Z",
-        )
-        upsert_session(
-            self._conn, "sess-ui", "claude",
-            [{"role": "user", "content": "CSS button styling and UI layout"},
-             {"role": "assistant", "content": "Sure, let's look at your CSS."}],
-            "2026-08-15T10:00:00Z", "2026-08-15T10:10:00Z",
-        )
-
-    def tearDown(self):
-        # Restore the original DB_PATH and clean up the temp file.
-        self._conn.close()
-        self._wu.DB_PATH = self._original_db_path
-        os.unlink(self._tmp.name)
-
-    # --- test 1 ---
-
-    @patch("hooks.wake_up.semantic_search_chunks")
-    @patch("hooks.wake_up.search_facts")
-    def test_relevance_beats_recency(self, mock_facts, mock_chunks):
-        """
-        When semantic search says the authentication session is more relevant
-        (lower cosine distance) than the UI session, the authentication session
-        should appear first in the digest — even though the UI session is newer.
-        """
-        # Mock chunk search: authentication session is more relevant (distance 0.1)
-        # than the UI session (distance 0.9).
-        mock_chunks.return_value = [
-            {
-                "session_id": "sess-auth",
-                "chunk_index": 0,
-                "distance":    0.1,        # low distance = highly relevant
-                "text":        "authentication bug with login form",
-                "snippet":     "login authentication bug",
-            },
-            {
-                "session_id": "sess-ui",
-                "chunk_index": 0,
-                "distance":    0.9,        # high distance = less relevant
-                "text":        "CSS button styling",
-                "snippet":     "CSS button styling UI",
-            },
-        ]
-        # Facts search returns nothing for this prompt.
-        mock_facts.return_value = []
-
-        digest = get_wake_up_digest(
-            self._conn, "current-session", "authentication bug", ""
-        )
-
-        # Both snippets must appear in the digest.
-        auth_pos = digest.find("login authentication bug")
-        ui_pos   = digest.find("CSS button styling UI")
-        self.assertGreater(auth_pos, -1, "Authentication snippet should appear in digest")
-        self.assertGreater(ui_pos, -1, "UI snippet should appear in digest")
-
-        # Authentication session (relevant) should be listed before UI session (recent).
-        self.assertLess(
-            auth_pos, ui_pos,
-            "Relevant authentication session should appear before more-recent UI session",
-        )
-
-    # --- test 2 ---
-
-    def test_fallback_on_empty_prompt(self):
-        """
-        When the prompt is empty, get_wake_up_digest skips semantic search entirely
-        and falls back to the recency-based approach (last N sessions by updated_at).
-        The digest should show the most-recent session first and omit the [L2] section.
-        """
-        # Pass an empty prompt — semantic search should NOT be called.
-        digest = get_wake_up_digest(
-            self._conn, "current-session", "", ""
-        )
-
-        # Recency heading must be present (not the relevance heading).
-        self.assertIn("[L1 — Recent Sessions]", digest)
-
-        # No facts section in recency fallback.
-        self.assertNotIn("[L2", digest)
-
-        # UI session (2026-08-15) is more recent — it should appear before
-        # the authentication session (2026-01-01) in the digest.
-        ui_pos   = digest.find("2026-08-15")
-        auth_pos = digest.find("2026-01-01")
-        self.assertGreater(ui_pos, -1, "Recent UI session timestamp should appear in digest")
-        self.assertGreater(auth_pos, -1, "Older auth session timestamp should appear in digest")
-        self.assertLess(
-            ui_pos, auth_pos,
-            "More-recent session should appear first in recency fallback",
-        )
-
-    # --- test 3 ---
-
-    @patch("hooks.wake_up.semantic_search_chunks")
-    def test_fallback_on_import_error(self, mock_chunks):
-        """
-        When semantic_search_chunks raises ImportError (e.g. sentence-transformers
-        not installed), get_wake_up_digest must fall back gracefully to recency.
-        The function should return a valid digest string — not crash.
-        """
-        # Simulate sentence-transformers being absent.
-        mock_chunks.side_effect = ImportError(
-            "sentence-transformers is not installed. Run: pip3 install sentence-transformers"
-        )
-
-        # This call must not raise — it should catch the ImportError and fall back.
-        digest = get_wake_up_digest(
-            self._conn, "current-session", "authentication bug", ""
-        )
-
-        # Must be a non-empty string with the standard markers.
-        self.assertIn("=== MEMORY WAKE-UP ===", digest)
-        self.assertIn("=== END MEMORY ===", digest)
-
-        # Fallback digest must not contain an L2 facts section.
-        self.assertNotIn("[L2", digest)
-
-    # --- test 4 ---
-
-    @patch("hooks.wake_up.semantic_search_chunks")
-    @patch("hooks.wake_up.search_facts")
-    def test_facts_section_present(self, mock_facts, mock_chunks):
-        """
-        When search_facts returns results, build_digest includes a
-        [L2 — Relevant Facts] section with bullet points.
-        """
-        # Return one matching chunk so the relevance path is taken.
-        mock_chunks.return_value = [
-            {
-                "session_id": "sess-auth",
-                "chunk_index": 0,
-                "distance":    0.2,
-                "text":        "authentication bug with login form",
-                "snippet":     "login bug",
-            },
-        ]
-        # Return one fact with tags.
-        mock_facts.return_value = [
-            {
-                "id":         "fact-1",
-                "content":    "User prefers OAuth login over password",
-                "tags":       ["auth", "preferences"],
-                "source":     "agent",
-                "session_id": "sess-auth",
-                "created_at": "2026-01-01T00:00:00Z",
-                "updated_at": "2026-01-01T00:00:00Z",
-                "snippet":    "User prefers [OAuth] login",
-            },
-        ]
-
-        digest = get_wake_up_digest(
-            self._conn, "current-session", "authentication login", ""
-        )
-
-        # Facts section must be present.
-        self.assertIn("[L2 — Relevant Facts]", digest)
-
-        # The fact content must appear in the digest.
-        self.assertIn("User prefers OAuth login over password", digest)
-
-        # Tags must appear in the expected format.
-        self.assertIn("[tags: auth, preferences]", digest)
-
-    # --- test 5 ---
-
-    def test_facts_section_absent_on_fallback(self):
-        """
-        The [L2 — Relevant Facts] section must NOT appear when the recency
-        fallback is used (e.g. when the prompt is empty).
-        """
-        # Empty prompt triggers recency fallback unconditionally.
-        digest = get_wake_up_digest(
-            self._conn, "current-session", "", ""
-        )
-
-        # No L2 section should appear anywhere in the digest.
-        self.assertNotIn("[L2", digest)
-        self.assertNotIn("Relevant Facts", digest)
-
-
-# ---------------------------------------------------------------------------
-# Phase 15: injection-size logging test
-# ---------------------------------------------------------------------------
-
-import io
 from unittest.mock import MagicMock, patch
 
-import hooks.wake_up as _wu_module
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from hooks.wake_up import _build_injection, main
+import hooks.wake_up as _wu
 
 
-class TestInjectionSizeLogged(unittest.TestCase):
-    """Test that main() logs the injection size via log_retrieval."""
+class TestBuildInjection(unittest.TestCase):
+    """Tests for _build_injection() — the function that formats the memory block."""
 
-    def test_injection_size_logged(self):
-        """
-        When main() runs for a new session, it must call log_retrieval with
-        tool='wake_up_injection' and result_size = len(digest) // 4.
-        We mock get_wake_up_digest so the digest is a fixed string and we
-        mock init_db so a fake connection is provided (conn is not None).
-        """
-        # A digest of exactly 400 characters → 400 // 4 = 100 est. tokens.
-        fake_digest = "x" * 400
+    def test_identity_appears_before_cached_answer(self):
+        # Identity must come first so it cannot be overridden by a cached answer.
+        result = _build_injection(
+            identity="Name: Alice",
+            facts=[],
+            insights=None,
+            cached_answer={"question": "hi", "answer": "hello", "similarity": 1.0},
+        )
+        identity_pos = result.find("Name: Alice")
+        cached_pos   = result.find("[Cached Answer")
+        self.assertGreater(identity_pos, -1)
+        self.assertGreater(cached_pos, -1)
+        self.assertLess(identity_pos, cached_pos,
+                        "Identity must appear before the cached answer block")
 
-        # Use a session ID that is unlikely to collide with a real flag file.
-        session_id = "test-injection-logging-phase15"
-        flag_path  = f"/tmp/memory_injected_{session_id}"
+    def test_identity_section_labelled_authoritative(self):
+        result = _build_injection("Name: Alice", [], None)
+        self.assertIn("[Identity & Preferences — always authoritative]", result)
 
-        # Remove a stale flag file from a previous test run if one exists.
-        if os.path.exists(flag_path):
-            os.remove(flag_path)
+    def test_cached_answer_block_present_when_provided(self):
+        ca = {"question": "whats my name", "answer": "Alice", "similarity": 0.97}
+        result = _build_injection("Name: Alice", [], None, cached_answer=ca)
+        self.assertIn("[Cached Answer", result)
+        self.assertIn("Q: whats my name", result)
+        self.assertIn("A: Alice", result)
 
-        try:
-            payload = json.dumps({"session_id": session_id, "prompt": "hello"})
+    def test_cached_answer_instruction_mentions_identity_conflict(self):
+        # The instruction must tell Claude to ignore the cached answer if it
+        # contradicts the Identity section.
+        ca = {"question": "whats my name", "answer": "I don't know", "similarity": 1.0}
+        result = _build_injection("Name: Alice", [], None, cached_answer=ca)
+        self.assertIn("contradicts Identity", result)
+        self.assertIn("ignore it", result)
 
-            # os.path.exists is called twice in main():
-            #   1. flag_path check  → must return False so we don't skip
-            #   2. DB_PATH check    → must return True so conn is attempted
-            # We fake DB_PATH to a sentinel value and match only that.
-            fake_db_path = "/fake/nonexistent_for_test.db"
+    def test_from_memory_instruction_present_with_cached_answer(self):
+        ca = {"question": "q", "answer": "a", "similarity": 0.95}
+        result = _build_injection("Name: Alice", [], None, cached_answer=ca)
+        self.assertIn("[From Memory]", result)
 
-            def fake_exists(path):
-                """Return True only for our fake DB path; False for everything else."""
-                return path == fake_db_path
+    def test_from_memory_instruction_absent_without_cached_answer(self):
+        result = _build_injection("Name: Alice", [], None, cached_answer=None)
+        self.assertNotIn("[From Memory]", result)
 
-            with patch("sys.stdin",  io.StringIO(payload)), \
-                 patch("sys.exit"), \
-                 patch.object(_wu_module, "DB_PATH",    fake_db_path), \
-                 patch("os.path.exists",                side_effect=fake_exists), \
-                 patch.object(_wu_module, "init_db",    return_value=MagicMock()) as mock_init_db, \
-                 patch.object(_wu_module, "get_wake_up_digest", return_value=fake_digest), \
-                 patch.object(_wu_module, "log_retrieval") as mock_log_retrieval, \
-                 patch.object(_wu_module, "activity_log"):
+    def test_no_cached_answer_section_when_none(self):
+        result = _build_injection("Name: Alice", [], None, cached_answer=None)
+        self.assertNotIn("[Cached Answer", result)
 
-                _wu_module.main()
+    def test_facts_section_present_when_provided(self):
+        facts = [{"content": "User prefers dark mode", "tags": ["ui"]}]
+        result = _build_injection("", facts, None)
+        self.assertIn("[Relevant Facts about You]", result)
+        self.assertIn("User prefers dark mode", result)
+        self.assertIn("[tags: ui]", result)
 
-            # log_retrieval must have been called exactly once.
-            mock_log_retrieval.assert_called_once()
+    def test_facts_section_absent_when_empty(self):
+        result = _build_injection("Name: Alice", [], None)
+        self.assertNotIn("[Relevant Facts about You]", result)
 
-            # Verify the positional arguments:
-            #   arg[0] = conn (MagicMock)
-            #   arg[1] = tool = 'wake_up_injection'
-            #   arg[2] = query = None
-            #   arg[3] = result_size = 100  (400 chars // 4)
-            call_args = mock_log_retrieval.call_args[0]
-            self.assertEqual(call_args[1], "wake_up_injection")
-            self.assertIsNone(call_args[2])
-            self.assertEqual(call_args[3], 100)
+    def test_insights_section_present_when_provided(self):
+        insights = [{"content": "User often asks about auth", "insight_type": "pattern", "confidence": 0.8}]
+        result = _build_injection("", [], insights)
+        self.assertIn("[Learned Patterns]", result)
+        self.assertIn("User often asks about auth", result)
 
-        finally:
-            # Clean up the flag file written by main() during the test.
-            if os.path.exists(flag_path):
-                os.remove(flag_path)
+    def test_insights_section_absent_when_none(self):
+        result = _build_injection("Name: Alice", [], None)
+        self.assertNotIn("[Learned Patterns]", result)
+
+    def test_output_has_delimiters(self):
+        result = _build_injection("", [], None)
+        self.assertIn("=== MEMORY ===", result)
+        self.assertIn("=== END MEMORY ===", result)
+
+    def test_similarity_formatted_as_percentage(self):
+        ca = {"question": "q", "answer": "a", "similarity": 0.96}
+        result = _build_injection("", [], None, cached_answer=ca)
+        self.assertIn("96%", result)
+
+    def test_empty_identity_omits_identity_section(self):
+        result = _build_injection("", [], None)
+        self.assertNotIn("[Identity & Preferences", result)
+
+
+class TestMainIntegration(unittest.TestCase):
+    """Integration tests for main() via mocked stdin and DB."""
+
+    def _run_main(self, session_id="test-sess", prompt="hello",
+                  identity="Name: Alice", facts=None, insights=None,
+                  cached_answer=None):
+        """Run main() with full mocking, return parsed stdout JSON."""
+        payload = json.dumps({"session_id": session_id, "prompt": prompt})
+        fake_db = "/fake/test.db"
+
+        def fake_exists(path):
+            return path == fake_db or path.startswith("/tmp/memory_insights_injected_")
+
+        output = io.StringIO()
+        with patch("sys.stdin",  io.StringIO(payload)), \
+             patch("sys.stdout", output), \
+             patch("sys.exit"), \
+             patch.object(_wu, "DB_PATH", fake_db), \
+             patch("os.path.exists", side_effect=fake_exists), \
+             patch.object(_wu, "init_db", return_value=MagicMock()), \
+             patch.object(_wu, "_read_identity", return_value=identity), \
+             patch.object(_wu, "find_direct_answer", return_value=cached_answer), \
+             patch.object(_wu, "_fetch_relevant_facts", return_value=facts or []), \
+             patch.object(_wu, "list_insights", return_value=insights or []), \
+             patch.object(_wu, "log_retrieval"), \
+             patch.object(_wu, "activity_log"):
+            main()
+
+        return json.loads(output.getvalue())
+
+    def test_identity_injected_into_suffix(self):
+        result = self._run_main(identity="Name: Yagish\nRole: Tech Lead")
+        suffix = result["hookSpecificOutput"]["userPromptSuffix"]
+        self.assertIn("Name: Yagish", suffix)
+        self.assertIn("Role: Tech Lead", suffix)
+
+    def test_output_has_hook_event_name(self):
+        result = self._run_main()
+        self.assertEqual(
+            result["hookSpecificOutput"]["hookEventName"],
+            "UserPromptSubmit",
+        )
+
+    def test_no_injection_when_nothing_to_inject(self):
+        # When identity is empty and no facts/insights/cache → output {}
+        # sys.exit must raise so we capture only the first print ({}).
+        payload = json.dumps({"session_id": "test-empty", "prompt": "hi"})
+        fake_db = "/fake/test.db"
+        output  = io.StringIO()
+        with patch("sys.stdin",  io.StringIO(payload)), \
+             patch("sys.stdout", output), \
+             patch("sys.exit",   side_effect=SystemExit), \
+             patch.object(_wu, "DB_PATH", fake_db), \
+             patch("os.path.exists", return_value=True), \
+             patch.object(_wu, "init_db", return_value=MagicMock()), \
+             patch.object(_wu, "_read_identity", return_value=""), \
+             patch.object(_wu, "find_direct_answer", return_value=None), \
+             patch.object(_wu, "_fetch_relevant_facts", return_value=[]), \
+             patch.object(_wu, "list_insights", return_value=[]), \
+             patch.object(_wu, "log_retrieval"), \
+             patch.object(_wu, "activity_log"):
+            with self.assertRaises(SystemExit):
+                main()
+        result = json.loads(output.getvalue())
+        self.assertEqual(result, {})
+
+    def test_cached_answer_appears_in_suffix(self):
+        ca = {"question": "whats my name", "answer": "Alice", "similarity": 1.0}
+        result = self._run_main(identity="Name: Alice", cached_answer=ca)
+        suffix = result["hookSpecificOutput"]["userPromptSuffix"]
+        self.assertIn("whats my name", suffix)
+        self.assertIn("Alice", suffix)
+
+    def test_identity_before_cached_answer_in_suffix(self):
+        ca = {"question": "q", "answer": "old answer", "similarity": 0.95}
+        result = self._run_main(identity="Name: Alice", cached_answer=ca)
+        suffix = result["hookSpecificOutput"]["userPromptSuffix"]
+        self.assertLess(suffix.find("Name: Alice"), suffix.find("[Cached Answer"))
 
 
 if __name__ == "__main__":
