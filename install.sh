@@ -282,7 +282,7 @@ cat > "$HOME/Library/LaunchAgents/com.memory.query.plist" << PLIST_EOF
   <key>ProgramArguments</key>
   <array>
     <string>$PYTHON3_EXEC</string>
-    <string>$INSTALL_DIR/memory/query_server.py</string>
+    <string>$INSTALL_DIR/memory/dashboard_server.py</string>
   </array>
   <key>RunAtLoad</key>
   <true/>

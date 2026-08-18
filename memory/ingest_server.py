@@ -1,7 +1,7 @@
 # ingest_server.py — Write-only HTTP endpoint for agent session ingestion.
 #
 # This server's only job is to accept session writes from other agents.
-# Dashboard, monitoring, and memory read queries are in query_server.py (port 7748).
+# Dashboard, monitoring, and memory read queries are in dashboard_server.py (port 7748).
 #
 # Routes:
 #   POST /ingest  — store a full session transcript from any agent
@@ -369,7 +369,7 @@ def post_compress() -> dict:
     Compress all sessions into a structured memory document and delete them.
 
     Useful for agents and CLI tools that POST to the ingest server. The
-    dashboard uses the same endpoint on query_server (port 7748) instead.
+    dashboard uses the same endpoint on dashboard_server (port 7748) instead.
 
     Returns the compressed content and session count on success.
     """

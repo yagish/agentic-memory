@@ -11,7 +11,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>/Library/Frameworks/Python.framework/Versions/3.13/bin/python3</string>
-    <string>/Users/ys68052/work/agentic-memory/memory/query_server.py</string>
+    <string>/Users/ys68052/work/agentic-memory/memory/dashboard_server.py</string>
   </array>
 
   <!-- RunAtLoad: start immediately when plist is loaded, and on every login. -->

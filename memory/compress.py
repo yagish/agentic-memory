@@ -7,7 +7,7 @@
 #
 # Triggers:
 #   CLI:    python3 memory/compress.py [--dry-run] [--model MODEL]
-#   HTTP:   POST /compress on query_server (7748) or ingest_server (7747)
+#   HTTP:   POST /compress on dashboard_server (7748) or ingest_server (7747)
 #   Daemon: automatically every COMPRESS_EVERY_N sessions
 #
 # Output:
