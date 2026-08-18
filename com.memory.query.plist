@@ -10,8 +10,8 @@
        install.sh writes the absolute python3 path at install time. -->
   <key>ProgramArguments</key>
   <array>
-    <string>/Library/Frameworks/Python.framework/Versions/3.13/bin/python3</string>
-    <string>/Users/ys68052/work/agentic-memory/memory/dashboard_server.py</string>
+    <string>__PYTHON3__</string>
+    <string>__INSTALL_DIR__/memory/dashboard_server.py</string>
   </array>
 
   <!-- RunAtLoad: start immediately when plist is loaded, and on every login. -->
@@ -24,9 +24,9 @@
 
   <!-- Both stdout and stderr go to query.log for easy tailing. -->
   <key>StandardOutPath</key>
-  <string>/Users/ys68052/.memory/query.log</string>
+  <string>__HOME__/.memory/query.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/ys68052/.memory/query.log</string>
+  <string>__HOME__/.memory/query.log</string>
 </dict>
 </plist>

@@ -92,7 +92,7 @@ echo "Python 3 found: $(python3 --version)"
 # ── Step 2: Python dependencies ─────────────────────────────────────────────
 echo ""
 echo "Installing Python dependencies..."
-pip3 install --quiet --user mcp fastmcp sentence-transformers fastapi uvicorn pydantic psutil
+pip3 install --quiet --user mcp fastmcp sentence-transformers fastapi uvicorn pydantic psutil setproctitle
 echo "  + Dependencies installed"
 
 # ── Step 3: Memory directory ─────────────────────────────────────────────────

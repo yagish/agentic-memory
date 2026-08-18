@@ -398,4 +398,6 @@ app.include_router(memory_router)
 app.include_router(ops_router)
 
 if __name__ == "__main__":
+    import setproctitle
+    setproctitle.setproctitle("AgenticMemoryDashboard")
     uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")

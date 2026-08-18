@@ -682,6 +682,8 @@ def run(once: bool = False) -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    import setproctitle
+    setproctitle.setproctitle("AgenticMemoryDaemon")
     import argparse
 
     # Parse command-line arguments.

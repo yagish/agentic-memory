@@ -8,15 +8,15 @@
   <string>com.memory.daemon</string>
 
   <!-- ProgramArguments: the command to run.
-       /Users/ys68052/work/agentic-memory must be substituted with the absolute path to this project
+       __HOME__/work/agentic-memory must be substituted with the absolute path to this project
        before loading into launchd (the Phase 14 install script handles this). -->
   <key>ProgramArguments</key>
   <array>
     <!-- Use the absolute python3 path so launchd's minimal PATH (/usr/bin:/bin)
          does not accidentally resolve to the system Python 3.9 instead of the
          user-installed Python 3.13.  install.sh detects and writes this path. -->
-    <string>/Library/Frameworks/Python.framework/Versions/3.13/bin/python3</string>
-    <string>/Users/ys68052/work/agentic-memory/memory/daemon.py</string>
+    <string>__PYTHON3__</string>
+    <string>__INSTALL_DIR__/memory/daemon.py</string>
   </array>
 
   <!-- RunAtLoad: start the daemon immediately when the plist is loaded.
@@ -30,14 +30,14 @@
   <true/>
 
   <!-- StandardOutPath: where the daemon's stdout is written.
-       /Users/ys68052 must be substituted with the real home directory path before loading.
+       __HOME__ must be substituted with the real home directory path before loading.
        Use ~ placeholders here; the install script substitutes real paths. -->
   <key>StandardOutPath</key>
-  <string>/Users/ys68052/.memory/daemon.log</string>
+  <string>__HOME__/.memory/daemon.log</string>
 
   <!-- StandardErrorPath: where the daemon's stderr is written.
        Both stdout and stderr go to the same log file for simplicity. -->
   <key>StandardErrorPath</key>
-  <string>/Users/ys68052/.memory/daemon.log</string>
+  <string>__HOME__/.memory/daemon.log</string>
 </dict>
 </plist>

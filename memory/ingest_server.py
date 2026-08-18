@@ -401,4 +401,6 @@ def post_compress() -> dict:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    import setproctitle
+    setproctitle.setproctitle("AgenticMemoryIngest")
     uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")

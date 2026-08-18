@@ -507,6 +507,8 @@ def memory_list_clusters() -> list:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    import setproctitle
+    setproctitle.setproctitle("AgenticMemoryMCP")
     # mcp.run() starts the server and listens on stdin/stdout using the MCP
     # stdio transport. Claude Code launches this process and communicates
     # with it over those streams — no network port needed.

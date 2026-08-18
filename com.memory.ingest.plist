@@ -8,14 +8,14 @@
   <string>com.memory.ingest</string>
 
   <!-- ProgramArguments: the command to run.
-       /Users/ys68052/work/agentic-memory is substituted by install.sh with the real project directory. -->
+       __INSTALL_DIR__ is substituted by install.sh with the real project directory. -->
   <key>ProgramArguments</key>
   <array>
     <!-- Use the absolute python3 path so launchd's minimal PATH (/usr/bin:/bin)
          does not accidentally resolve to the system Python 3.9 instead of the
          user-installed Python 3.13.  install.sh detects and writes this path. -->
-    <string>/Library/Frameworks/Python.framework/Versions/3.13/bin/python3</string>
-    <string>/Users/ys68052/work/agentic-memory/memory/ingest_server.py</string>
+    <string>__PYTHON3__</string>
+    <string>__INSTALL_DIR__/memory/ingest_server.py</string>
   </array>
 
   <!-- RunAtLoad: start the server immediately when the plist is loaded,
@@ -29,9 +29,9 @@
 
   <!-- StandardOutPath / StandardErrorPath: both go to ingest.log for easy tailing. -->
   <key>StandardOutPath</key>
-  <string>/Users/ys68052/.memory/ingest.log</string>
+  <string>__HOME__/.memory/ingest.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/ys68052/.memory/ingest.log</string>
+  <string>__HOME__/.memory/ingest.log</string>
 </dict>
 </plist>
