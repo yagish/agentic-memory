@@ -30,36 +30,17 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from memory.db import (
-    init_db,
-    embed,
-    search_compacted_sessions,
-    increment_compacted_hit,
-    get_active_working_memory,
-    search_facts,
-    search_procedural,
-    log_retrieval,
-)
-from memory.logger import activity_log, error_log
+from memory.db import init_db, log_retrieval
+from memory.logger import activity_log
 from memory.debug import enable_debug
+from memory.retrieval import (
+    build_fact_query as _build_fact_query,
+    build_wake_up_injection as _build_injection,
+    retrieve_wake_up_context,
+)
 
-DB_PATH  = os.path.expanduser("~/.memory/memory.db")
+DB_PATH = os.path.expanduser("~/.memory/memory.db")
 LOG_PATH = os.path.expanduser("~/.memory/wake_up.log")
-
-# Semantic thresholds for compacted-session retrieval.
-SEMANTIC_CACHE_THRESHOLD = 0.96   # full cache-hit injection
-ENRICHMENT_THRESHOLD     = 0.70   # context enrichment injection
-WORKING_MEM_THRESHOLD    = 0.50   # loose match for working memory lookup
-
-# How-to markers — enable procedural memory injection when present.
-HOW_TO_MARKERS = {
-    "how", "steps", "step by", "best way", "should i",
-    "approach", "workflow", "procedure", "guide", "tutorial",
-}
-
-# 500-token hard budget (estimated as chars / 4).
-TOKEN_BUDGET = 500
-CHARS_BUDGET = TOKEN_BUDGET * 4
 
 
 def _log_error(msg: str) -> None:
@@ -74,30 +55,6 @@ def _log_error(msg: str) -> None:
 def _allow() -> None:
     print(json.dumps({}))
     sys.exit(0)
-
-
-def _is_how_to(prompt: str) -> bool:
-    lowered = prompt.lower()
-    return any(marker in lowered for marker in HOW_TO_MARKERS)
-
-
-def _build_fact_query(prompt: str) -> str:
-    """
-    Build a punctuation-safe FTS query for fact lookup.
-
-    The original bug was that prompts like "what is my name?" produced FTS
-    terms such as "name?", which fail to match the stored fact. We strip
-    punctuation and join the remaining meaningful tokens with OR.
-    """
-    tokens = re.findall(r"[a-z0-9]+", prompt.lower())
-    keywords = [t for t in tokens if len(t) > 2 or t in {"my"}]
-
-    deduped: list[str] = []
-    for token in keywords:
-        if token not in deduped:
-            deduped.append(token)
-
-    return " OR ".join(deduped)
 
 
 def _first_message_flag(session_id: str) -> str:
@@ -116,90 +73,14 @@ def _is_first_message(session_id: str) -> bool:
     return False
 
 
-def _build_injection(
-    cache_hit:   dict | None,
-    working_mem: dict | None,
-    enrichment:  list[dict],
-    facts:       list[dict],
-    procedural:  list[dict],
-) -> str:
-    """Assemble the memory block, enforcing the char budget."""
-    sections: list[str] = []
-    chars_used = 0
-
-    def _add(block: str) -> bool:
-        nonlocal chars_used
-        if chars_used + len(block) > CHARS_BUDGET:
-            return False
-        sections.append(block)
-        chars_used += len(block)
-        return True
-
-    # 1. Cache hit — highest priority.
-    if cache_hit:
-        sim = cache_hit.get("similarity", 0)
-        content = cache_hit.get("content", "")
-        block = (
-            f"[Cached Session — {sim:.0%} match]\n"
-            f"{content}\n\n"
-            "[System] A cached session summary closely matches this prompt. "
-            "Respond from this memory, prefix your answer with [From Memory].\n"
-        )
-        _add(block)
-
-    # 2. Working memory — task context for this session start.
-    if working_mem:
-        block = (
-            "[Working Memory — current task context]\n"
-            f"{working_mem['summary']}\n"
-        )
-        _add(block)
-
-    # 3. Enrichment context (70–95% similarity).
-    if enrichment:
-        lines = ["[Relevant Past Work]"]
-        for cs in enrichment:
-            sim = cs.get("similarity", 0)
-            lines.append(f"({sim:.0%} match)")
-            lines.append(cs.get("content", ""))
-        block = "\n".join(lines) + "\n"
-        _add(block)
-
-    # 4. Relevant facts (identity surfaces here when the prompt asks about the user).
-    if facts:
-        lines = ["[Relevant Facts — authoritative]"]
-        for f in facts:
-            lines.append(f"• {f.get('content', '')}")
-        block = "\n".join(lines) + "\n"
-        _add(block)
-
-    # 5. Procedural memory.
-    if procedural:
-        lines = ["[How-To Patterns]"]
-        for p in procedural:
-            lines.append(f"**{p.get('title', '')}**")
-            lines.append(p.get("steps", ""))
-        block = "\n".join(lines) + "\n"
-        _add(block)
-
-    if not sections:
-        return ""
-
-    header = (
-        "[I have a persistent memory system that retrieved the following context for this prompt. "
-        "Please use it to answer my question:]\n\n"
-    )
-    return header + "\n".join(sections)
-
-
 def main() -> None:
     enable_debug("wake_up")
     try:
-        payload    = json.load(sys.stdin)
-        raw_sid    = payload.get("session_id", "unknown")
+        payload = json.load(sys.stdin)
+        raw_sid = payload.get("session_id", "unknown")
         # Sanitize session_id before use in file paths to prevent path traversal.
         session_id = re.sub(r"[^a-zA-Z0-9_-]", "_", raw_sid)
-        prompt     = payload.get("prompt", "").strip()
+        prompt = payload.get("prompt", "").strip()
     except Exception as exc:
         _log_error(f"failed to parse stdin: {exc}")
         _allow()
@@ -217,65 +98,22 @@ def main() -> None:
         _log_error(f"failed to open DB: {traceback.format_exc()}")
         _allow()
 
-    # Embed the prompt for semantic retrieval.
     try:
-        prompt_vec = embed(prompt)
+        context = retrieve_wake_up_context(
+            conn,
+            prompt,
+            include_working_memory=_is_first_message(session_id),
+        )
     except Exception as exc:
         _log_error(f"embed failed: {exc}")
         conn.close()
         _allow()
 
-    # --- Semantic retrieval from compacted_sessions ---
-    cache_hit:  dict | None = None
-    enrichment: list[dict]  = []
-    cluster_id_for_wm: str | None = None
-
-    try:
-        results = search_compacted_sessions(conn, prompt_vec, limit=5)
-        for cs in results:
-            sim = cs.get("similarity", 0)
-            # Record the cluster_id of the best match for working memory lookup.
-            if cluster_id_for_wm is None and sim >= WORKING_MEM_THRESHOLD:
-                cluster_id_for_wm = cs.get("cluster_id")
-            if sim >= SEMANTIC_CACHE_THRESHOLD:
-                cache_hit = cs
-                try:
-                    increment_compacted_hit(conn, cs["id"])
-                except Exception:
-                    pass
-                break  # one cache hit is enough
-            elif ENRICHMENT_THRESHOLD <= sim < SEMANTIC_CACHE_THRESHOLD:
-                enrichment.append(cs)
-    except Exception as exc:
-        _log_error(f"compacted search failed: {exc}")
-
-    # --- Working memory (first message of session only) ---
-    working_mem: dict | None = None
-    if _is_first_message(session_id) and cluster_id_for_wm:
-        try:
-            working_mem = get_active_working_memory(conn, cluster_id_for_wm)
-        except Exception as exc:
-            _log_error(f"working memory lookup failed: {exc}")
-
-    # --- Facts (identity surfaces here when relevant) ---
-    facts: list[dict] = []
-    try:
-        fact_query = _build_fact_query(prompt)
-        if fact_query:
-            facts = search_facts(conn, fact_query, limit=5)
-    except Exception as exc:
-        _log_error(f"facts search failed: {exc}")
-
-    # --- Procedural memory (how-to prompts only) ---
-    procedural: list[dict] = []
-    if _is_how_to(prompt):
-        try:
-            procedural = search_procedural(conn, prompt, min_confidence=0.6, limit=3)
-        except Exception as exc:
-            _log_error(f"procedural search failed: {exc}")
+    for warning in context.warnings:
+        _log_error(f"{warning.stage} failed: {warning.message}")
 
     # Build the injection block.
-    injection = _build_injection(cache_hit, working_mem, enrichment, facts, procedural)
+    injection = _build_injection(context)
 
     if not injection:
         conn.close()
@@ -286,13 +124,14 @@ def main() -> None:
         est_tokens = len(injection) // 4
         log_retrieval(conn, "wake_up_injection", prompt, est_tokens)
         activity_log(
-            "wake_up", "injected",
+            "wake_up",
+            "injected",
             session=session_id,
-            has_cache_hit=bool(cache_hit),
-            has_working_mem=bool(working_mem),
-            enrichment_count=len(enrichment),
-            facts_count=len(facts),
-            procedural_count=len(procedural),
+            has_cache_hit=bool(context.cache_hit),
+            has_working_mem=bool(context.working_mem),
+            enrichment_count=len(context.enrichment),
+            facts_count=len(context.facts),
+            procedural_count=len(context.procedural),
             est_tokens=est_tokens,
         )
     except Exception:
