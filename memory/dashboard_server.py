@@ -8,7 +8,8 @@
 #                   GET /services  live service health + memory stats
 #                   GET /status    quick health check
 #                   GET /stats/charts  time-series data for landing charts
-#   memory_router — GET /memory/sessions|chunks|facts|insights
+#   memory_router — GET /memory/sessions|facts|insights|working|episodic|compacted|procedural
+#                   GET /memory/chunks (implementation detail / debug view)
 #   ops_router    — GET /logs/{service}   tail last N lines of a service log
 #                   POST /restart/{service}  launchctl kickstart or open Ollama
 #                   POST /compress           map-reduce session compression
@@ -130,6 +131,8 @@ def get_services() -> dict:
     ollama_running, ollama_model = _check_ollama()
 
     total_sessions = total_facts = total_insights = chunks_indexed = 0
+    total_working_memory = active_working_memory = 0
+    total_episodic = total_compacted = total_procedural = 0
     injections = tokens_from_memory = mcp_retrievals = 0
     recent_sessions: list[dict] = []
 
@@ -140,6 +143,13 @@ def get_services() -> dict:
             total_facts    = conn.execute("SELECT COUNT(*) AS c FROM facts").fetchone()["c"]
             total_insights = conn.execute("SELECT COUNT(*) AS c FROM insights").fetchone()["c"]
             chunks_indexed = conn.execute("SELECT COUNT(*) AS c FROM chunks").fetchone()["c"]
+            total_working_memory = conn.execute("SELECT COUNT(*) AS c FROM working_memory").fetchone()["c"]
+            active_working_memory = conn.execute(
+                "SELECT COUNT(*) AS c FROM working_memory WHERE closed_at IS NULL"
+            ).fetchone()["c"]
+            total_episodic = conn.execute("SELECT COUNT(*) AS c FROM episodic_memory").fetchone()["c"]
+            total_compacted = conn.execute("SELECT COUNT(*) AS c FROM compacted_sessions").fetchone()["c"]
+            total_procedural = conn.execute("SELECT COUNT(*) AS c FROM procedural_memory").fetchone()["c"]
 
             inj = conn.execute(
                 "SELECT COUNT(*) AS c, SUM(result_size) AS t FROM retrievals WHERE tool = 'wake_up_injection'"
@@ -166,9 +176,18 @@ def get_services() -> dict:
         "ingest_server":    {"port": 7747},
         "daemon":  {"running": daemon_running, "last_run": last_run_iso, "facts_extracted": facts_extracted_total},
         "ollama":  {"running": ollama_running, "model": ollama_model},
-        "memory":  {"total_sessions": total_sessions, "total_facts": total_facts,
-                    "total_insights": total_insights, "chunks_indexed": chunks_indexed,
-                    "db_size_bytes": db_size_bytes},
+        "memory":  {
+            "total_sessions": total_sessions,
+            "total_facts": total_facts,
+            "total_insights": total_insights,
+            "chunks_indexed": chunks_indexed,
+            "total_working_memory": total_working_memory,
+            "active_working_memory": active_working_memory,
+            "total_episodic": total_episodic,
+            "total_compacted": total_compacted,
+            "total_procedural": total_procedural,
+            "db_size_bytes": db_size_bytes,
+        },
         "retrieval": {"injections": injections, "tokens_from_memory": tokens_from_memory,
                       "mcp_retrievals": mcp_retrievals},
         "recent_sessions": recent_sessions,
@@ -306,6 +325,131 @@ def get_memory_facts() -> dict:
     except Exception:
         pass
     return {"facts": rows, "total": len(rows)}
+
+
+@memory_router.get("/working")
+def get_working_memory_entries() -> dict:
+    """All working-memory entries, newest first, with active/closed state."""
+    rows: list[dict] = []
+    try:
+        conn = init_db(DB_PATH)
+        try:
+            for wm in conn.execute(
+                """
+                SELECT id, cluster_id, summary, session_ids, created_at, updated_at, closed_at
+                FROM working_memory
+                ORDER BY updated_at DESC
+                """
+            ).fetchall():
+                try:
+                    session_ids = json.loads(wm["session_ids"]) if wm["session_ids"] else []
+                except Exception:
+                    session_ids = []
+                rows.append({
+                    "id": wm["id"],
+                    "cluster_id": wm["cluster_id"],
+                    "summary": wm["summary"],
+                    "session_ids": session_ids,
+                    "session_count": len(session_ids),
+                    "created_at": wm["created_at"],
+                    "updated_at": wm["updated_at"],
+                    "closed_at": wm["closed_at"],
+                    "status": "closed" if wm["closed_at"] else "active",
+                })
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return {"working": rows, "total": len(rows)}
+
+
+@memory_router.get("/episodic")
+def get_episodic_memory_entries() -> dict:
+    """All episodic-memory entries generated by the daemon."""
+    rows: list[dict] = []
+    try:
+        conn = init_db(DB_PATH)
+        try:
+            for ep in conn.execute(
+                "SELECT id, session_id, title, abstract, happened_at FROM episodic_memory ORDER BY happened_at DESC"
+            ).fetchall():
+                rows.append({
+                    "id": ep["id"],
+                    "session_id": ep["session_id"],
+                    "title": ep["title"],
+                    "abstract": ep["abstract"],
+                    "happened_at": ep["happened_at"],
+                })
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return {"episodic": rows, "total": len(rows)}
+
+
+@memory_router.get("/compacted")
+def get_compacted_memory_entries() -> dict:
+    """All compacted cluster summaries used for semantic cache / enrichment."""
+    rows: list[dict] = []
+    try:
+        conn = init_db(DB_PATH)
+        try:
+            for cs in conn.execute(
+                """
+                SELECT id, cluster_id, content, source_session_ids, hit_count, created_at, updated_at
+                FROM compacted_sessions
+                ORDER BY updated_at DESC
+                """
+            ).fetchall():
+                try:
+                    source_session_ids = json.loads(cs["source_session_ids"]) if cs["source_session_ids"] else []
+                except Exception:
+                    source_session_ids = []
+                rows.append({
+                    "id": cs["id"],
+                    "cluster_id": cs["cluster_id"],
+                    "content": cs["content"],
+                    "source_session_ids": source_session_ids,
+                    "source_session_count": len(source_session_ids),
+                    "hit_count": cs["hit_count"] or 0,
+                    "created_at": cs["created_at"],
+                    "updated_at": cs["updated_at"],
+                })
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return {"compacted": rows, "total": len(rows)}
+
+
+@memory_router.get("/procedural")
+def get_procedural_memory_entries() -> dict:
+    """All reusable how-to patterns extracted from past sessions."""
+    rows: list[dict] = []
+    try:
+        conn = init_db(DB_PATH)
+        try:
+            for proc in conn.execute(
+                """
+                SELECT id, title, steps, confidence, observation_count, created_at, updated_at
+                FROM procedural_memory
+                ORDER BY confidence DESC, observation_count DESC, updated_at DESC
+                """
+            ).fetchall():
+                rows.append({
+                    "id": proc["id"],
+                    "title": proc["title"],
+                    "steps": proc["steps"],
+                    "confidence": round(float(proc["confidence"] or 0), 2),
+                    "observation_count": proc["observation_count"] or 0,
+                    "created_at": proc["created_at"],
+                    "updated_at": proc["updated_at"],
+                })
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return {"procedural": rows, "total": len(rows)}
 
 
 @memory_router.get("/insights")

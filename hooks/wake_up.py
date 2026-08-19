@@ -84,27 +84,12 @@ def _build_fact_query(prompt: str) -> str:
     """
     Build a punctuation-safe FTS query for fact lookup.
 
-    Claude often asks identity questions with punctuation ("what is my name?",
-    "what's my role?"). Passing raw split tokens into FTS5 makes queries like
-    "name?" or "what's" either fail to parse or miss the fact entirely. We
-    strip punctuation, keep meaningful words, and add a few identity aliases for
-    common self-referential prompts such as "who am I".
+    The original bug was that prompts like "what is my name?" produced FTS
+    terms such as "name?", which fail to match the stored fact. We strip
+    punctuation and join the remaining meaningful tokens with OR.
     """
-    lowered = prompt.lower()
-    tokens = re.findall(r"[a-z0-9]+", lowered)
-
-    # Drop very short filler words, but keep identity-bearing terms.
-    keywords = [t for t in tokens if len(t) > 2 or t in {"am", "me", "my"}]
-
-    # Map common identity questions to the terms that actually appear in facts.
-    if re.search(r"\bwho am i\b", lowered):
-        keywords.extend(["name", "role"])
-    if re.search(r"\b(my name|called)\b", lowered):
-        keywords.extend(["name", "called"])
-    if re.search(r"\b(role|job|title)\b", lowered):
-        keywords.extend(["role", "title"])
-    if re.search(r"\b(preference|preferences|prefer|working style|style)\b", lowered):
-        keywords.extend(["preferences", "prefer", "style"])
+    tokens = re.findall(r"[a-z0-9]+", prompt.lower())
+    keywords = [t for t in tokens if len(t) > 2 or t in {"my"}]
 
     deduped: list[str] = []
     for token in keywords:

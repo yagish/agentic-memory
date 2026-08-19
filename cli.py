@@ -6,7 +6,7 @@
 #   python3 cli.py semantic "query"    # semantic (vector) search
 #   python3 cli.py get-session <id>    # print full transcript
 #   python3 cli.py tail [N]            # last N sessions (default 10)
-#   python3 cli.py dashboard           # generate + open dashboard.html
+#   python3 cli.py dashboard           # open the live dashboard (query server)
 
 import argparse      # parses command-line arguments (the words after "python3 cli.py")
 import json          # for pretty-printing dicts
@@ -27,7 +27,7 @@ from memory.consolidation import consolidate_old_sessions, prune_old_transcripts
 # Where the database lives — must match the hook and MCP server.
 DB_PATH = os.path.expanduser("~/.memory/memory.db")
 
-# Where the generated dashboard HTML is written.
+# Legacy static dashboard path kept for compatibility; the live dashboard is served on :7748.
 DASHBOARD_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
 
 
@@ -283,276 +283,11 @@ def cmd_tail(args):
 # ---------------------------------------------------------------------------
 
 def cmd_dashboard(_args):
-    """Generate dashboard.html and open it in the browser."""
-    conn = get_conn()
-
-    # --- Gather data ---
-
-    total_sessions   = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-    total_turns      = conn.execute("SELECT COALESCE(SUM(turn_count), 0) FROM sessions").fetchone()[0]
-    total_retrievals = conn.execute("SELECT COUNT(*) FROM retrievals").fetchone()[0]
-    char_count       = conn.execute("SELECT COALESCE(SUM(LENGTH(transcript)), 0) FROM sessions").fetchone()[0]
-    estimated_tokens = char_count // 4
-
-    # Sessions per day — for the timeline chart.
-    # strftime('%Y-%m-%d', updated_at) extracts just the date portion from the timestamp.
-    daily_rows = conn.execute(
-        """
-        SELECT strftime('%Y-%m-%d', updated_at) AS day, COUNT(*) AS count
-        FROM sessions
-        GROUP BY day
-        ORDER BY day
-        """
-    ).fetchall()
-
-    # Recent sessions list.
-    recent_rows = conn.execute(
-        """
-        SELECT session_id, updated_at, turn_count
-        FROM sessions
-        ORDER BY updated_at DESC
-        LIMIT 10
-        """
-    ).fetchall()
-
-    # Retrieval breakdown by tool.
-    retrieval_rows = conn.execute(
-        """
-        SELECT tool, COUNT(*) AS count
-        FROM retrievals
-        GROUP BY tool
-        ORDER BY count DESC
-        """
-    ).fetchall()
-
-    # Recent retrievals.
-    recent_retrievals = conn.execute(
-        """
-        SELECT tool, query, result_size, called_at
-        FROM retrievals
-        ORDER BY called_at DESC
-        LIMIT 10
-        """
-    ).fetchall()
-
-    # Token economics — gathered here while the connection is still open.
-    # We wrap in try/except so a missing or empty retrievals table never
-    # crashes the dashboard generation.
-    try:
-        dash_econ = _get_token_economics(conn)
-    except Exception:
-        dash_econ = None
-
-    conn.close()
-
-    # --- Build token economics strings for the dashboard card ---
-    # Convert the economics dict to display-ready strings so the HTML template
-    # stays clean (no conditionals inside the f-string).
-    if dash_econ is not None:
-        econ_injection_total  = f"{dash_econ['injection_total']:,}"
-        econ_retrieval_total  = f"{dash_econ['retrieval_total']:,}"
-        if dash_econ['coverage_ratio'] is not None:
-            econ_coverage_ratio_str = f"{dash_econ['coverage_ratio']:.2f}x"
-        else:
-            # No injections have been logged yet.
-            econ_coverage_ratio_str = "N/A"
-    else:
-        # Economics data unavailable — show dashes so the card still renders.
-        econ_injection_total     = "—"
-        econ_retrieval_total     = "—"
-        econ_coverage_ratio_str  = "—"
-
-    # --- Build chart data as JSON strings for embedding in HTML ---
-
-    # Labels = list of date strings; values = list of counts.
-    chart_labels = json.dumps([r["day"] for r in daily_rows])
-    chart_values = json.dumps([r["count"] for r in daily_rows])
-
-    # --- Build HTML table rows ---
-
-    # Sessions table
-    session_rows_html = ""
-    for r in recent_rows:
-        session_rows_html += (
-            f"<tr>"
-            f"<td title='{r['session_id']}'>{r['session_id'][:16]}…</td>"
-            f"<td>{r['updated_at'][:19]}</td>"
-            f"<td>{r['turn_count']}</td>"
-            f"</tr>\n"
-        )
-
-    # Retrieval breakdown table
-    retrieval_breakdown_html = ""
-    for r in retrieval_rows:
-        retrieval_breakdown_html += (
-            f"<tr><td>{r['tool']}</td><td>{r['count']}</td></tr>\n"
-        )
-
-    # Recent retrievals table
-    recent_retrieval_rows_html = ""
-    for r in recent_retrievals:
-        query_display = (r["query"] or "—")[:40]
-        retrieval_rows_html = (
-            f"<tr>"
-            f"<td>{r['tool']}</td>"
-            f"<td>{query_display}</td>"
-            f"<td>{r['result_size']:,} B</td>"
-            f"<td>{r['called_at'][:19]}</td>"
-            f"</tr>\n"
-        )
-        recent_retrieval_rows_html += retrieval_rows_html
-
-    # --- Write the HTML file ---
-
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Memory Dashboard</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
-<style>
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-          background: #0f1117; color: #e2e8f0; padding: 2rem; }}
-  h1   {{ font-size: 1.5rem; margin-bottom: 0.25rem; color: #f8fafc; }}
-  .sub {{ color: #64748b; font-size: 0.875rem; margin-bottom: 2rem; }}
-  .stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-            gap: 1rem; margin-bottom: 2rem; }}
-  .stat  {{ background: #1e2532; border-radius: 10px; padding: 1.25rem; }}
-  .stat .value {{ font-size: 2rem; font-weight: 700; color: #7c3aed; }}
-  .stat .label {{ font-size: 0.8rem; color: #94a3b8; margin-top: 0.25rem; }}
-  .card  {{ background: #1e2532; border-radius: 10px; padding: 1.25rem;
-            margin-bottom: 1.5rem; }}
-  .card h2 {{ font-size: 1rem; margin-bottom: 1rem; color: #cbd5e1; }}
-  table  {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; }}
-  th     {{ text-align: left; color: #64748b; padding: 0.4rem 0.6rem;
-            border-bottom: 1px solid #2d3748; }}
-  td     {{ padding: 0.4rem 0.6rem; border-bottom: 1px solid #1a2030;
-            color: #cbd5e1; font-family: monospace; }}
-  tr:last-child td {{ border-bottom: none; }}
-  .chart-wrap {{ position: relative; height: 220px; }}
-</style>
-</head>
-<body>
-
-<h1>Memory Dashboard</h1>
-<p class="sub">Generated from ~/.memory/memory.db</p>
-
-<div class="stats">
-  <div class="stat">
-    <div class="value">{total_sessions}</div>
-    <div class="label">Sessions stored</div>
-  </div>
-  <div class="stat">
-    <div class="value">{total_turns}</div>
-    <div class="label">Turns stored</div>
-  </div>
-  <div class="stat">
-    <div class="value">{estimated_tokens:,}</div>
-    <div class="label">Tokens (estimated)</div>
-  </div>
-  <div class="stat">
-    <div class="value">{total_retrievals}</div>
-    <div class="label">Retrievals logged</div>
-  </div>
-</div>
-
-<div class="card">
-  <h2>Sessions over time</h2>
-  <div class="chart-wrap">
-    <canvas id="sessionChart"></canvas>
-  </div>
-</div>
-
-<div class="card">
-  <h2>Recent sessions</h2>
-  <table>
-    <thead><tr><th>Session ID</th><th>Updated</th><th>Turns</th></tr></thead>
-    <tbody>{session_rows_html}</tbody>
-  </table>
-</div>
-
-<div class="card">
-  <h2>Retrieval activity by tool</h2>
-  <table>
-    <thead><tr><th>Tool</th><th>Calls</th></tr></thead>
-    <tbody>{retrieval_breakdown_html or '<tr><td colspan="2">No retrievals yet</td></tr>'}</tbody>
-  </table>
-</div>
-
-<div class="card">
-  <h2>Recent retrievals</h2>
-  <table>
-    <thead><tr><th>Tool</th><th>Query</th><th>Result size</th><th>Called at</th></tr></thead>
-    <tbody>{recent_retrieval_rows_html or '<tr><td colspan="4">No retrievals yet</td></tr>'}</tbody>
-  </table>
-</div>
-
-<div class="card">
-  <h2>Token Economics</h2>
-  <div class="stats">
-    <div class="stat">
-      <div class="value">{econ_injection_total}</div>
-      <div class="label">Est. tokens injected</div>
-    </div>
-    <div class="stat">
-      <div class="value">{econ_retrieval_total}</div>
-      <div class="label">Est. tokens retrieved</div>
-    </div>
-    <div class="stat">
-      <div class="value">{econ_coverage_ratio_str}</div>
-      <div class="label">Coverage ratio</div>
-    </div>
-  </div>
-  <p style="font-size:0.8rem;color:#64748b;margin-top:0.75rem;">
-    Coverage ratio &ge; 1.0 means retrievals returned more context than was injected.
-    It does not measure tokens saved vs. a baseline &mdash; that would require a control group.
-  </p>
-</div>
-
-<script>
-const ctx = document.getElementById('sessionChart').getContext('2d');
-new Chart(ctx, {{
-  type: 'line',
-  data: {{
-    labels: {chart_labels},
-    datasets: [{{
-      label: 'Sessions',
-      data: {chart_values},
-      borderColor: '#7c3aed',
-      backgroundColor: 'rgba(124, 58, 237, 0.15)',
-      borderWidth: 2,
-      pointRadius: 3,
-      pointBackgroundColor: '#7c3aed',
-      fill: true,
-      tension: 0.3,
-    }}]
-  }},
-  options: {{
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: {{ legend: {{ display: false }} }},
-    scales: {{
-      x: {{ ticks: {{ color: '#64748b' }}, grid: {{ color: '#2d3748' }} }},
-      y: {{ ticks: {{ color: '#64748b', stepSize: 1 }}, grid: {{ color: '#2d3748' }}, beginAtZero: true }}
-    }}
-  }}
-}});
-</script>
-
-</body>
-</html>
-"""
-
-    with open(DASHBOARD_PATH, "w") as f:
-        f.write(html)
-
-    print(f"Dashboard written to: {DASHBOARD_PATH}")
-
-    # webbrowser.open() opens the file in whatever browser the user has set as default.
-    # "file://" prefix is required for local HTML files.
-    webbrowser.open(f"file://{DASHBOARD_PATH}")
+    """Open the live dashboard served by memory/dashboard_server.py."""
+    url = os.environ.get("MEMORY_DASHBOARD_URL", "http://localhost:7748")
+    print(f"Opening dashboard: {url}")
+    print("If it does not load, start the query server: python3 memory/dashboard_server.py")
+    webbrowser.open(url)
 
 
 # ---------------------------------------------------------------------------
@@ -1064,7 +799,7 @@ def main():
                         help="Number of sessions to show (default 10)")
 
     # dashboard
-    sub.add_parser("dashboard", help="Generate and open dashboard.html")
+    sub.add_parser("dashboard", help="Open the live dashboard on the query server")
 
     # logs
     p_logs = sub.add_parser("logs", help="Print recent activity or error log lines")

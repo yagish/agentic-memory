@@ -90,7 +90,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
 
 /* ── Tab bar ──────────────────────────────────────────────── */
 #tab-bar { display: flex; align-items: center; border-bottom: 1px solid var(--border);
-  background: var(--surface); padding: 0 16px; flex-shrink: 0; gap: 2px; }
+  background: var(--surface); padding: 0 16px; flex-shrink: 0; gap: 2px; overflow-x: auto; }
 .tab-btn { background: none; border: none; border-bottom: 2px solid transparent;
   color: var(--muted); cursor: pointer; font-size: 13px; padding: 10px 12px 8px;
   transition: color 0.15s; white-space: nowrap; margin-bottom: -1px; }
@@ -104,7 +104,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
 .panel { padding: 20px 24px; }
 
 /* ── Stat tiles ───────────────────────────────────────────── */
-.tiles-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 20px; }
+.tiles-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
 .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
 .tile-value { font-size: 22px; font-weight: 600; color: var(--text); line-height: 1.2; }
 .tile-label { font-size: 10px; color: var(--muted); margin-top: 4px;
@@ -258,7 +258,10 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
     <button class="tab-btn active" data-tab="overview"     onclick="switchTab('overview')">Overview</button>
     <button class="tab-btn"        data-tab="sessions"     onclick="switchTab('sessions')">Sessions</button>
     <button class="tab-btn"        data-tab="facts"        onclick="switchTab('facts')">Facts</button>
-    <button class="tab-btn"        data-tab="chunks"       onclick="switchTab('chunks')">Chunks</button>
+    <button class="tab-btn"        data-tab="working"      onclick="switchTab('working')">Working</button>
+    <button class="tab-btn"        data-tab="episodic"     onclick="switchTab('episodic')">Episodic</button>
+    <button class="tab-btn"        data-tab="compacted"    onclick="switchTab('compacted')">Compacted</button>
+    <button class="tab-btn"        data-tab="procedural"   onclick="switchTab('procedural')">Procedural</button>
     <button class="tab-btn"        data-tab="insights"     onclick="switchTab('insights')">Insights</button>
     <button class="tab-btn"        data-tab="compression"  onclick="switchTab('compression')">Compression</button>
     <span class="tab-spacer"></span>
@@ -283,7 +286,10 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
       <div class="tiles-row">
         <div class="tile"><div class="tile-value" id="t-sessions">—</div><div class="tile-label">Sessions</div></div>
         <div class="tile"><div class="tile-value" id="t-facts">—</div><div class="tile-label">Facts</div></div>
-        <div class="tile"><div class="tile-value" id="t-chunks">—</div><div class="tile-label">Chunks</div></div>
+        <div class="tile"><div class="tile-value" id="t-working">—</div><div class="tile-label">Working Memory</div></div>
+        <div class="tile"><div class="tile-value" id="t-episodic">—</div><div class="tile-label">Episodic Memory</div></div>
+        <div class="tile"><div class="tile-value" id="t-compacted">—</div><div class="tile-label">Compacted Memory</div></div>
+        <div class="tile"><div class="tile-value" id="t-procedural">—</div><div class="tile-label">Procedural Memory</div></div>
         <div class="tile"><div class="tile-value" id="t-insights">—</div><div class="tile-label">Insights</div></div>
         <div class="tile"><div class="tile-value" id="t-dbsize">—</div><div class="tile-label">DB Size</div></div>
       </div>
@@ -292,6 +298,26 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
         <div class="chart-card"><div class="chart-title">Sessions per Day</div><div id="ch-sessions"></div></div>
         <div class="chart-card"><div class="chart-title">Memory Token Savings</div><div id="ch-tokens"></div></div>
         <div class="chart-card"><div class="chart-title">Facts Extracted per Day</div><div id="ch-facts"></div></div>
+      </div>
+
+      <span class="sec-label">Memory Architecture</span>
+      <div class="econ-row" style="margin-bottom:22px">
+        <div class="econ-card">
+          <div class="econ-name">Sessions & Facts</div>
+          <div class="econ-desc">Sessions are full conversation transcripts. Facts are small durable items like identity, preferences, and constraints extracted or saved explicitly for fast retrieval.</div>
+        </div>
+        <div class="econ-card">
+          <div class="econ-name">Working & Episodic</div>
+          <div class="econ-desc">Working memory tracks active task context by topic cluster while work is ongoing. Episodic memory stores short "what happened" summaries for completed or notable sessions.</div>
+        </div>
+        <div class="econ-card">
+          <div class="econ-name">Compacted & Procedural</div>
+          <div class="econ-desc">Compacted memory holds cluster-level summaries used for semantic cache and enrichment. Procedural memory stores reusable how-to patterns distilled from repeated successful work.</div>
+        </div>
+        <div class="econ-card">
+          <div class="econ-name">Insights</div>
+          <div class="econ-desc">Insights are cross-session observations generated by the daemon — recurring themes, preferences, and higher-level patterns learned over time.</div>
+        </div>
       </div>
 
       <span class="sec-label">Token Economics</span>
@@ -341,13 +367,44 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
       <div class="tbl-meta" id="meta-facts"></div>
     </div>
 
-    <!-- Chunks -->
-    <div class="panel" id="panel-chunks" hidden>
+    <!-- Working memory -->
+    <div class="panel" id="panel-working" hidden>
+      <input class="tbl-search" id="srch-working" type="text" placeholder="Filter working memory…" oninput="filterWorking()">
       <table class="dtbl">
-        <thead><tr><th>Session</th><th>Index</th><th>Text</th><th>Date</th></tr></thead>
-        <tbody id="tb-chunks"><tr><td colspan="4" class="tbl-loading">Loading…</td></tr></tbody>
+        <thead><tr><th>Updated</th><th>Status</th><th>Sessions</th><th>Cluster</th><th>Summary</th></tr></thead>
+        <tbody id="tb-working"><tr><td colspan="5" class="tbl-loading">Loading…</td></tr></tbody>
       </table>
-      <div class="tbl-meta" id="meta-chunks"></div>
+      <div class="tbl-meta" id="meta-working"></div>
+    </div>
+
+    <!-- Episodic memory -->
+    <div class="panel" id="panel-episodic" hidden>
+      <input class="tbl-search" id="srch-episodic" type="text" placeholder="Filter episodic memory…" oninput="filterEpisodic()">
+      <table class="dtbl">
+        <thead><tr><th>When</th><th>Title</th><th>Session</th><th>Abstract</th></tr></thead>
+        <tbody id="tb-episodic"><tr><td colspan="4" class="tbl-loading">Loading…</td></tr></tbody>
+      </table>
+      <div class="tbl-meta" id="meta-episodic"></div>
+    </div>
+
+    <!-- Compacted memory -->
+    <div class="panel" id="panel-compacted" hidden>
+      <input class="tbl-search" id="srch-compacted" type="text" placeholder="Filter compacted memory…" oninput="filterCompacted()">
+      <table class="dtbl">
+        <thead><tr><th>Updated</th><th>Hits</th><th>Sources</th><th>Cluster</th><th>Content</th></tr></thead>
+        <tbody id="tb-compacted"><tr><td colspan="5" class="tbl-loading">Loading…</td></tr></tbody>
+      </table>
+      <div class="tbl-meta" id="meta-compacted"></div>
+    </div>
+
+    <!-- Procedural memory -->
+    <div class="panel" id="panel-procedural" hidden>
+      <input class="tbl-search" id="srch-procedural" type="text" placeholder="Filter procedural memory…" oninput="filterProcedural()">
+      <table class="dtbl">
+        <thead><tr><th>Title</th><th>Confidence</th><th>Seen</th><th>Updated</th><th>Steps</th></tr></thead>
+        <tbody id="tb-procedural"><tr><td colspan="5" class="tbl-loading">Loading…</td></tr></tbody>
+      </table>
+      <div class="tbl-meta" id="meta-procedural"></div>
     </div>
 
     <!-- Insights -->
@@ -383,12 +440,16 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
 const BASE = '';
 
 // ── State ──────────────────────────────────────────────────
-let _logTimer    = null;
-let _svcTimer    = null;
-let _activeLog   = null;  // service key currently shown in log viewer
-let _loaded      = {};    // tabs already fetched
-let _rawSessions = [];
-let _rawFacts    = [];
+let _logTimer       = null;
+let _svcTimer       = null;
+let _activeLog      = null;  // service key currently shown in log viewer
+let _loaded         = {};    // tabs already fetched
+let _rawSessions    = [];
+let _rawFacts       = [];
+let _rawWorking     = [];
+let _rawEpisodic    = [];
+let _rawCompacted   = [];
+let _rawProcedural  = [];
 
 // ── Boot ───────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -413,11 +474,14 @@ async function loadServices() {
     if (m) m.textContent = d.ollama?.model ? d.ollama.model : 'Local LLM runtime';
 
     const mem = d.memory || {};
-    set('t-sessions', fmt(mem.total_sessions));
-    set('t-facts',    fmt(mem.total_facts));
-    set('t-chunks',   fmt(mem.chunks_indexed));
-    set('t-insights', fmt(mem.total_insights));
-    set('t-dbsize',   fmtBytes(mem.db_size_bytes));
+    set('t-sessions',   fmt(mem.total_sessions));
+    set('t-facts',      fmt(mem.total_facts));
+    set('t-working',    fmt(mem.active_working_memory ?? mem.total_working_memory));
+    set('t-episodic',   fmt(mem.total_episodic));
+    set('t-compacted',  fmt(mem.total_compacted));
+    set('t-procedural', fmt(mem.total_procedural));
+    set('t-insights',   fmt(mem.total_insights));
+    set('t-dbsize',     fmtBytes(mem.db_size_bytes));
 
     const ret = d.retrieval || {};
     set('e-injections', fmt(ret.injections));
@@ -448,10 +512,13 @@ function switchTab(name) {
 
   if (!_loaded[name]) {
     _loaded[name] = true;
-    if (name === 'sessions')    loadSessions();
-    else if (name === 'facts')  loadFacts();
-    else if (name === 'chunks') loadChunks();
-    else if (name === 'insights') loadInsights();
+    if (name === 'sessions')       loadSessions();
+    else if (name === 'facts')     loadFacts();
+    else if (name === 'working')   loadWorking();
+    else if (name === 'episodic')  loadEpisodic();
+    else if (name === 'compacted') loadCompacted();
+    else if (name === 'procedural') loadProcedural();
+    else if (name === 'insights')  loadInsights();
   }
 }
 
@@ -699,24 +766,137 @@ function renderFacts(rows) {
   set('meta-facts', `${f.length} of ${rows.length} facts`);
 }
 
-// ── Chunks table ───────────────────────────────────────────
-async function loadChunks() {
+// ── Working memory table ───────────────────────────────────
+async function loadWorking() {
   try {
-    const r = await fetch(BASE + '/memory/chunks');
+    const r = await fetch(BASE + '/memory/working');
     if (!r.ok) return;
-    const rows = (await r.json()).chunks || [];
-    const tb = document.getElementById('tb-chunks');
-    if (!tb) return;
-    tb.innerHTML = rows.length
-      ? rows.map(c => `<tr>
-          <td class="mono">${esc((c.session_id || '').slice(0, 18))}…</td>
-          <td>${c.chunk_index}</td>
-          <td>${esc((c.text || '').slice(0, 130))}${(c.text || '').length > 130 ? '…' : ''}</td>
-          <td style="white-space:nowrap">${fmtDate(c.created_at)}</td>
-        </tr>`).join('')
-      : `<tr><td colspan="4" class="tbl-loading">No chunks found.</td></tr>`;
-    set('meta-chunks', `${rows.length} chunks`);
+    const d = await r.json();
+    _rawWorking = d.working || [];
+    renderWorking(_rawWorking);
   } catch (_) {}
+}
+
+function filterWorking() { renderWorking(_rawWorking); }
+
+function renderWorking(rows) {
+  const q = (document.getElementById('srch-working')?.value || '').toLowerCase();
+  const f = q ? rows.filter(r =>
+    (r.cluster_id || '').toLowerCase().includes(q) ||
+    (r.summary || '').toLowerCase().includes(q) ||
+    (r.status || '').toLowerCase().includes(q)
+  ) : rows;
+  const tb = document.getElementById('tb-working');
+  if (!tb) return;
+  tb.innerHTML = f.length
+    ? f.map(w => `<tr>
+        <td style="white-space:nowrap">${fmtDate(w.updated_at)}</td>
+        <td><span class="pill">${esc(w.status || '')}</span></td>
+        <td>${fmt(w.session_count)}</td>
+        <td class="mono">${esc((w.cluster_id || '').slice(0, 18))}${(w.cluster_id || '').length > 18 ? '…' : ''}</td>
+        <td>${esc(trunc(w.summary, 220))}</td>
+      </tr>`).join('')
+    : `<tr><td colspan="5" class="tbl-loading">No working-memory entries found.</td></tr>`;
+  set('meta-working', `${f.length} of ${rows.length} working-memory entries`);
+}
+
+// ── Episodic memory table ──────────────────────────────────
+async function loadEpisodic() {
+  try {
+    const r = await fetch(BASE + '/memory/episodic');
+    if (!r.ok) return;
+    const d = await r.json();
+    _rawEpisodic = d.episodic || [];
+    renderEpisodic(_rawEpisodic);
+  } catch (_) {}
+}
+
+function filterEpisodic() { renderEpisodic(_rawEpisodic); }
+
+function renderEpisodic(rows) {
+  const q = (document.getElementById('srch-episodic')?.value || '').toLowerCase();
+  const f = q ? rows.filter(r =>
+    (r.title || '').toLowerCase().includes(q) ||
+    (r.abstract || '').toLowerCase().includes(q) ||
+    (r.session_id || '').toLowerCase().includes(q)
+  ) : rows;
+  const tb = document.getElementById('tb-episodic');
+  if (!tb) return;
+  tb.innerHTML = f.length
+    ? f.map(ep => `<tr>
+        <td style="white-space:nowrap">${fmtDate(ep.happened_at)}</td>
+        <td>${esc(ep.title || '')}</td>
+        <td class="mono">${esc((ep.session_id || '').slice(0, 18))}${(ep.session_id || '').length > 18 ? '…' : ''}</td>
+        <td>${esc(trunc(ep.abstract, 220))}</td>
+      </tr>`).join('')
+    : `<tr><td colspan="4" class="tbl-loading">No episodic-memory entries found.</td></tr>`;
+  set('meta-episodic', `${f.length} of ${rows.length} episodic-memory entries`);
+}
+
+// ── Compacted memory table ─────────────────────────────────
+async function loadCompacted() {
+  try {
+    const r = await fetch(BASE + '/memory/compacted');
+    if (!r.ok) return;
+    const d = await r.json();
+    _rawCompacted = d.compacted || [];
+    renderCompacted(_rawCompacted);
+  } catch (_) {}
+}
+
+function filterCompacted() { renderCompacted(_rawCompacted); }
+
+function renderCompacted(rows) {
+  const q = (document.getElementById('srch-compacted')?.value || '').toLowerCase();
+  const f = q ? rows.filter(r =>
+    (r.cluster_id || '').toLowerCase().includes(q) ||
+    (r.content || '').toLowerCase().includes(q)
+  ) : rows;
+  const tb = document.getElementById('tb-compacted');
+  if (!tb) return;
+  tb.innerHTML = f.length
+    ? f.map(cs => `<tr>
+        <td style="white-space:nowrap">${fmtDate(cs.updated_at)}</td>
+        <td>${fmt(cs.hit_count)}</td>
+        <td>${fmt(cs.source_session_count)}</td>
+        <td class="mono">${esc((cs.cluster_id || '').slice(0, 18))}${(cs.cluster_id || '').length > 18 ? '…' : ''}</td>
+        <td>${esc(trunc(cs.content, 220))}</td>
+      </tr>`).join('')
+    : `<tr><td colspan="5" class="tbl-loading">No compacted-memory entries found.</td></tr>`;
+  set('meta-compacted', `${f.length} of ${rows.length} compacted-memory entries`);
+}
+
+// ── Procedural memory table ────────────────────────────────
+async function loadProcedural() {
+  try {
+    const r = await fetch(BASE + '/memory/procedural');
+    if (!r.ok) return;
+    const d = await r.json();
+    _rawProcedural = d.procedural || [];
+    renderProcedural(_rawProcedural);
+  } catch (_) {}
+}
+
+function filterProcedural() { renderProcedural(_rawProcedural); }
+
+function renderProcedural(rows) {
+  const q = (document.getElementById('srch-procedural')?.value || '').toLowerCase();
+  const f = q ? rows.filter(r =>
+    (r.title || '').toLowerCase().includes(q) ||
+    (r.steps || '').toLowerCase().includes(q)
+  ) : rows;
+  const tb = document.getElementById('tb-procedural');
+  if (!tb) return;
+  tb.innerHTML = f.length
+    ? f.map(proc => `<tr>
+        <td>${esc(proc.title || '')}</td>
+        <td>${Math.round((proc.confidence || 0) * 100)}%</td>
+        <td>${fmt(proc.observation_count)}</td>
+        <td style="white-space:nowrap">${fmtDate(proc.updated_at)}</td>
+        <td>${esc(trunc(proc.steps, 220))}</td>
+      </tr>`).join('')
+    : `<tr><td colspan="5" class="tbl-loading">No procedural-memory entries found.</td></tr>`;
+  set('meta-procedural', `${f.length} of ${rows.length} procedural-memory entries`);
 }
 
 // ── Insights table ─────────────────────────────────────────
@@ -772,6 +952,10 @@ async function doCompress(btnId, statusId) {
 
 // ── Helpers ────────────────────────────────────────────────
 function set(id, val) { const el = document.getElementById(id); if (el) el.textContent = val; }
+function trunc(s, n) {
+  const t = String(s || '').replace(/\s+/g, ' ').trim();
+  return t.length > n ? t.slice(0, n) + '…' : t;
+}
 function esc(s) {
   return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
