@@ -183,12 +183,8 @@ cat > ~/.memory/identity.md << 'EOF'
 - **Working style**: Any preferences Claude should know
 EOF
 
-# 3. Register the hooks in ~/.claude/settings.json
-# Add under "hooks":
-# {
-#   "UserPromptSubmit": [{"command": "python3 /path/to/hooks/wake_up.py"}],
-#   "Stop":             [{"command": "python3 /path/to/hooks/save_hook.py"}]
-# }
+# 3. Wire the hooks into the global Claude Code settings
+python3 cli.py install
 
 # 4. Start the daemon
 python3 memory/daemon.py &
@@ -251,6 +247,7 @@ agentic-memory/
 ## CLI commands
 
 ```bash
+python3 cli.py install           # Wire hooks into ~/.claude/settings.json (run once after cloning)
 python3 cli.py sync-identity     # Re-sync identity.md → facts table
 python3 cli.py compact           # Manually trigger daemon compaction pass
 python3 cli.py status            # Show DB stats (sessions, facts, compacted entries)

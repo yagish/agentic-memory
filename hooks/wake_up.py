@@ -80,6 +80,40 @@ def _is_how_to(prompt: str) -> bool:
     return any(marker in lowered for marker in HOW_TO_MARKERS)
 
 
+def _build_fact_query(prompt: str) -> str:
+    """
+    Build a punctuation-safe FTS query for fact lookup.
+
+    Claude often asks identity questions with punctuation ("what is my name?",
+    "what's my role?"). Passing raw split tokens into FTS5 makes queries like
+    "name?" or "what's" either fail to parse or miss the fact entirely. We
+    strip punctuation, keep meaningful words, and add a few identity aliases for
+    common self-referential prompts such as "who am I".
+    """
+    lowered = prompt.lower()
+    tokens = re.findall(r"[a-z0-9]+", lowered)
+
+    # Drop very short filler words, but keep identity-bearing terms.
+    keywords = [t for t in tokens if len(t) > 2 or t in {"am", "me", "my"}]
+
+    # Map common identity questions to the terms that actually appear in facts.
+    if re.search(r"\bwho am i\b", lowered):
+        keywords.extend(["name", "role"])
+    if re.search(r"\b(my name|called)\b", lowered):
+        keywords.extend(["name", "called"])
+    if re.search(r"\b(role|job|title)\b", lowered):
+        keywords.extend(["role", "title"])
+    if re.search(r"\b(preference|preferences|prefer|working style|style)\b", lowered):
+        keywords.extend(["preferences", "prefer", "style"])
+
+    deduped: list[str] = []
+    for token in keywords:
+        if token not in deduped:
+            deduped.append(token)
+
+    return " OR ".join(deduped)
+
+
 def _first_message_flag(session_id: str) -> str:
     return f"/tmp/memory_first_msg_{session_id}"
 
@@ -147,7 +181,7 @@ def _build_injection(
 
     # 4. Relevant facts (identity surfaces here when the prompt asks about the user).
     if facts:
-        lines = ["[Relevant Facts]"]
+        lines = ["[Relevant Facts — authoritative]"]
         for f in facts:
             lines.append(f"• {f.get('content', '')}")
         block = "\n".join(lines) + "\n"
@@ -165,7 +199,11 @@ def _build_injection(
     if not sections:
         return ""
 
-    return "=== MEMORY ===\n\n" + "\n".join(sections) + "\n=== END MEMORY ==="
+    header = (
+        "[I have a persistent memory system that retrieved the following context for this prompt. "
+        "Please use it to answer my question:]\n\n"
+    )
+    return header + "\n".join(sections)
 
 
 def main() -> None:
@@ -235,9 +273,9 @@ def main() -> None:
     # --- Facts (identity surfaces here when relevant) ---
     facts: list[dict] = []
     try:
-        tokens  = [t for t in prompt.split() if len(t) > 2]
-        or_query = " OR ".join(tokens) if tokens else prompt
-        facts   = search_facts(conn, or_query, limit=5)
+        fact_query = _build_fact_query(prompt)
+        if fact_query:
+            facts = search_facts(conn, fact_query, limit=5)
     except Exception as exc:
         _log_error(f"facts search failed: {exc}")
 

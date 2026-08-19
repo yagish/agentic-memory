@@ -918,6 +918,68 @@ def cmd_compact(_args):
 
 
 # ---------------------------------------------------------------------------
+# Command: install
+# ---------------------------------------------------------------------------
+
+# Path to the global Claude Code settings file.
+_CLAUDE_SETTINGS_PATH = os.path.expanduser("~/.claude/settings.json")
+
+
+def cmd_install(_args):
+    """Wire wake_up.py and save_hook.py into the global ~/.claude/settings.json."""
+    # Compute absolute paths to the hook scripts based on this file's location.
+    repo_root  = os.path.dirname(os.path.abspath(__file__))
+    wake_up    = os.path.join(repo_root, "hooks", "wake_up.py")
+    save_hook  = os.path.join(repo_root, "hooks", "save_hook.py")
+
+    wake_cmd = f"python3 {wake_up}"
+    save_cmd = f"python3 {save_hook}"
+
+    # Load existing settings or start fresh.
+    if os.path.exists(_CLAUDE_SETTINGS_PATH):
+        with open(_CLAUDE_SETTINGS_PATH) as f:
+            settings = json.load(f)
+    else:
+        settings = {}
+
+    hooks = settings.setdefault("hooks", {})
+
+    def _has_command(hook_list: list, cmd: str) -> bool:
+        # Check whether any entry in the hook list already contains this command.
+        for group in hook_list:
+            for h in group.get("hooks", []):
+                if h.get("command") == cmd:
+                    return True
+        return False
+
+    def _add_hook(event: str, cmd: str) -> bool:
+        # Returns True if the hook was added, False if it was already present.
+        groups = hooks.setdefault(event, [])
+        if _has_command(groups, cmd):
+            return False
+        groups.append({"matcher": "", "hooks": [{"type": "command", "command": cmd}]})
+        return True
+
+    added_wake = _add_hook("UserPromptSubmit", wake_cmd)
+    added_save = _add_hook("Stop", save_cmd)
+
+    if not added_wake and not added_save:
+        print("Hooks already registered in ~/.claude/settings.json — nothing to do.")
+        return
+
+    os.makedirs(os.path.dirname(_CLAUDE_SETTINGS_PATH), exist_ok=True)
+    with open(_CLAUDE_SETTINGS_PATH, "w") as f:
+        json.dump(settings, f, indent=2)
+        f.write("\n")
+
+    if added_wake:
+        print(f"  + UserPromptSubmit → {wake_cmd}")
+    if added_save:
+        print(f"  + Stop             → {save_cmd}")
+    print("Done. Restart Claude Code for the hooks to take effect.")
+
+
+# ---------------------------------------------------------------------------
 # Command: sync-identity
 # ---------------------------------------------------------------------------
 
@@ -1068,6 +1130,12 @@ def main():
         help="Run one daemon compaction pass: episodic entries, working memory, compacted sessions, procedural patterns",
     )
 
+    # install — wire hooks into the global ~/.claude/settings.json
+    sub.add_parser(
+        "install",
+        help="Add wake_up.py and save_hook.py to ~/.claude/settings.json (global hooks)",
+    )
+
     # sync-identity — load identity.md fields into the facts table
     sub.add_parser(
         "sync-identity",
@@ -1103,6 +1171,7 @@ def main():
         "daemon":        cmd_daemon,
         "ingest-server":   cmd_ingest_server,
         "compact":         cmd_compact,
+        "install":         cmd_install,
         "sync-identity":   cmd_sync_identity,
     }
     dispatch[args.command](args)
