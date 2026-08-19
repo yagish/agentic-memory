@@ -331,6 +331,19 @@ def init_db(path: str) -> sqlite3.Connection:
     """
     conn = sqlite3.connect(path)
 
+    # Tune SQLite for a small multi-process local service:
+    # - busy_timeout reduces spurious "database is locked" failures
+    # - WAL improves concurrent read/write behaviour on file-backed DBs
+    # - NORMAL sync is a good durability/latency trade-off for this local cache
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    if path != ":memory:":
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+        except sqlite3.OperationalError:
+            # Some environments/filesystems may refuse WAL; keep the DB usable.
+            pass
+
     # row_factory makes each result row behave like a dict (row["column_name"])
     # instead of a plain tuple (row[0]). Much easier to work with.
     conn.row_factory = sqlite3.Row

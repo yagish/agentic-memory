@@ -281,6 +281,7 @@ def _build_digest(
 @app.post("/ingest")
 def post_ingest(req: IngestRequest) -> dict:
     """Accept a session from any agent and run the full save pipeline."""
+    conn = None
     try:
         turns_as_dicts = [{"role": t.role, "content": t.content} for t in req.turns]
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -314,18 +315,21 @@ def post_ingest(req: IngestRequest) -> dict:
         except Exception as exc:
             error_log("ingest", f"chunking failed for {req.session_id}", exc=exc)
 
-        conn.close()
         activity_log("ingest", "ingest", session=req.session_id, agent=req.agent, turns=len(req.turns))
         return {"ok": True, "session_id": req.session_id}
 
     except Exception as exc:
         error_log("ingest", "unhandled error in POST /ingest", exc=exc)
         raise HTTPException(status_code=500, detail={"ok": False, "error": str(exc)})
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 @app.post("/recall")
 def post_recall(req: RecallRequest) -> dict:
     """Build a memory wake-up digest for a prompt (agent-facing)."""
+    conn = None
     try:
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
         conn = init_db(DB_PATH)
@@ -355,7 +359,6 @@ def post_recall(req: RecallRequest) -> dict:
         log_retrieval(conn, "memory_recall", query or None, len(digest))
         activity_log("ingest", "recall", session=req.session_id or "", mode=mode,
                      sessions=len(sessions), facts=len(facts or []))
-        conn.close()
 
         return {
             "ok": True, "mode": mode, "digest": digest,
@@ -365,11 +368,15 @@ def post_recall(req: RecallRequest) -> dict:
     except Exception as exc:
         error_log("ingest", "unhandled error in POST /recall", exc=exc)
         raise HTTPException(status_code=500, detail={"ok": False, "error": str(exc)})
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 @app.post("/answer")
 def post_answer(req: AnswerRequest) -> dict:
     """Try to answer a prompt directly from memory without calling the LLM."""
+    conn = None
     try:
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
         conn = init_db(DB_PATH)
@@ -380,11 +387,13 @@ def post_answer(req: AnswerRequest) -> dict:
         activity_log("ingest", "answer", session=req.session_id or "",
                      answered=match is not None,
                      similarity=match["similarity"] if match else 0)
-        conn.close()
         return result
     except Exception as exc:
         error_log("ingest", "unhandled error in POST /answer", exc=exc)
         raise HTTPException(status_code=500, detail={"ok": False, "error": str(exc)})
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 @app.post("/compress")

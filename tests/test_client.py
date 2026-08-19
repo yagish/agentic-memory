@@ -13,7 +13,7 @@ import sys          # for module search path manipulation
 import unittest     # the standard Python test framework
 from unittest.mock import patch, MagicMock   # for replacing urlopen with a fake
 
-import urllib.error  # for constructing a fake URLError in the connection test
+import urllib.error  # for constructing fake urllib exceptions
 
 # Add the project root to the module search path so 'memory.*' imports work.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -93,6 +93,32 @@ class TestMemoryClient(unittest.TestCase):
     # ------------------------------------------------------------------
     # Test 8: save_session returns the dict from the server on success
     # ------------------------------------------------------------------
+
+    def test_client_raises_runtime_error_for_http_error(self):
+        """
+        When the server returns an HTTP status like 422 or 500, the client must
+        surface that as a RuntimeError instead of pretending the server is down.
+        """
+        client = MemoryClient()
+        error_body = io.BytesIO(json.dumps({"detail": {"ok": False, "error": "bad input"}}).encode("utf-8"))
+        fake_http_error = urllib.error.HTTPError(
+            url="http://localhost:7747/ingest",
+            code=422,
+            msg="Unprocessable Entity",
+            hdrs=None,
+            fp=error_body,
+        )
+
+        with patch("urllib.request.urlopen", side_effect=fake_http_error):
+            with self.assertRaises(RuntimeError) as ctx:
+                client.save_session(
+                    session_id="bad-session",
+                    agent="test-agent",
+                    turns=[],
+                )
+
+        self.assertIn("HTTP 422", str(ctx.exception))
+        self.assertIn("bad input", str(ctx.exception))
 
     def test_client_save_session_returns_dict(self):
         """

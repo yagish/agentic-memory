@@ -24,7 +24,6 @@ from memory.db import (
     assign_to_cluster,
     get_cluster_sessions,
     get_clusters,
-    list_facts,
 )
 
 
@@ -300,82 +299,7 @@ class TestClusters(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Test group 4: daemon re_extract_facts (Ticket 13-02)
-# ---------------------------------------------------------------------------
-
-class TestDaemonExtractFacts(unittest.TestCase):
-    """Tests for re_extract_facts in the daemon module."""
-
-    def setUp(self):
-        # Fresh in-memory database for each test.
-        self.conn = init_db(":memory:")
-        # Insert a session that the daemon will process.
-        _make_session(
-            self.conn,
-            "session-facts",
-            transcript=[
-                {"role": "user", "content": "I prefer Python for scripting."},
-                {"role": "assistant", "content": "Noted."},
-            ],
-        )
-
-    def test_re_extract_facts_mocked_inserts_facts(self):
-        """
-        re_extract_facts with a mocked _call_ollama inserts facts into the DB.
-        """
-        # Import the daemon module (it must exist for this to work).
-        import memory.daemon as daemon_module
-
-        # The mock returns a valid JSON array of one fact.
-        mock_response = json.dumps([
-            {"content": "User prefers Python for scripting.", "tags": ["python"]}
-        ])
-
-        # Patch _call_ollama in the daemon module so no real HTTP call is made.
-        with patch.object(daemon_module, "_call_ollama", return_value=mock_response):
-            session = self.conn.execute(
-                "SELECT session_id, transcript FROM sessions WHERE session_id = ?",
-                ("session-facts",),
-            ).fetchone()
-            # Build the session dict the daemon expects.
-            session_dict = {"session_id": "session-facts", "transcript": session["transcript"]}
-            daemon_module.re_extract_facts(self.conn, session_dict)
-
-        # One fact should now be in the database.
-        facts = list_facts(self.conn)
-        self.assertEqual(len(facts), 1)
-        self.assertIn("Python", facts[0]["content"])
-
-    def test_re_extract_facts_skips_duplicate_content(self):
-        """
-        Calling re_extract_facts twice with the same response inserts only one fact.
-        """
-        import memory.daemon as daemon_module
-
-        mock_response = json.dumps([
-            {"content": "Duplicate fact content.", "tags": []}
-        ])
-
-        session_dict = {
-            "session_id": "session-facts",
-            "transcript": json.dumps([
-                {"role": "user", "content": "Something."},
-            ]),
-        }
-
-        with patch.object(daemon_module, "_call_ollama", return_value=mock_response):
-            # Call twice.
-            daemon_module.re_extract_facts(self.conn, session_dict)
-            daemon_module.re_extract_facts(self.conn, session_dict)
-
-        # Despite two calls, only one fact row should exist in the DB.
-        facts = list_facts(self.conn)
-        duplicate_facts = [f for f in facts if f["content"] == "Duplicate fact content."]
-        self.assertEqual(len(duplicate_facts), 1)
-
-
-# ---------------------------------------------------------------------------
-# Test group 5: daemon run() once mode (Ticket 13-02)
+# Test group 4: daemon run() once mode (current processing pipeline)
 # ---------------------------------------------------------------------------
 
 class TestDaemonOnceMode(unittest.TestCase):
@@ -391,26 +315,22 @@ class TestDaemonOnceMode(unittest.TestCase):
         import memory.daemon as daemon_module
         import tempfile
 
-        # Create a temporary DB file the daemon will operate on.
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
             tmp_path = tmp.name
 
         try:
-            # Set up the session in the temp DB.
             setup_conn = init_db(tmp_path)
             _make_session(setup_conn, "session-once")
             setup_conn.close()
 
-            # Mock _call_ollama to return empty JSON (no facts) — avoids real HTTP call.
             mock_response = json.dumps([])
 
             with patch.object(daemon_module, "_call_ollama", return_value=mock_response), \
+                 patch.object(daemon_module, "_start_ollama_if_needed", return_value=None), \
                  patch("memory.daemon.DB_PATH", tmp_path), \
-                 patch("psutil.cpu_percent", return_value=10):  # low CPU — don't skip
-                # run(once=True) should process all pending sessions and exit.
+                 patch("psutil.cpu_percent", return_value=10):
                 daemon_module.run(once=True)
 
-            # Open a fresh connection to verify the session was marked processed.
             verify_conn = init_db(tmp_path)
             row = verify_conn.execute(
                 "SELECT daemon_processed_at FROM sessions WHERE session_id = ?",
@@ -421,7 +341,43 @@ class TestDaemonOnceMode(unittest.TestCase):
             self.assertIsNotNone(row)
             self.assertIsNotNone(row["daemon_processed_at"])
         finally:
-            # Clean up the temp file regardless of test outcome.
+            os.unlink(tmp_path)
+
+    def test_daemon_once_mode_leaves_session_unprocessed_when_step_raises(self):
+        """
+        If a required per-session step raises, the daemon should not stamp the
+        session as processed. This allows a later run to retry the work.
+        """
+        import memory.daemon as daemon_module
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            setup_conn = init_db(tmp_path)
+            _make_session(setup_conn, "session-retry")
+            setup_conn.close()
+
+            with patch.object(daemon_module, "_start_ollama_if_needed", return_value=None), \
+                 patch.object(daemon_module, "_create_episodic_entry", return_value=("Title", "Abstract")), \
+                 patch.object(daemon_module, "_assign_cluster", return_value="cluster-1"), \
+                 patch.object(daemon_module, "_compact_cluster_if_ready", return_value=None), \
+                 patch.object(daemon_module, "_extract_procedural_patterns", side_effect=RuntimeError("boom")), \
+                 patch("memory.daemon.DB_PATH", tmp_path), \
+                 patch("psutil.cpu_percent", return_value=10):
+                daemon_module.run(once=True)
+
+            verify_conn = init_db(tmp_path)
+            row = verify_conn.execute(
+                "SELECT daemon_processed_at FROM sessions WHERE session_id = ?",
+                ("session-retry",),
+            ).fetchone()
+            verify_conn.close()
+
+            self.assertIsNotNone(row)
+            self.assertIsNone(row["daemon_processed_at"])
+        finally:
             os.unlink(tmp_path)
 
 

@@ -620,16 +620,16 @@ def run(once: bool = False) -> None:
                         summary_addition = f"**{title}**\n{abstract}"
                         upsert_working_memory(conn, cluster_id, session_id, summary_addition)
 
-                    # Step 4: Mark processed before compaction so the SQL query
-                    # for uncompacted sessions is consistent.
-                    mark_session_processed(conn, session_id)
-
-                    # Step 5: Compact the cluster if enough sessions are ready.
+                    # Step 4: Compact the cluster if enough sessions are ready.
                     if cluster_id:
                         _compact_cluster_if_ready(conn, cluster_id)
 
-                    # Step 6: Extract procedural patterns.
+                    # Step 5: Extract procedural patterns.
                     _extract_procedural_patterns(conn, session)
+
+                    # Step 6: Only mark the session processed after all required
+                    # per-session steps completed without bubbling an exception.
+                    mark_session_processed(conn, session_id)
 
                     sessions_since_periodic += 1
 

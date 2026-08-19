@@ -44,6 +44,25 @@ class MemoryClient:
         # Build the base URL once so we don't repeat the string concatenation.
         self._base_url = f"http://{host}:{port}"
 
+    @staticmethod
+    def _error_message_from_http_error(exc: urllib.error.HTTPError) -> str:
+        """Extract a readable error message from an HTTPError response body."""
+        try:
+            body = exc.read().decode("utf-8")
+        except Exception:
+            body = ""
+
+        if body:
+            try:
+                data = json.loads(body)
+                if isinstance(data, dict):
+                    detail = data.get("detail", data)
+                    return f"HTTP {exc.code}: {detail}"
+            except json.JSONDecodeError:
+                return f"HTTP {exc.code}: {body}"
+
+        return f"HTTP {exc.code}: {exc.reason}"
+
     def _post(self, path: str, payload: dict) -> dict:
         """
         Send an HTTP POST request with a JSON body and return the parsed response.
@@ -76,6 +95,8 @@ class MemoryClient:
             with urllib.request.urlopen(request) as response:
                 # Read the response bytes and decode to a string, then parse JSON.
                 return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(self._error_message_from_http_error(exc)) from exc
         except urllib.error.URLError as exc:
             # URLError means the server is not running or is unreachable.
             raise ConnectionError(
@@ -101,6 +122,8 @@ class MemoryClient:
         try:
             with urllib.request.urlopen(request) as response:
                 return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(self._error_message_from_http_error(exc)) from exc
         except urllib.error.URLError as exc:
             raise ConnectionError(
                 "Memory ingest server is not running — start it with: "
