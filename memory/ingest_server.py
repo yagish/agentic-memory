@@ -43,18 +43,13 @@ from uvicorn.config import LOGGING_CONFIG as UVICORN_LOGGING_CONFIG
 
 from memory.db import (
     init_db,
-    upsert_session,
-    embed,
-    store_embedding,
-    chunk_transcript,
-    delete_chunks_for_session,
-    store_chunk,
     semantic_search_chunks,
     search_facts,
     list_insights,
     find_direct_answer,
     log_retrieval,
 )
+from memory.ingest_pipeline import ingest_session
 from memory.logger import activity_log, error_log
 from memory.debug import enable_debug
 
@@ -290,33 +285,36 @@ def post_ingest(req: IngestRequest) -> dict:
         updated_at = datetime.now(timezone.utc).isoformat()
         started_at = req.started_at or updated_at
 
-        upsert_session(
+        outcome = ingest_session(
             conn,
             session_id=req.session_id,
             agent=req.agent,
-            transcript=turns_as_dicts,
+            turns=turns_as_dicts,
             started_at=started_at,
             updated_at=updated_at,
             metadata=req.metadata,
         )
 
-        try:
-            full_text = " ".join(t.content for t in req.turns if isinstance(t.content, str))
-            if full_text.strip():
-                store_embedding(conn, req.session_id, embed(full_text))
-        except Exception as exc:
-            error_log("ingest", f"embedding failed for {req.session_id}", exc=exc)
+        for warning in outcome.warnings:
+            error_log("ingest", f"{warning.stage} failed for {req.session_id}: {warning.message}")
 
-        try:
-            chunk_texts = chunk_transcript(turns_as_dicts)
-            delete_chunks_for_session(conn, req.session_id)
-            for i, text in enumerate(chunk_texts):
-                store_chunk(conn, req.session_id, i, text, embed(text) if text.strip() else None)
-        except Exception as exc:
-            error_log("ingest", f"chunking failed for {req.session_id}", exc=exc)
-
-        activity_log("ingest", "ingest", session=req.session_id, agent=req.agent, turns=len(req.turns))
-        return {"ok": True, "session_id": req.session_id}
+        activity_log(
+            "ingest",
+            "ingest",
+            session=req.session_id,
+            agent=req.agent,
+            turns=outcome.turn_count,
+            chunks=outcome.chunk_count,
+            embedding_stored=outcome.embedding_stored,
+        )
+        return {
+            "ok": True,
+            "session_id": req.session_id,
+            "warnings": [
+                {"stage": warning.stage, "message": warning.message}
+                for warning in outcome.warnings
+            ],
+        }
 
     except Exception as exc:
         error_log("ingest", "unhandled error in POST /ingest", exc=exc)
