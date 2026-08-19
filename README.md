@@ -15,16 +15,17 @@ User sends a prompt
         │
         ▼
 ┌─────────────────────────────────────────────────────┐
-│  wake_up.py  (UserPromptSubmit hook)                │
+│  hooks/wake_up.py  (Claude Code UserPromptSubmit)   │
 │                                                     │
-│  1. Trivial prompt? → skip all injection            │
-│  2. Embed prompt → semantic search compacted_sessions│
-│     ≥ 96%  → inject as [From Memory] cache hit     │
+│  1. Embed prompt                                    │
+│  2. Search compacted_sessions by similarity         │
+│     ≥ 96%  → inject full cached session summary     │
 │     70–95% → inject as enrichment context           │
-│  3. Working memory (first message of session only)  │
-│  4. Relevant facts (identity surfaces when needed)  │
-│  5. Procedural memory (how-to prompts only)         │
-│  6. Enforce 500-token injection budget              │
+│  3. Pull working_memory for best-matching cluster   │
+│     (first message of session only)                 │
+│  4. Search facts via FTS                            │
+│  5. Search procedural_memory for how-to prompts     │
+│  6. Build one suffix under a 500-token budget       │
 └─────────────────────────────────────────────────────┘
         │
         ▼
@@ -32,31 +33,37 @@ User sends a prompt
         │
         ▼
 ┌─────────────────────────────────────────────────────┐
-│  save_hook.py  (Stop hook)                          │
+│  hooks/save_hook.py  (Claude Code Stop hook)        │
 │                                                     │
-│  • Saves full transcript → sessions table           │
-│  • Generates session embedding → session_vecs       │
-│  • Chunks transcript → session_chunks (fine-grained)│
+│  • Saves full transcript → sessions                 │
+│  • Generates whole-session embedding → session_vecs │
+│  • Chunks transcript → chunks                       │
 └─────────────────────────────────────────────────────┘
         │
         ▼
 ┌─────────────────────────────────────────────────────┐
-│  daemon.py  (background process)                    │
+│  memory/daemon.py  (background process)             │
 │                                                     │
 │  Pass 1 — per new session:                          │
 │  • LLM → episodic entry (title + abstract)          │
 │  • Assign to topic cluster                          │
 │  • Update working_memory for that cluster           │
-│  • If cluster ≥ 3 sessions → compact:               │
-│    - LLM generates structured summary               │
-│    - Tiered length by session size                  │
-│    - Merge into compacted_sessions + store vector   │
-│    - Null out raw transcripts of source sessions    │
-│  • LLM → extract procedural patterns               │
+│  • If cluster ≥ 3 sessions → compact                │
+│  • LLM → extract procedural patterns                │
 │                                                     │
 │  Pass 2 — periodic sweep:                           │
-│  • Close working_memory inactive > 14 days          │
-│  • Merge near-duplicate compacted_sessions (≥ 92%)  │
+│  • Close stale working_memory (>14 days)            │
+│  • Merge near-duplicate compacted_sessions          │
+│  • Prune old processed sessions                     │
+└─────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────┐
+│  memory/ingest_server.py  (agent-facing HTTP API)   │
+│                                                     │
+│  • POST /ingest  → remote session writes            │
+│  • POST /recall  → wake-up digest for other agents  │
+│  • POST /answer  → repeated-question lookup         │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -70,27 +77,22 @@ User sends a prompt
 | **Episodic** | `episodic_memory` | Forever | Thin log: one title + 2-sentence abstract per session |
 | **Semantic cache** | `compacted_sessions` | Forever | LLM-compacted session summaries with vectors — the primary retrieval target |
 | **Procedural** | `procedural_memory` | Forever | Reusable how-to patterns and workflows extracted from sessions |
-| **Identity facts** | `facts` | Until updated | User name, role, preferences — synced from `~/.memory/identity.md` |
-
-### Why no Insights table?
-
-The old `insights` table stored cross-session patterns. In the new architecture those naturally fall into either procedural memory (workflow patterns) or the compacted session store (stable knowledge). The separate table added complexity without adding value.
+| **Facts** | `facts` | Until updated | Searchable facts, including identity/profile facts synced from `~/.memory/identity.md` |
+| **Insights** | `insights` | Forever | Cross-session patterns and meta-observations surfaced by APIs and dashboard |
 
 ---
 
 ## Token efficiency design
 
-Wake_up.py applies several gates before injecting anything:
+`hooks/wake_up.py` always starts with retrieval, then only injects what actually matches.
 
-**Trivial prompt gate** — if the prompt is under 25 characters or is a continuation word (`yes`, `ok`, `continue`, `done`, `sure`, etc.), injection is skipped entirely. These prompts appear constantly in multi-step tasks and need no memory context.
+**Semantic threshold** — compacted session context is only injected if cosine similarity ≥ 70%. Below that the match is treated as noise.
 
-**Semantic threshold** — compacted session context is only injected if cosine similarity ≥ 70%. Below that the match is noise, not signal.
+**Working memory — first message only** — working memory is only considered on the first prompt of a Claude Code session.
 
-**Working memory — first message only** — working memory is task context that's useful once at session start, not re-read on every turn.
+**Procedural memory — conditional** — procedural patterns are only searched for prompts containing how-to markers (`how`, `steps`, `best way`, `should i`, `approach`, `workflow`, etc.).
 
-**Procedural memory — conditional** — only injected when the prompt contains how-to markers (`how`, `steps`, `best way`, `should I`, `approach`, `workflow`).
-
-**Identity — demand only** — identity facts live in the `facts` table and surface through the same FTS5 search as any other fact. They appear when the prompt is about the user; they're skipped for unrelated prompts. `identity.md` is never injected verbatim.
+**Facts on demand** — fact injection is driven by an FTS query built from the current prompt. This is how identity/profile facts surface when relevant.
 
 **500-token budget** — total injection is capped at 500 tokens. Priority if budget is exceeded: cache hit > working memory > enrichment context > facts > procedural.
 
@@ -117,22 +119,30 @@ Summary length scales with session size:
 | 16–40 turns | ~400 tokens |
 | 40+ turns | ~800 tokens |
 
-The structured format lets wake_up.py inject just the `Task` + `Left off at` fields (≈ 40 tokens) for quick enrichment, or the full summary for a 96%+ cache hit.
+At the moment, `hooks/wake_up.py` injects the full compacted summary block for high-similarity matches and does not slice out individual fields.
 
 ---
 
-## Retrieval — how a cache hit works
+## Retrieval modes in the current codebase
 
-Because Claude Code's UserPromptSubmit hook can only inject a prompt suffix (it cannot intercept the response), a 96%+ semantic match works by injecting a strong instruction:
+### Claude Code hook (`hooks/wake_up.py`)
 
-```
-[Cached Answer — 98% match]
-Q: <stored question>
-A: <stored answer>
-Return this answer verbatim, prefixed with [From Memory].
-```
+The hook builds a prompt suffix from these sources, in order:
 
-Claude reads the injected instruction and returns the cached answer. The effect is identical to a cache hit — Claude doesn't need to reason through the problem again.
+1. `compacted_sessions` cache hit (`>= 0.96` similarity)
+2. `working_memory` for the best matching cluster on the first message only
+3. enrichment summaries from other similar compacted sessions (`0.70–0.95`)
+4. fact matches from `facts`
+5. procedural matches from `procedural_memory`
+
+A high-similarity cache hit injects the stored compacted session summary plus an instruction to answer from that memory and prefix the reply with `[From Memory]`.
+
+### Agent HTTP API (`memory/ingest_server.py`)
+
+Other agents can use two related retrieval endpoints:
+
+- `POST /recall` — builds a digest from `identity.md`, recent/relevant sessions, facts, and insights
+- `POST /answer` — returns a previously seen assistant answer for a near-identical user prompt using `find_direct_answer()`
 
 ---
 
@@ -140,11 +150,12 @@ Claude reads the injected instruction and returns the cached answer. The effect 
 
 | Process | How to run | What it does |
 |---|---|---|
-| Daemon | `python3 memory/daemon.py` | Compacts sessions, builds memory layers in background |
-| Dashboard | `python3 memory/dashboard_server.py` | Web UI at `http://localhost:8765` |
+| Daemon | `python3 memory/daemon.py` | Compacts sessions, updates episodic/working/procedural memory |
+| Ingest server | `python3 memory/ingest_server.py` | HTTP API for `/ingest`, `/recall`, and `/answer` |
+| Dashboard | `python3 memory/dashboard_server.py` | Web UI and operational API at `http://localhost:7748` |
 | MCP server | `python3 memory/mcp_server.py` | Exposes memory tools to Claude via MCP |
 
-The daemon is the only required background process. Dashboard and MCP server are optional.
+The daemon is the only required background process for Claude Code hook-based memory. Ingest server, dashboard, and MCP server are optional depending on how you use the system.
 
 ---
 
@@ -169,24 +180,19 @@ Embeddings use `sentence-transformers/all-MiniLM-L6-v2` (~90 MB, runs fully loca
 ## Installation
 
 ```bash
-# 1. Clone and install Python dependencies
+# 1. Clone the repo
 git clone <repo>
 cd agentic-memory
-pip install -r requirements.txt
 
-# 2. Create your identity profile
-mkdir -p ~/.memory
-cat > ~/.memory/identity.md << 'EOF'
-- **Name**: Your Name
-- **Role**: What you do
-- **Tech stack**: Languages/frameworks you use
-- **Working style**: Any preferences Claude should know
-EOF
+# 2. Install everything with the bootstrap script
+./install.sh
 
-# 3. Wire the hooks into the global Claude Code settings
-python3 cli.py install
+# 3. If you want to do it manually instead of using install.sh:
+python3 -m pip install --user \
+  mcp fastmcp sentence-transformers fastapi uvicorn \
+  pydantic psutil setproctitle debugpy
 
-# 4. Start the daemon
+# 4. Start the daemon if install.sh did not already register/run it for you
 python3 memory/daemon.py &
 
 # 5. Sync your identity profile into the facts table
@@ -253,14 +259,20 @@ python3 -c "from memory.db import embed; embed('warmup')"
 ```
 agentic-memory/
 ├── hooks/
-│   ├── wake_up.py        # UserPromptSubmit hook — injects memory context
-│   └── save_hook.py      # Stop hook — saves transcripts + embeddings
+│   ├── wake_up.py          # Claude Code UserPromptSubmit hook
+│   └── save_hook.py        # Claude Code Stop hook
 ├── memory/
-│   ├── db.py             # All SQLite operations — schema, CRUD, search
-│   ├── daemon.py         # Background compaction and memory extraction
-│   ├── mcp_server.py     # MCP tools (memory_search, memory_save_fact, etc.)
-│   └── dashboard_server.py # Web UI
-├── cli.py                # Management commands (sync-identity, compact, status)
+│   ├── db.py               # SQLite schema + CRUD + retrieval helpers
+│   ├── daemon.py           # Background compaction / clustering / episodic updates
+│   ├── ingest_server.py    # HTTP API for other agents
+│   ├── mcp_server.py       # MCP tools
+│   ├── dashboard_server.py # Dashboard + ops API
+│   └── client.py           # Thin Python client for ingest_server
+├── scripts/
+│   ├── start-memory.sh
+│   ├── stop-memory.sh
+│   └── restart-memory.sh
+├── cli.py                  # Management commands
 └── ~/.memory/
     ├── memory.db         # SQLite database (all memory tables)
     ├── identity.md       # User profile — source of truth for identity facts
@@ -274,17 +286,18 @@ agentic-memory/
 
 | Table | Purpose |
 |---|---|
-| `sessions` | Raw transcripts (transcript nulled after compaction) |
+| `sessions` | Raw transcripts plus processing metadata |
 | `session_vecs` | Whole-session embeddings |
-| `session_chunks` | Sub-session chunk embeddings for fine-grained search |
+| `chunks` | Sub-session chunk embeddings for fine-grained search |
 | `working_memory` | Active task context per topic cluster (14-day TTL) |
 | `episodic_memory` | Thin event log — title + abstract per session |
-| `compacted_sessions` | LLM-compacted summaries + vectors (primary retrieval target) |
+| `compacted_sessions` | LLM-compacted summaries + vectors (primary hook retrieval target) |
 | `procedural_memory` | Reusable how-to patterns with confidence scores |
-| `facts` | Identity facts synced from identity.md |
+| `facts` | Searchable facts, including identity facts synced from `identity.md` |
+| `insights` | Cross-session patterns and learned observations |
 | `topic_clusters` | Cluster centroids for topic grouping |
 | `cluster_memberships` | Session → cluster assignments |
-| `retrievals` | Audit log of every memory injection |
+| `retrievals` | Audit log of injections and retrieval tool usage |
 
 ---
 
