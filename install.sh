@@ -3,6 +3,7 @@ set -euo pipefail
 
 # Detect the real absolute path to the directory containing this script.
 INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON3_EXEC="$(python3 -c 'import sys; print(sys.executable)' 2>/dev/null || command -v python3)"
 
 # --uninstall: remove hooks, MCP entry, and launchd plists that point to this
 # INSTALL_DIR.  Data in ~/.memory/ is always preserved.
@@ -10,10 +11,11 @@ if [ "${1:-}" = "--uninstall" ]; then
     echo "Uninstalling agentic-memory..."
 
     # Remove Claude Code hooks
-    export INSTALL_DIR
+    export INSTALL_DIR PYTHON3_EXEC
     python3 << PYEOF
 import json, os
 INSTALL_DIR = os.environ["INSTALL_DIR"]
+PYTHON3_EXEC = os.environ["PYTHON3_EXEC"]
 SETTINGS_PATH = os.path.expanduser("~/.claude/settings.json")
 if os.path.exists(SETTINGS_PATH):
     with open(SETTINGS_PATH) as f:
@@ -33,7 +35,9 @@ if os.path.exists(SETTINGS_PATH):
         hooks[event_name] = new_entries
         return removed
     r1 = remove_hook("Stop", f"python3 {INSTALL_DIR}/hooks/save_hook.py")
+    r1 += remove_hook("Stop", f"{PYTHON3_EXEC} {INSTALL_DIR}/hooks/save_hook.py")
     r2 = remove_hook("UserPromptSubmit", f"python3 {INSTALL_DIR}/hooks/wake_up.py")
+    r2 += remove_hook("UserPromptSubmit", f"{PYTHON3_EXEC} {INSTALL_DIR}/hooks/wake_up.py")
     with open(SETTINGS_PATH, "w") as f:
         json.dump(settings, f, indent=2)
     print(f"  - Removed Stop hook: {r1} entr{'y' if r1==1 else 'ies'}")
@@ -87,13 +91,36 @@ if ! python3 -c "import sys; assert sys.version_info >= (3,8), f'Python 3.8+ req
     python3 --version >&2
     exit 1
 fi
-echo "Python 3 found: $(python3 --version)"
+echo "Python 3 found: $($PYTHON3_EXEC --version)"
+echo "Python 3 executable: $PYTHON3_EXEC"
 
 # ── Step 2: Python dependencies ─────────────────────────────────────────────
 echo ""
-echo "Installing Python dependencies..."
-pip3 install --quiet --user mcp fastmcp sentence-transformers fastapi uvicorn pydantic psutil setproctitle
-echo "  + Dependencies installed"
+echo "Installing Python dependencies into the same interpreter used by hooks/services..."
+"$PYTHON3_EXEC" -m pip install --quiet --user mcp fastmcp sentence-transformers fastapi uvicorn pydantic psutil setproctitle debugpy
+"$PYTHON3_EXEC" - << 'PYEOF'
+import importlib
+mods = [
+    "sentence_transformers",
+    "fastapi",
+    "uvicorn",
+    "mcp",
+    "fastmcp",
+    "pydantic",
+    "psutil",
+    "setproctitle",
+    "debugpy",
+]
+missing = []
+for mod in mods:
+    try:
+        importlib.import_module(mod)
+    except Exception:
+        missing.append(mod)
+if missing:
+    raise SystemExit("Missing Python modules after install: " + ", ".join(missing))
+print("  + Dependencies installed and import-verified")
+PYEOF
 
 # ── Step 3: Ollama model ─────────────────────────────────────────────────────
 # Default: qwen2.5:3b downloaded from HuggingFace (avoids ollama registry which
@@ -198,11 +225,12 @@ fi
 # ── Step 6: Claude Code hooks ─────────────────────────────────────────────────
 echo ""
 echo "Configuring ~/.claude/settings.json hooks..."
-export INSTALL_DIR
+export INSTALL_DIR PYTHON3_EXEC
 python3 << PYEOF
 import json, os
 SETTINGS_PATH = os.path.expanduser("~/.claude/settings.json")
 INSTALL_DIR = os.environ["INSTALL_DIR"]
+PYTHON3_EXEC = os.environ["PYTHON3_EXEC"]
 if os.path.exists(SETTINGS_PATH):
     with open(SETTINGS_PATH) as f:
         settings = json.load(f)
@@ -217,8 +245,8 @@ def add_hook(event_name, command):
                 return False
     entries.append({"matcher": "", "hooks": [{"type": "command", "command": command}]})
     return True
-save_cmd = f"python3 {INSTALL_DIR}/hooks/save_hook.py"
-wake_cmd = f"python3 {INSTALL_DIR}/hooks/wake_up.py"
+save_cmd = f"{PYTHON3_EXEC} {INSTALL_DIR}/hooks/save_hook.py"
+wake_cmd = f"{PYTHON3_EXEC} {INSTALL_DIR}/hooks/wake_up.py"
 added_stop = add_hook("Stop", save_cmd)
 added_wake = add_hook("UserPromptSubmit", wake_cmd)
 with open(SETTINGS_PATH, "w") as f:
@@ -236,10 +264,12 @@ PYEOF
 # ── Step 7: MCP server ───────────────────────────────────────────────────────
 echo ""
 echo "Configuring ~/.claude/mcp.json..."
+export INSTALL_DIR PYTHON3_EXEC
 python3 << PYEOF
 import json, os
 MCP_PATH = os.path.expanduser("~/.claude/mcp.json")
 INSTALL_DIR = os.environ["INSTALL_DIR"]
+PYTHON3_EXEC = os.environ["PYTHON3_EXEC"]
 if os.path.exists(MCP_PATH):
     with open(MCP_PATH) as f:
         mcp = json.load(f)
@@ -247,10 +277,10 @@ else:
     mcp = {}
 servers = mcp.setdefault("mcpServers", {})
 server_path = f"{INSTALL_DIR}/memory/mcp_server.py"
-if "memory" in servers and servers["memory"].get("args") == [server_path]:
+if "memory" in servers and servers["memory"].get("command") == PYTHON3_EXEC and servers["memory"].get("args") == [server_path]:
     print("  = MCP server 'memory' already registered (no change)")
 else:
-    servers["memory"] = {"command": "python3", "args": [server_path]}
+    servers["memory"] = {"command": PYTHON3_EXEC, "args": [server_path]}
     with open(MCP_PATH, "w") as f:
         json.dump(mcp, f, indent=2)
     print(f"  + Registered MCP server 'memory': {server_path}")
@@ -259,12 +289,6 @@ PYEOF
 # ── Step 8: launchd — background daemon ─────────────────────────────────────
 echo ""
 echo "Installing background daemon (auto-extracts facts, builds insights)..."
-
-# Detect the absolute path to the Python 3 interpreter that the user actually
-# has.  launchd runs services with a minimal PATH (/usr/bin:/bin) that may
-# resolve 'python3' to the macOS system Python 3.9 rather than the user's
-# Homebrew/framework Python.  Using the absolute path avoids that mismatch.
-PYTHON3_EXEC="$(python3 -c 'import sys; print(sys.executable)')"
 
 # Capture the user site-packages path so we can inject it into launchd's env.
 # launchd runs with a minimal environment and doesn't add --user site-packages

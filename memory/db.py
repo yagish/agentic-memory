@@ -4,8 +4,10 @@
 
 import json       # used to convert Python dicts ↔ text for storage
 import math       # used for cosine similarity calculation (sqrt, dot product)
+import re
 import sqlite3    # Python's built-in SQLite driver — no install needed
 import struct     # used to pack float32 arrays into bytes for SQLite blob storage
+from difflib import SequenceMatcher
 from datetime import datetime, timezone, timedelta
 import uuid
 
@@ -1123,6 +1125,144 @@ def list_facts(
         d["tags"] = json.loads(d["tags"] or "[]")
         result.append(d)
     return result
+
+
+def upsert_insight(
+    conn: sqlite3.Connection,
+    insight_type: str,
+    content: str,
+    evidence: list[str] | None,
+    confidence: float | None,
+) -> str:
+    """
+    Insert a newly discovered cross-session insight.
+
+    Insights accumulate over time; this helper always appends a new row and
+    returns its UUID.
+    """
+    insight_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO insights (id, insight_type, content, evidence, confidence, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            insight_id,
+            insight_type,
+            content,
+            json.dumps(evidence or []),
+            confidence,
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    return insight_id
+
+
+def list_insights(
+    conn: sqlite3.Connection,
+    insight_type: str | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """List stored insights, newest first, optionally filtered by type."""
+    if insight_type:
+        rows = conn.execute(
+            """
+            SELECT id, insight_type, content, evidence, confidence, created_at, updated_at
+            FROM insights
+            WHERE insight_type = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (insight_type, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT id, insight_type, content, evidence, confidence, created_at, updated_at
+            FROM insights
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    result = []
+    for row in rows:
+        d = dict(row)
+        d["evidence"] = json.loads(d["evidence"] or "[]")
+        result.append(d)
+    return result
+
+
+def _normalize_question(text: str) -> str:
+    """Lowercase and strip punctuation so repeated prompts compare reliably."""
+    return " ".join(re.findall(r"[a-z0-9]+", (text or "").lower()))
+
+
+def find_direct_answer(
+    conn: sqlite3.Connection,
+    query: str,
+    min_score: float = 0.93,
+    exclude_session_id: str | None = None,
+) -> dict | None:
+    """
+    Return a previously given assistant answer for a near-identical user prompt.
+
+    Scans stored transcripts for adjacent user→assistant turns, normalizes the
+    user prompts, and returns the best match whose similarity passes min_score.
+    """
+    query_norm = _normalize_question(query)
+    if not query_norm:
+        return None
+
+    if exclude_session_id:
+        rows = conn.execute(
+            "SELECT session_id, transcript FROM sessions WHERE session_id != ? ORDER BY updated_at DESC",
+            (exclude_session_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT session_id, transcript FROM sessions ORDER BY updated_at DESC"
+        ).fetchall()
+
+    best: dict | None = None
+    best_score = 0.0
+
+    for row in rows:
+        try:
+            turns = json.loads(row["transcript"] or "[]")
+        except Exception:
+            continue
+
+        for i in range(len(turns) - 1):
+            cur = turns[i] or {}
+            nxt = turns[i + 1] or {}
+            if cur.get("role") != "user" or nxt.get("role") != "assistant":
+                continue
+
+            question = cur.get("content") or ""
+            answer = nxt.get("content") or ""
+            question_norm = _normalize_question(question)
+            if not question_norm or not answer:
+                continue
+
+            score = SequenceMatcher(None, query_norm, question_norm).ratio()
+            if query_norm == question_norm:
+                score = 1.0
+
+            if score >= min_score and score > best_score:
+                best_score = score
+                best = {
+                    "session_id": row["session_id"],
+                    "question": question,
+                    "answer": answer,
+                    "similarity": round(score, 4),
+                }
+
+    return best
 
 
 # ---------------------------------------------------------------------------

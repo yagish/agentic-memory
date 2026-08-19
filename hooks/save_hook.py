@@ -32,6 +32,7 @@ from memory.db import (
     delete_chunks_for_session,
 )
 from memory.logger import activity_log, error_log
+from memory.debug import enable_debug
 
 
 # Where the memory database lives on disk.
@@ -262,6 +263,7 @@ def main() -> None:
     dry_run = "--dry-run" in sys.argv
 
     _setup_logging()
+    enable_debug("save_hook")
 
     try:
         # Read the hook payload from stdin.

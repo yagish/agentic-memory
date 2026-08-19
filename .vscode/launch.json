@@ -1,0 +1,75 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Attach: daemon (:5678)",
+      "type": "python",
+      "request": "attach",
+      "connect": {
+        "host": "127.0.0.1",
+        "port": 5678
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "Attach: ingest (:5679)",
+      "type": "python",
+      "request": "attach",
+      "connect": {
+        "host": "127.0.0.1",
+        "port": 5679
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "Attach: query/dashboard (:5680)",
+      "type": "python",
+      "request": "attach",
+      "connect": {
+        "host": "127.0.0.1",
+        "port": 5680
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "Attach: MCP (:5681)",
+      "type": "python",
+      "request": "attach",
+      "connect": {
+        "host": "127.0.0.1",
+        "port": 5681
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "Attach: save_hook (:5682)",
+      "type": "python",
+      "request": "attach",
+      "connect": {
+        "host": "127.0.0.1",
+        "port": 5682
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "Attach: wake_up (:5683)",
+      "type": "python",
+      "request": "attach",
+      "connect": {
+        "host": "127.0.0.1",
+        "port": 5683
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "Attach: cli (:5684)",
+      "type": "python",
+      "request": "attach",
+      "connect": {
+        "host": "127.0.0.1",
+        "port": 5684
+      },
+      "justMyCode": false
+    }
+  ]
+}

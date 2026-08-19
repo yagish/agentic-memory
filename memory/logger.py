@@ -30,6 +30,11 @@ def _ensure_dir() -> None:
     os.makedirs(_MEMORY_DIR, exist_ok=True)
 
 
+def _prefix(component: str, level: str, detail: str = "") -> str:
+    """Build a consistent structured log prefix for one line."""
+    return f"{_now()}  [{component:<10}]  {level:<5}  {detail}"
+
+
 def activity_log(component: str, action: str, **kwargs) -> None:
     """
     Append one structured line to ~/.memory/activity.log.
@@ -95,18 +100,17 @@ def error_log(component: str, message: str, exc: BaseException | None = None) ->
     try:
         _ensure_dir()
 
-        # Header line — mirrors the activity_log format so both files are easy to grep.
-        line = f"{_now()}  [{component:<10}]  ERROR  {message}\n"
+        # Prefix every line, including traceback lines, so timestamps are preserved
+        # in the dashboard and when tailing the log file.
+        parts = [_prefix(component, "ERROR", message).rstrip()]
 
         if exc is not None:
-            # format_exc() returns the full traceback of the CURRENT exception.
-            # We indent each line by 4 spaces so it reads as a continuation.
             traceback_text = tb_module.format_exc()
-            indented = "".join("    " + l for l in traceback_text.splitlines(keepends=True))
-            line += indented
+            for tb_line in traceback_text.splitlines():
+                parts.append(_prefix(component, "ERROR", f"| {tb_line}").rstrip())
 
         with open(ERROR_LOG, "a") as f:
-            f.write(line)
+            f.write("\n".join(parts) + "\n")
 
     except Exception:
         pass

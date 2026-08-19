@@ -12,6 +12,7 @@
 #   python3 memory/ingest_server.py          # listens on localhost:7747
 #   MEMORY_INGEST_PORT=8080 python3 ...      # custom port
 
+import copy
 import json       # JSON serialisation/deserialisation
 import os         # file paths, environment variables
 import sqlite3    # graceful FTS error handling in /recall
@@ -21,10 +22,24 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from datetime import datetime, timezone
 
+
+def _timestamped_excepthook(exc_type, exc, tb) -> None:
+    """Write uncaught startup/runtime exceptions with timestamps to stderr."""
+    import traceback
+
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for line in traceback.format_exception(exc_type, exc, tb):
+        for part in line.rstrip("\n").splitlines():
+            sys.stderr.write(f"{stamp} ERROR ingest {part}\n")
+
+
+sys.excepthook = _timestamped_excepthook
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 import uvicorn
+from uvicorn.config import LOGGING_CONFIG as UVICORN_LOGGING_CONFIG
 
 from memory.db import (
     init_db,
@@ -41,6 +56,7 @@ from memory.db import (
     log_retrieval,
 )
 from memory.logger import activity_log, error_log
+from memory.debug import enable_debug
 
 # ── Config ────────────────────────────────────────────────────────────────────
 DB_PATH       = os.path.expanduser("~/.memory/memory.db")
@@ -52,6 +68,14 @@ CHUNK_SEARCH_LIMIT   = 5
 FACT_SEARCH_LIMIT    = 5
 
 PORT = int(os.environ.get("MEMORY_INGEST_PORT", "7747"))
+
+_UVICORN_LOG_CONFIG = copy.deepcopy(UVICORN_LOGGING_CONFIG)
+_UVICORN_LOG_CONFIG["formatters"]["default"]["fmt"] = "%(asctime)s %(levelprefix)s %(message)s"
+_UVICORN_LOG_CONFIG["formatters"]["default"]["datefmt"] = "%Y-%m-%dT%H:%M:%S"
+_UVICORN_LOG_CONFIG["formatters"]["access"]["fmt"] = (
+    "%(asctime)s %(levelprefix)s %(client_addr)s - \"%(request_line)s\" %(status_code)s"
+)
+_UVICORN_LOG_CONFIG["formatters"]["access"]["datefmt"] = "%Y-%m-%dT%H:%M:%S"
 
 app = FastAPI(title="Memory Ingest Server", version="1.0.0")
 
@@ -404,9 +428,10 @@ if __name__ == "__main__":
     import logging
     import setproctitle
     setproctitle.setproctitle("AgenticMemoryIngest")
+    enable_debug("ingest")
     logging.basicConfig(
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
         level=logging.INFO,
     )
-    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="info")
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="info", log_config=_UVICORN_LOG_CONFIG)

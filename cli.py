@@ -22,6 +22,7 @@ import re
 
 from memory.db import init_db, search, semantic_search, insert_fact, delete_fact
 from memory.consolidation import consolidate_old_sessions, prune_old_transcripts
+from memory.debug import enable_debug
 
 
 # Where the database lives — must match the hook and MCP server.
@@ -768,6 +769,7 @@ def cmd_sync_identity(_args):
 # ---------------------------------------------------------------------------
 
 def main():
+    enable_debug("cli")
     # argparse builds a command-line interface from the definitions below.
     # Each subcommand (status, search, etc.) becomes a separate parser.
     parser = argparse.ArgumentParser(

@@ -51,6 +51,7 @@ from memory.db import (
     embed,
 )
 from memory.logger import activity_log, error_log
+from memory.debug import enable_debug
 
 
 # ---------------------------------------------------------------------------
@@ -681,6 +682,7 @@ def run(once: bool = False) -> None:
 if __name__ == "__main__":
     import setproctitle
     setproctitle.setproctitle("AgenticMemoryDaemon")
+    enable_debug("daemon")
     import argparse
 
     parser = argparse.ArgumentParser(

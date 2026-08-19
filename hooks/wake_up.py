@@ -41,6 +41,7 @@ from memory.db import (
     log_retrieval,
 )
 from memory.logger import activity_log, error_log
+from memory.debug import enable_debug
 
 DB_PATH  = os.path.expanduser("~/.memory/memory.db")
 LOG_PATH = os.path.expanduser("~/.memory/wake_up.log")
@@ -192,6 +193,7 @@ def _build_injection(
 
 
 def main() -> None:
+    enable_debug("wake_up")
     try:
         payload    = json.load(sys.stdin)
         raw_sid    = payload.get("session_id", "unknown")

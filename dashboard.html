@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Memory Dashboard</title>
+<title>Agentic Memory Dashboard</title>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -195,7 +195,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
 
 <!-- ── Sidebar ───────────────────────────────────────────── -->
 <aside id="sidebar">
-  <div class="sidebar-title">Memory <small>dashboard</small></div>
+  <div class="sidebar-title">Agentic Memory <small>Dashboard</small></div>
 
   <div class="sidebar-section">Services</div>
 
@@ -203,7 +203,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
     <span class="svc-dot" id="dot-query"></span>
     <div class="svc-body">
       <div class="svc-name">Query Server <span class="svc-port">:7748</span></div>
-      <div class="svc-desc">Read-only dashboard &amp; queries</div>
+      <div class="svc-desc">Agentic Memory Dashboard &amp; queries</div>
     </div>
     <button class="svc-restart" id="rbtn-query" title="Restart query server"
             onclick="event.stopPropagation();restartService('query')">&#8635;</button>
@@ -244,6 +244,48 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
             onclick="event.stopPropagation();restartService('ollama')">&#8635;</button>
   </div>
 
+  <div class="sidebar-section">Logs</div>
+
+  <div class="svc-item" id="svc-activity" onclick="selectService('activity')">
+    <span class="svc-dot" id="dot-activity"></span>
+    <div class="svc-body">
+      <div class="svc-name">Activity Log</div>
+      <div class="svc-desc">Structured operations across the memory system</div>
+    </div>
+  </div>
+
+  <div class="svc-item" id="svc-error" onclick="selectService('error')">
+    <span class="svc-dot" id="dot-error"></span>
+    <div class="svc-body">
+      <div class="svc-name">Error Log</div>
+      <div class="svc-desc">Structured errors across components</div>
+    </div>
+  </div>
+
+  <div class="svc-item" id="svc-wake_up" onclick="selectService('wake_up')">
+    <span class="svc-dot" id="dot-wake_up"></span>
+    <div class="svc-body">
+      <div class="svc-name">Wake Up Hook</div>
+      <div class="svc-desc">Prompt injection hook log</div>
+    </div>
+  </div>
+
+  <div class="svc-item" id="svc-save_hook" onclick="selectService('save_hook')">
+    <span class="svc-dot" id="dot-save_hook"></span>
+    <div class="svc-body">
+      <div class="svc-name">Save Hook</div>
+      <div class="svc-desc">Session save hook log</div>
+    </div>
+  </div>
+
+  <div class="svc-item" id="svc-debug" onclick="selectService('debug')">
+    <span class="svc-dot" id="dot-debug"></span>
+    <div class="svc-body">
+      <div class="svc-name">Debug Log</div>
+      <div class="svc-desc">Optional debugger attach log</div>
+    </div>
+  </div>
+
   <div class="sidebar-footer">
     <button class="restart-all-btn" id="restart-all-btn" onclick="restartAll()">Restart All Services</button>
     <div class="sidebar-note" id="sidebar-note">Refreshing every 30s</div>
@@ -268,12 +310,12 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
     <span class="tab-updated" id="tab-updated"></span>
   </nav>
 
-  <!-- Log viewer (replaces panels when a service is selected) -->
+  <!-- Log viewer (replaces panels when a service or log is selected) -->
   <div id="log-view" hidden>
     <div class="log-header">
       <button class="log-back" onclick="exitLogView()">&#8592; Back</button>
       <span class="log-svc-name" id="log-svc-name"></span>
-      <span class="log-meta">Last 200 lines &middot; refreshing every 3s</span>
+      <span class="log-meta" id="log-meta">Last 200 lines &middot; refreshing every 3s</span>
     </div>
     <div id="log-content"></div>
   </div>
@@ -468,10 +510,15 @@ async function loadServices() {
     setDot('query',  true);  // always up — we received this response
     setDot('daemon', d.daemon?.running);
     setDot('ollama', d.ollama?.running);
-    setDot('ingest', null);  // ingest running not yet in /services response
+    setDot('ingest', d.ingest_server?.running);
 
     const m = document.getElementById('ollama-desc');
     if (m) m.textContent = d.ollama?.model ? d.ollama.model : 'Local LLM runtime';
+
+    const appLogs = d.logs?.app || [];
+    appLogs.forEach(log => {
+      setDot(log.name, !!log.exists);
+    });
 
     const mem = d.memory || {};
     set('t-sessions',   fmt(mem.total_sessions));
@@ -531,6 +578,7 @@ function selectService(svc) {
   document.getElementById('tab-bar').hidden  = true;
   document.getElementById('log-view').hidden = false;
   set('log-svc-name', svcLabel(svc));
+  set('log-meta', 'Last 200 lines · refreshing every 3s');
   fetchLogs();
   _logTimer = setInterval(fetchLogs, 3000);
 }
@@ -555,18 +603,27 @@ async function fetchLogs() {
   if (!_activeLog) return;
   const el = document.getElementById('log-content');
 
-  if (_activeLog === 'ollama') {
-    el.innerHTML = '<div class="ll-empty">Ollama does not write to ~/.memory/. Check the Ollama app or system logs.</div>';
-    stopLogPoll();
-    return;
-  }
-
   try {
     const r = await fetch(`${BASE}/logs/${_activeLog}?lines=200`);
-    if (!r.ok) { el.innerHTML = '<div class="ll-empty">Could not fetch log.</div>'; return; }
+    if (!r.ok) {
+      el.innerHTML = '<div class="ll-empty">Could not fetch log.</div>';
+      set('log-meta', 'Last 200 lines · refreshing every 3s');
+      return;
+    }
     const d = await r.json();
-    if (!d.exists || !d.lines.length) {
-      el.innerHTML = '<div class="ll-empty">No log entries yet.</div>';
+    const meta = d.path
+      ? `Last 200 lines · refreshing every 3s · ${d.path}`
+      : 'Last 200 lines · refreshing every 3s';
+    set('log-meta', meta);
+    if (!d.exists) {
+      const searched = (d.candidates || []).length
+        ? `<div class="ll-empty">No log file found yet.<br>Searched: ${esc(d.candidates.join(' · '))}</div>`
+        : '<div class="ll-empty">No log file found yet.</div>';
+      el.innerHTML = searched;
+      return;
+    }
+    if (!d.lines.length) {
+      el.innerHTML = '<div class="ll-empty">Log file exists but has no entries yet.</div>';
       return;
     }
     el.innerHTML = d.lines.map(line => {
@@ -975,7 +1032,17 @@ function fmtDate(iso) {
   } catch (_) { return iso.slice(0, 16); }
 }
 function svcLabel(s) {
-  return { query:'Query Server', daemon:'Daemon', ingest:'Ingest Server', ollama:'Ollama' }[s] || s;
+  return {
+    query:'Query Server',
+    daemon:'Daemon',
+    ingest:'Ingest Server',
+    ollama:'Ollama',
+    activity:'Activity Log',
+    error:'Error Log',
+    wake_up:'Wake Up Hook',
+    save_hook:'Save Hook',
+    debug:'Debug Log',
+  }[s] || s;
 }
 </script>
 </body>

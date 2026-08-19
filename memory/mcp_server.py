@@ -20,6 +20,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from memory.logger import activity_log, error_log
+from memory.debug import enable_debug
 
 from memory.db import (
     init_db,
@@ -509,6 +510,7 @@ def memory_list_clusters() -> list:
 if __name__ == "__main__":
     import setproctitle
     setproctitle.setproctitle("AgenticMemoryMCP")
+    enable_debug("mcp")
     # mcp.run() starts the server and listens on stdin/stdout using the MCP
     # stdio transport. Claude Code launches this process and communicates
     # with it over those streams — no network port needed.

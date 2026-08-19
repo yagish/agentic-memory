@@ -193,6 +193,50 @@ python3 memory/daemon.py &
 python3 cli.py sync-identity
 ```
 
+## Remote debugging
+
+All entry scripts support env-gated `debugpy` attach via `memory/debug.py`.
+
+Per-script environment variables:
+
+- `MEMORY_DEBUG_DAEMON_PORT`
+- `MEMORY_DEBUG_INGEST_PORT`
+- `MEMORY_DEBUG_QUERY_PORT`
+- `MEMORY_DEBUG_MCP_PORT`
+- `MEMORY_DEBUG_SAVE_HOOK_PORT`
+- `MEMORY_DEBUG_WAKE_UP_PORT`
+- `MEMORY_DEBUG_CLI_PORT`
+
+Optional globals:
+
+- `MEMORY_DEBUG_HOST` — defaults to `127.0.0.1`
+- `MEMORY_DEBUG_WAIT=1` — wait for debugger attach before continuing
+
+Examples:
+
+```bash
+# Long-running service: stop launchd copy, then run under the normal script entrypoint
+./scripts/stop-memory.sh daemon
+MEMORY_DEBUG_DAEMON_PORT=5678 MEMORY_DEBUG_WAIT=1 python3 memory/daemon.py
+
+# Or use the helper start script. If a debug port is set, it bypasses launchctl
+# and launches the service directly so the env vars are preserved.
+./scripts/stop-memory.sh ingest
+MEMORY_DEBUG_INGEST_PORT=5679 MEMORY_DEBUG_WAIT=1 ./scripts/start-memory.sh ingest
+
+# Hooks are short-lived, so replay them manually instead of blocking Claude Code.
+MEMORY_DEBUG_SAVE_HOOK_PORT=5682 python3 hooks/save_hook.py --dry-run < sample-save-payload.json
+MEMORY_DEBUG_WAKE_UP_PORT=5683 python3 hooks/wake_up.py < sample-wake-payload.json
+```
+
+For remote machines, keep the debug listener bound to `127.0.0.1` and tunnel it:
+
+```bash
+ssh -L 5678:127.0.0.1:5678 your-host
+```
+
+The debugger writes attach events to `~/.memory/debug.log`.
+
 ### Model download
 
 On first run, `save_hook.py` downloads the embedding model (~90 MB):

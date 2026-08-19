@@ -70,6 +70,21 @@ service_name() {
   esac
 }
 
+service_debug_prefix() {
+  case "$1" in
+    daemon) echo "MEMORY_DEBUG_DAEMON" ;;
+    ingest) echo "MEMORY_DEBUG_INGEST" ;;
+    query)  echo "MEMORY_DEBUG_QUERY" ;;
+  esac
+}
+
+service_debug_port() {
+  local prefix var_name
+  prefix="$(service_debug_prefix "$1")"
+  var_name="${prefix}_PORT"
+  echo "${!var_name:-}"
+}
+
 launchd_available() {
   command -v launchctl >/dev/null 2>&1
 }
@@ -112,7 +127,15 @@ start_service() {
   local svc="$1"
   validate_service "$svc"
 
-  if launchd_available && has_launchd_plist "$svc"; then
+  local debug_port
+  debug_port="$(service_debug_port "$svc")"
+
+  if [[ -n "$debug_port" ]] && launchd_available && has_launchd_plist "$svc" && launchd_loaded "$svc"; then
+    echo "Cannot start $(service_name "$svc") in debug mode: launchctl job is already loaded. Stop it first: ./scripts/stop-memory.sh $svc" >&2
+    return 1
+  fi
+
+  if [[ -z "$debug_port" ]] && launchd_available && has_launchd_plist "$svc"; then
     local plist label
     plist="$(service_plist "$svc")"
     label="$(service_label "$svc")"
@@ -143,6 +166,10 @@ start_service() {
 
   log="$(service_log "$svc")"
   script="$(service_script "$svc")"
+
+  if [[ -n "$debug_port" ]]; then
+    echo "Starting $(service_name "$svc") in debug mode on ${debug_port} (direct python launch)"
+  fi
 
   cd "$ROOT_DIR"
   nohup python3 "$script" >> "$log" 2>&1 &

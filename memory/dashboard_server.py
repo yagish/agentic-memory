@@ -33,6 +33,7 @@ from fastapi.responses import HTMLResponse
 import uvicorn
 
 from memory.db import init_db
+from memory.debug import enable_debug
 
 # ── Config ────────────────────────────────────────────────────────────────────
 DB_PATH      = os.path.expanduser("~/.memory/memory.db")
@@ -40,12 +41,69 @@ DAEMON_LOG   = os.path.expanduser("~/.memory/daemon.log")
 PORT         = int(os.environ.get("MEMORY_QUERY_PORT", "7748"))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Log files written by launchd (StandardOutPath in each plist).
-_LOG_FILES: dict[str, str] = {
-    "daemon": os.path.expanduser("~/.memory/daemon.log"),
-    "query":  os.path.expanduser("~/.memory/query.log"),
-    "ingest": os.path.expanduser("~/.memory/ingest.log"),
-    "ollama": "/opt/homebrew/var/log/ollama.log",
+# Dashboard-log sources. Some have multiple candidate paths depending on install style.
+_LOG_SOURCES: dict[str, dict[str, object]] = {
+    "query": {
+        "label": "Query Server",
+        "description": "Dashboard + query API stdout/stderr",
+        "kind": "service",
+        "paths": [os.path.expanduser("~/.memory/query.log")],
+    },
+    "daemon": {
+        "label": "Daemon",
+        "description": "Background consolidation stdout/stderr",
+        "kind": "service",
+        "paths": [os.path.expanduser("~/.memory/daemon.log")],
+    },
+    "ingest": {
+        "label": "Ingest Server",
+        "description": "Write API stdout/stderr",
+        "kind": "service",
+        "paths": [os.path.expanduser("~/.memory/ingest.log")],
+    },
+    "ollama": {
+        "label": "Ollama",
+        "description": "Local LLM runtime logs",
+        "kind": "service",
+        "paths": [
+            os.environ.get("OLLAMA_LOG_PATH", ""),
+            "/opt/homebrew/var/log/ollama.log",
+            "/usr/local/var/log/ollama.log",
+            os.path.expanduser("~/Library/Logs/Ollama/server.log"),
+            os.path.expanduser("~/Library/Logs/Ollama/ollama.log"),
+            os.path.expanduser("~/.ollama/logs/server.log"),
+        ],
+    },
+    "activity": {
+        "label": "Activity Log",
+        "description": "Structured memory operations across the app",
+        "kind": "app_log",
+        "paths": [os.path.expanduser("~/.memory/activity.log")],
+    },
+    "error": {
+        "label": "Error Log",
+        "description": "Structured errors across all components",
+        "kind": "app_log",
+        "paths": [os.path.expanduser("~/.memory/error.log")],
+    },
+    "wake_up": {
+        "label": "Wake Up Hook",
+        "description": "Prompt-injection hook log",
+        "kind": "app_log",
+        "paths": [os.path.expanduser("~/.memory/wake_up.log")],
+    },
+    "save_hook": {
+        "label": "Save Hook",
+        "description": "Session-save hook log",
+        "kind": "app_log",
+        "paths": [os.path.expanduser("~/.memory/save_hook.log")],
+    },
+    "debug": {
+        "label": "Debug Log",
+        "description": "Optional debugger attach log",
+        "kind": "app_log",
+        "paths": [os.path.expanduser("~/.memory/debug.log")],
+    },
 }
 
 # launchd service labels for launchctl kickstart.
@@ -72,6 +130,42 @@ def _check_ollama() -> tuple[bool, str | None]:
     return False, None
 
 
+def _resolve_log_path(name: str) -> str | None:
+    """Return the first existing log path for a configured source, if any."""
+    cfg = _LOG_SOURCES.get(name) or {}
+    for candidate in cfg.get("paths", []):
+        if candidate and os.path.exists(str(candidate)):
+            return str(candidate)
+    return None
+
+
+def _describe_log_source(name: str) -> dict:
+    """Metadata for a log source, including resolved file path if present."""
+    cfg = _LOG_SOURCES[name]
+    resolved = _resolve_log_path(name)
+    candidates = [str(p) for p in cfg.get("paths", []) if p]
+    path = resolved or (candidates[0] if candidates else None)
+    exists = bool(resolved)
+    size_bytes = os.path.getsize(resolved) if resolved and os.path.exists(resolved) else 0
+    return {
+        "name": name,
+        "label": cfg["label"],
+        "description": cfg["description"],
+        "kind": cfg["kind"],
+        "path": path,
+        "exists": exists,
+        "size_bytes": size_bytes,
+        "candidates": candidates,
+    }
+
+
+def _list_logs(kind: str | None = None) -> list[dict]:
+    logs = [_describe_log_source(name) for name in _LOG_SOURCES]
+    if kind is not None:
+        logs = [log for log in logs if log["kind"] == kind]
+    return logs
+
+
 def _parse_daemon_log() -> tuple[str | None, int]:
     """Scan daemon.log for last fact-extraction timestamp and running total."""
     last_run_iso, facts_total = None, 0
@@ -90,11 +184,11 @@ def _parse_daemon_log() -> tuple[str | None, int]:
     return last_run_iso, facts_total
 
 
-def _check_daemon() -> tuple[bool, int | None]:
-    """Ask launchctl if com.memory.daemon is running. Returns (running, pid)."""
+def _check_launchd_service(label: str) -> tuple[bool, int | None]:
+    """Ask launchctl if a launchd service is running. Returns (running, pid)."""
     try:
         result = subprocess.run(
-            ["launchctl", "list", "com.memory.daemon"],
+            ["launchctl", "list", label],
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
@@ -104,6 +198,11 @@ def _check_daemon() -> tuple[bool, int | None]:
     except Exception:
         pass
     return False, None
+
+
+def _check_daemon() -> tuple[bool, int | None]:
+    """Ask launchctl if com.memory.daemon is running. Returns (running, pid)."""
+    return _check_launchd_service("com.memory.daemon")
 
 
 # ── UI router — dashboard HTML + service stats ────────────────────────────────
@@ -127,6 +226,7 @@ def dashboard() -> HTMLResponse:
 def get_services() -> dict:
     """Full snapshot of all running services and memory stats for the dashboard."""
     daemon_running, _ = _check_daemon()
+    ingest_running, _ = _check_launchd_service("com.memory.ingest")
     last_run_iso, facts_extracted_total = _parse_daemon_log()
     ollama_running, ollama_model = _check_ollama()
 
@@ -173,9 +273,13 @@ def get_services() -> dict:
 
     return {
         "dashboard_server": {"running": True, "port": PORT},
-        "ingest_server":    {"port": 7747},
+        "ingest_server":    {"running": ingest_running, "port": 7747},
         "daemon":  {"running": daemon_running, "last_run": last_run_iso, "facts_extracted": facts_extracted_total},
         "ollama":  {"running": ollama_running, "model": ollama_model},
+        "logs": {
+            "services": _list_logs("service"),
+            "app": _list_logs("app_log"),
+        },
         "memory":  {
             "total_sessions": total_sessions,
             "total_facts": total_facts,
@@ -480,16 +584,29 @@ ops_router = APIRouter()
 
 @ops_router.get("/logs/{service}")
 def get_logs(service: str, lines: int = 200) -> dict:
-    """Return the last N lines of a service log file."""
-    if service not in _LOG_FILES:
+    """Return the last N lines of a dashboard-visible log source."""
+    if service not in _LOG_SOURCES:
         raise HTTPException(status_code=404, detail=f"Unknown service: {service}")
-    path = _LOG_FILES[service]
-    if not os.path.exists(path):
-        return {"lines": [], "service": service, "exists": False}
+    meta = _describe_log_source(service)
+    path = meta["path"]
+    if not meta["exists"] or not path:
+        return {
+            "lines": [],
+            "service": service,
+            "exists": False,
+            "path": path,
+            "candidates": meta["candidates"],
+        }
     try:
         result = subprocess.run(["tail", f"-{lines}", path],
                                 capture_output=True, text=True, timeout=5)
-        return {"lines": result.stdout.splitlines(), "service": service, "exists": True}
+        return {
+            "lines": result.stdout.splitlines(),
+            "service": service,
+            "exists": True,
+            "path": path,
+            "candidates": meta["candidates"],
+        }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -558,7 +675,7 @@ def post_compress() -> dict:
 
 # ── App assembly ──────────────────────────────────────────────────────────────
 
-app = FastAPI(title="Memory Dashboard Server", version="1.0.0")
+app = FastAPI(title="Agentic Memory Dashboard", version="1.0.0")
 app.include_router(ui_router)
 app.include_router(memory_router)
 app.include_router(ops_router)
@@ -567,6 +684,7 @@ if __name__ == "__main__":
     import logging
     import setproctitle
     setproctitle.setproctitle("AgenticMemoryDashboard")
+    enable_debug("query")
     logging.basicConfig(
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
