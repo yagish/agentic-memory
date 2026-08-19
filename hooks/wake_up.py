@@ -1,38 +1,64 @@
 # wake_up.py — Claude Code UserPromptSubmit hook.
 #
-# Runs before EVERY user prompt. Injects two things:
+# Runs before every user prompt. Injects memory context from relevant layers,
+# within a hard 500-token budget.
 #
-#   L0 — Identity: the user's profile from ~/.memory/identity.md
-#   L2 — Facts: stored facts/preferences semantically relevant to THIS prompt
+# Injection layers (priority order):
+#   1. Cache hit  — compacted session ≥ 96% similar to this prompt
+#   2. Working memory — rolling task context (first message of session only)
+#   3. Enrichment   — compacted sessions 70–95% similar
+#   4. Facts         — FTS5 search over facts table (identity surfaces here)
+#   5. Procedural    — how-to patterns (only when prompt has how-to markers)
 #
-# Session history (L1) is intentionally excluded — it would repeat the same
-# sessions on every message, bloating the context. Claude already has the
-# current conversation in its context window.
+# Gates that skip ALL injection:
+#   - DB not found
+#   - Embed fails (returns error to avoid blocking the user)
 #
-# Insights (L3) are injected once per session only (on the first message),
-# so Claude has cross-session patterns without repeating them every turn.
+# Short/trivial prompts (yes, ok, continue) are NOT gated — they simply find
+# nothing in the DB and produce no injection, so zero extra LLM tokens are spent.
 #
 # Output protocol (JSON to stdout):
 #   {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "userPromptSuffix": "..."}}
-#   {}  → do nothing (no relevant memory found, or error)
+#   {}  → do nothing
 
 import json
 import os
 import re
-import sqlite3
 import sys
 import traceback
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from memory.db import init_db, search_facts, list_insights, log_retrieval, find_direct_answer
+from memory.db import (
+    init_db,
+    embed,
+    search_compacted_sessions,
+    increment_compacted_hit,
+    get_active_working_memory,
+    search_facts,
+    search_procedural,
+    log_retrieval,
+)
 from memory.logger import activity_log, error_log
 
-DB_PATH       = os.path.expanduser("~/.memory/memory.db")
-IDENTITY_PATH = os.path.expanduser("~/.memory/identity.md")
-LOG_PATH      = os.path.expanduser("~/.memory/wake_up.log")
-FACT_SEARCH_LIMIT = 5
+DB_PATH  = os.path.expanduser("~/.memory/memory.db")
+LOG_PATH = os.path.expanduser("~/.memory/wake_up.log")
+
+# Semantic thresholds for compacted-session retrieval.
+SEMANTIC_CACHE_THRESHOLD = 0.96   # full cache-hit injection
+ENRICHMENT_THRESHOLD     = 0.70   # context enrichment injection
+WORKING_MEM_THRESHOLD    = 0.50   # loose match for working memory lookup
+
+# How-to markers — enable procedural memory injection when present.
+HOW_TO_MARKERS = {
+    "how", "steps", "step by", "best way", "should i",
+    "approach", "workflow", "procedure", "guide", "tutorial",
+}
+
+# 500-token hard budget (estimated as chars / 4).
+TOKEN_BUDGET = 500
+CHARS_BUDGET = TOKEN_BUDGET * 4
 
 
 def _log_error(msg: str) -> None:
@@ -49,96 +75,112 @@ def _allow() -> None:
     sys.exit(0)
 
 
-def _read_identity() -> str:
-    try:
-        with open(IDENTITY_PATH) as f:
-            return f.read().strip()
-    except FileNotFoundError:
-        return ""
+def _is_how_to(prompt: str) -> bool:
+    lowered = prompt.lower()
+    return any(marker in lowered for marker in HOW_TO_MARKERS)
 
 
-def _fetch_relevant_facts(conn: sqlite3.Connection, prompt: str) -> list[dict]:
-    """FTS5 search for facts relevant to the current prompt."""
-    try:
-        return search_facts(conn, prompt, limit=FACT_SEARCH_LIMIT)
-    except Exception:
-        return []
+def _first_message_flag(session_id: str) -> str:
+    return f"/tmp/memory_first_msg_{session_id}"
+
+
+def _is_first_message(session_id: str) -> bool:
+    flag = _first_message_flag(session_id)
+    if not os.path.exists(flag):
+        try:
+            with open(flag, "w") as f:
+                f.write("1")
+        except Exception:
+            pass
+        return True
+    return False
 
 
 def _build_injection(
-    identity: str,
-    facts: list[dict],
-    insights: list[dict] | None,
-    cached_answer: dict | None = None,
+    cache_hit:   dict | None,
+    working_mem: dict | None,
+    enrichment:  list[dict],
+    facts:       list[dict],
+    procedural:  list[dict],
 ) -> str:
-    lines = ["=== MEMORY ===", ""]
+    """Assemble the memory block, enforcing the char budget."""
+    sections: list[str] = []
+    chars_used = 0
 
-    # Identity always comes first — it is the authoritative ground truth.
-    if identity:
-        lines.append("[Identity & Preferences — always authoritative]")
-        lines.append(identity)
-        lines.append("")
+    def _add(block: str) -> bool:
+        nonlocal chars_used
+        if chars_used + len(block) > CHARS_BUDGET:
+            return False
+        sections.append(block)
+        chars_used += len(block)
+        return True
 
-    # Cached answer comes after identity so it cannot override it.
-    if cached_answer:
-        similarity = cached_answer.get("similarity", 0)
-        lines.append(f"[Cached Answer — {similarity:.0%} match to this prompt]")
-        lines.append(f"Q: {cached_answer.get('question','')}")
-        lines.append(f"A: {cached_answer.get('answer','')}")
-        lines.append(
-            "(Use this answer if it is consistent with the Identity section above. "
-            "If it contradicts Identity — e.g. wrong name, wrong role — ignore it "
-            "and use the Identity section instead.)"
+    # 1. Cache hit — highest priority.
+    if cache_hit:
+        sim = cache_hit.get("similarity", 0)
+        content = cache_hit.get("content", "")
+        block = (
+            f"[Cached Session — {sim:.0%} match]\n"
+            f"{content}\n\n"
+            "[System] A cached session summary closely matches this prompt. "
+            "Respond from this memory, prefix your answer with [From Memory].\n"
         )
-        lines.append("")
+        _add(block)
 
+    # 2. Working memory — task context for this session start.
+    if working_mem:
+        block = (
+            "[Working Memory — current task context]\n"
+            f"{working_mem['summary']}\n"
+        )
+        _add(block)
+
+    # 3. Enrichment context (70–95% similarity).
+    if enrichment:
+        lines = ["[Relevant Past Work]"]
+        for cs in enrichment:
+            sim = cs.get("similarity", 0)
+            lines.append(f"({sim:.0%} match)")
+            lines.append(cs.get("content", ""))
+        block = "\n".join(lines) + "\n"
+        _add(block)
+
+    # 4. Relevant facts (identity surfaces here when the prompt asks about the user).
     if facts:
-        lines.append("[Relevant Facts about You]")
+        lines = ["[Relevant Facts]"]
         for f in facts:
-            content = f.get("content", "")
-            tags    = f.get("tags", [])
-            line    = f"• {content}"
-            if tags:
-                line += f" [tags: {', '.join(tags)}]"
-            lines.append(line)
-        lines.append("")
+            lines.append(f"• {f.get('content', '')}")
+        block = "\n".join(lines) + "\n"
+        _add(block)
 
-    if insights:
-        lines.append("[Learned Patterns]")
-        for ins in insights:
-            confidence = ins.get("confidence", 0.0)
-            lines.append(
-                f"• {ins.get('content','')} "
-                f"({ins.get('insight_type','pattern')}, {confidence:.0%})"
-            )
-        lines.append("")
+    # 5. Procedural memory.
+    if procedural:
+        lines = ["[How-To Patterns]"]
+        for p in procedural:
+            lines.append(f"**{p.get('title', '')}**")
+            lines.append(p.get("steps", ""))
+        block = "\n".join(lines) + "\n"
+        _add(block)
 
-    lines.append("[System]")
-    if cached_answer:
-        lines.append(
-            "A cached answer was found for this prompt. If it is consistent with "
-            "the Identity section, begin your response with `[From Memory]` on its "
-            "own line, then give the answer. If it conflicts with Identity, discard "
-            "the cached answer and answer from Identity instead (no [From Memory] prefix)."
-        )
-    lines.append(
-        "If you learn a new personal fact about the user (name, role, tech stack, "
-        "preferences, working style), update ~/.memory/identity.md silently."
-    )
-    lines.append("")
-    lines.append("=== END MEMORY ===")
-    return "\n".join(lines)
+    if not sections:
+        return ""
+
+    return "=== MEMORY ===\n\n" + "\n".join(sections) + "\n=== END MEMORY ==="
 
 
 def main() -> None:
     try:
         payload    = json.load(sys.stdin)
         raw_sid    = payload.get("session_id", "unknown")
-        # Sanitize session_id before use in any file path to prevent path traversal.
+        # Sanitize session_id before use in file paths to prevent path traversal.
         session_id = re.sub(r"[^a-zA-Z0-9_-]", "_", raw_sid)
         prompt     = payload.get("prompt", "").strip()
-    except Exception as e:
-        _log_error(f"failed to parse stdin: {e}")
+    except Exception as exc:
+        _log_error(f"failed to parse stdin: {exc}")
+        _allow()
+
+    # Gate 1: no prompt, no injection.
+    if not prompt:
         _allow()
 
     if not os.path.exists(DB_PATH):
@@ -150,53 +192,83 @@ def main() -> None:
         _log_error(f"failed to open DB: {traceback.format_exc()}")
         _allow()
 
-    identity = _read_identity()
-    facts: list[dict] = []
-    insights: list[dict] | None = None
-
-    # Check for a cached answer to this exact prompt (semantic similarity ≥ 0.93).
-    cached_answer: dict | None = None
-    if prompt:
-        try:
-            cached_answer = find_direct_answer(conn, prompt, min_score=0.93,
-                                               exclude_session_id=session_id)
-        except Exception:
-            pass
-
-    # Search for facts relevant to this specific prompt.
-    if prompt:
-        facts = _fetch_relevant_facts(conn, prompt)
-
-    # Inject insights once per session (first message only).
-    first_flag = f"/tmp/memory_insights_injected_{session_id}"
-    if not os.path.exists(first_flag):
-        try:
-            raw = list_insights(conn, limit=3)
-            if raw:
-                insights = raw
-        except Exception:
-            pass
-        try:
-            with open(first_flag, "w") as f:
-                f.write("1")
-        except Exception:
-            pass
-
-    # Nothing to inject — skip silently.
-    if not identity and not facts and not insights and not cached_answer:
+    # Embed the prompt for semantic retrieval.
+    try:
+        prompt_vec = embed(prompt)
+    except Exception as exc:
+        _log_error(f"embed failed: {exc}")
         conn.close()
         _allow()
 
-    injection = _build_injection(identity, facts, insights, cached_answer)
+    # --- Semantic retrieval from compacted_sessions ---
+    cache_hit:  dict | None = None
+    enrichment: list[dict]  = []
+    cluster_id_for_wm: str | None = None
 
     try:
+        results = search_compacted_sessions(conn, prompt_vec, limit=5)
+        for cs in results:
+            sim = cs.get("similarity", 0)
+            # Record the cluster_id of the best match for working memory lookup.
+            if cluster_id_for_wm is None and sim >= WORKING_MEM_THRESHOLD:
+                cluster_id_for_wm = cs.get("cluster_id")
+            if sim >= SEMANTIC_CACHE_THRESHOLD:
+                cache_hit = cs
+                try:
+                    increment_compacted_hit(conn, cs["id"])
+                except Exception:
+                    pass
+                break  # one cache hit is enough
+            elif ENRICHMENT_THRESHOLD <= sim < SEMANTIC_CACHE_THRESHOLD:
+                enrichment.append(cs)
+    except Exception as exc:
+        _log_error(f"compacted search failed: {exc}")
+
+    # --- Working memory (first message of session only) ---
+    working_mem: dict | None = None
+    if _is_first_message(session_id) and cluster_id_for_wm:
+        try:
+            working_mem = get_active_working_memory(conn, cluster_id_for_wm)
+        except Exception as exc:
+            _log_error(f"working memory lookup failed: {exc}")
+
+    # --- Facts (identity surfaces here when relevant) ---
+    facts: list[dict] = []
+    try:
+        tokens  = [t for t in prompt.split() if len(t) > 2]
+        or_query = " OR ".join(tokens) if tokens else prompt
+        facts   = search_facts(conn, or_query, limit=5)
+    except Exception as exc:
+        _log_error(f"facts search failed: {exc}")
+
+    # --- Procedural memory (how-to prompts only) ---
+    procedural: list[dict] = []
+    if _is_how_to(prompt):
+        try:
+            procedural = search_procedural(conn, prompt, min_confidence=0.6, limit=3)
+        except Exception as exc:
+            _log_error(f"procedural search failed: {exc}")
+
+    # Build the injection block.
+    injection = _build_injection(cache_hit, working_mem, enrichment, facts, procedural)
+
+    if not injection:
+        conn.close()
+        _allow()
+
+    # Log the retrieval for the audit trail.
+    try:
         est_tokens = len(injection) // 4
-        log_retrieval(conn, "wake_up_injection", prompt or None, est_tokens)
+        log_retrieval(conn, "wake_up_injection", prompt, est_tokens)
         activity_log(
             "wake_up", "injected",
-            session=session_id, facts=len(facts),
-            has_cached_answer=bool(cached_answer),
-            has_insights=bool(insights), est_tokens=est_tokens,
+            session=session_id,
+            has_cache_hit=bool(cache_hit),
+            has_working_mem=bool(working_mem),
+            enrichment_count=len(enrichment),
+            facts_count=len(facts),
+            procedural_count=len(procedural),
+            est_tokens=est_tokens,
         )
     except Exception:
         pass

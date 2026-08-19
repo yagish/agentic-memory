@@ -18,7 +18,9 @@ import webbrowser    # opens the dashboard HTML in the default browser
 # Add the project root to the module search path so we can import memory.db.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from memory.db import init_db, search, semantic_search
+import re
+
+from memory.db import init_db, search, semantic_search, insert_fact, delete_fact
 from memory.consolidation import consolidate_old_sessions, prune_old_transcripts
 
 
@@ -903,6 +905,68 @@ def cmd_daemon(args):
 
 
 # ---------------------------------------------------------------------------
+# Command: compact
+# ---------------------------------------------------------------------------
+
+def cmd_compact(_args):
+    """Manually run one daemon compaction pass (episodic, working memory, compact, procedural)."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from memory.daemon import run as daemon_run
+    print("Running daemon compaction pass…")
+    daemon_run(once=True)
+    print("Done.")
+
+
+# ---------------------------------------------------------------------------
+# Command: sync-identity
+# ---------------------------------------------------------------------------
+
+IDENTITY_PATH = os.path.expanduser("~/.memory/identity.md")
+
+
+def cmd_sync_identity(_args):
+    # Parse each "- **Key**: Value" bullet in identity.md into a natural-language fact,
+    # replacing any stale identity facts in the DB so FTS5 search can find them.
+    if not os.path.exists(IDENTITY_PATH):
+        print(f"No identity file found at {IDENTITY_PATH}")
+        print("Create it with your name, role, and preferences first.")
+        return
+
+    with open(IDENTITY_PATH) as f:
+        text = f.read()
+
+    conn = get_conn()
+
+    # Remove all previously synced identity facts so stale data doesn't accumulate.
+    old_ids = [r[0] for r in conn.execute(
+        "SELECT id FROM facts WHERE source = 'identity'"
+    ).fetchall()]
+    for fact_id in old_ids:
+        delete_fact(conn, fact_id)
+
+    # Parse bullet lines into facts.  Handles both "- **Key**: Value" (bold)
+    # and "- Key: Value" (plain) so the format doesn't need to be exact.
+    facts_added = 0
+    for line in text.splitlines():
+        m = re.match(r'-\s+\*{0,2}(.+?)\*{0,2}\s*:\s*(.+)', line.strip())
+        if not m:
+            continue
+        key   = m.group(1).strip()
+        value = m.group(2).strip()
+        content = f"User's {key.lower()} is {value}"
+        insert_fact(conn, content, tags=["identity"], source="identity")
+        print(f"  + {content}")
+        facts_added += 1
+
+    # Rebuild the FTS5 index to fix any rowid-mismatch corruption from past edits.
+    conn.execute("INSERT INTO facts_fts(facts_fts) VALUES('rebuild')")
+    conn.commit()
+
+    conn.close()
+    print(f"\nSynced {facts_added} fact(s) from identity.md (removed {len(old_ids)} stale).")
+
+
+# ---------------------------------------------------------------------------
 # Argument parsing + dispatch
 # ---------------------------------------------------------------------------
 
@@ -998,6 +1062,18 @@ def main():
         help="Run one processing pass and exit (for testing or manual runs)",
     )
 
+    # compact — manually trigger one daemon compaction pass
+    sub.add_parser(
+        "compact",
+        help="Run one daemon compaction pass: episodic entries, working memory, compacted sessions, procedural patterns",
+    )
+
+    # sync-identity — load identity.md fields into the facts table
+    sub.add_parser(
+        "sync-identity",
+        help="Parse ~/.memory/identity.md and upsert its fields as searchable facts",
+    )
+
     # ingest-server — manage the HTTP ingest server (Phase 16)
     p_ingest = sub.add_parser(
         "ingest-server",
@@ -1025,7 +1101,9 @@ def main():
         "consolidate":   cmd_consolidate,
         "prune":         cmd_prune,
         "daemon":        cmd_daemon,
-        "ingest-server": cmd_ingest_server,
+        "ingest-server":   cmd_ingest_server,
+        "compact":         cmd_compact,
+        "sync-identity":   cmd_sync_identity,
     }
     dispatch[args.command](args)
 

@@ -4,12 +4,10 @@
 
 import json       # used to convert Python dicts ↔ text for storage
 import math       # used for cosine similarity calculation (sqrt, dot product)
-import re         # used to normalise text for direct-answer matching
 import sqlite3    # Python's built-in SQLite driver — no install needed
 import struct     # used to pack float32 arrays into bytes for SQLite blob storage
-from datetime import datetime, timezone, timedelta   # for timestamp arithmetic in consolidation helpers
-from difflib import SequenceMatcher                  # fuzzy matching for direct-answer lookup
-import uuid                                           # for generating UUIDs in new Phase 13 helpers
+from datetime import datetime, timezone, timedelta
+import uuid
 
 # Try to import SentenceTransformer — the library that converts text into vectors.
 # If not installed, embed() will raise a clear ImportError with a helpful message.
@@ -211,6 +209,53 @@ CREATE TABLE IF NOT EXISTS compressed_memory (
 );
 """
 
+_WORKING_MEMORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS working_memory (
+    id          TEXT PRIMARY KEY,
+    cluster_id  TEXT NOT NULL,
+    summary     TEXT NOT NULL,
+    session_ids TEXT NOT NULL DEFAULT '[]',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    closed_at   TEXT
+);
+"""
+
+_EPISODIC_MEMORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS episodic_memory (
+    id          TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    abstract    TEXT NOT NULL,
+    happened_at TEXT NOT NULL
+);
+"""
+
+_COMPACTED_SESSIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS compacted_sessions (
+    id                 TEXT PRIMARY KEY,
+    cluster_id         TEXT NOT NULL,
+    content            TEXT NOT NULL,
+    embedding          BLOB,
+    source_session_ids TEXT NOT NULL DEFAULT '[]',
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL,
+    hit_count          INTEGER NOT NULL DEFAULT 0
+);
+"""
+
+_PROCEDURAL_MEMORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS procedural_memory (
+    id                TEXT PRIMARY KEY,
+    title             TEXT NOT NULL,
+    steps             TEXT NOT NULL,
+    confidence        REAL NOT NULL DEFAULT 0.5,
+    observation_count INTEGER NOT NULL DEFAULT 1,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
+"""
+
 
 def log_retrieval(conn: sqlite3.Connection, tool: str, query: str, result_size: int) -> None:
     """
@@ -326,6 +371,16 @@ def init_db(path: str) -> sqlite3.Connection:
 
     # Create the compressed_memory table for full compression runs.
     conn.executescript(_COMPRESSED_MEMORY_SCHEMA)
+    conn.commit()
+
+    # Create the new memory architecture tables.
+    conn.executescript(_WORKING_MEMORY_SCHEMA)
+    conn.commit()
+    conn.executescript(_EPISODIC_MEMORY_SCHEMA)
+    conn.commit()
+    conn.executescript(_COMPACTED_SESSIONS_SCHEMA)
+    conn.commit()
+    conn.executescript(_PROCEDURAL_MEMORY_SCHEMA)
     conn.commit()
 
     # Add daemon_processed_at column to sessions if not already present.
@@ -1220,163 +1275,6 @@ def hybrid_search(conn: sqlite3.Connection, query: str, limit: int = 10) -> list
 
 
 # ---------------------------------------------------------------------------
-# Phase 17: direct-answer lookup for prompt interception
-# ---------------------------------------------------------------------------
-
-def _normalise_for_match(text: str) -> str:
-    """
-    Lower-case and strip punctuation so repeated user questions match reliably.
-
-    Example:
-        "What's the capital of France?" → "what s the capital of france"
-    """
-    lowered = (text or "").lower()
-    stripped = re.sub(r"[^a-z0-9\s]", " ", lowered)
-    return re.sub(r"\s+", " ", stripped).strip()
-
-
-def _token_overlap_score(a: str, b: str) -> float:
-    """Return Jaccard overlap of the normalised token sets for two strings."""
-    a_tokens = set(_normalise_for_match(a).split())
-    b_tokens = set(_normalise_for_match(b).split())
-    if not a_tokens or not b_tokens:
-        return 0.0
-    return len(a_tokens & b_tokens) / len(a_tokens | b_tokens)
-
-
-def _qa_match_score(query: str, candidate_question: str) -> float:
-    """
-    Score how closely a new prompt matches a previously asked user question.
-
-    The score is deliberately conservative because this powers a direct-answer
-    fast path that bypasses the LLM. Exact or near-exact repeats should score
-    high; loosely related prompts should not.
-    """
-    query_norm = _normalise_for_match(query)
-    cand_norm  = _normalise_for_match(candidate_question)
-
-    if not query_norm or not cand_norm:
-        return 0.0
-
-    if query_norm == cand_norm:
-        return 1.0
-
-    shorter, longer = sorted((query_norm, cand_norm), key=len)
-    containment = 0.0
-    if shorter and shorter in longer:
-        # Only treat containment as a strong signal when the strings are almost
-        # the same length; otherwise a short generic phrase would over-match.
-        ratio = len(shorter) / max(len(longer), 1)
-        if ratio >= 0.85:
-            containment = 0.97
-        elif ratio >= 0.70:
-            containment = 0.94
-
-    fuzzy = SequenceMatcher(None, query_norm, cand_norm).ratio()
-    overlap = _token_overlap_score(query_norm, cand_norm)
-    return max(fuzzy, overlap, containment)
-
-
-def find_direct_answer(
-    conn: sqlite3.Connection,
-    query: str,
-    min_score: float = 0.93,
-    session_limit: int = 200,
-    exclude_session_id: str | None = None,
-) -> dict | None:
-    """
-    Find a previously given assistant answer for a repeated user question.
-
-    This is a deterministic retrieval path for prompt interception: if the user
-    asks essentially the same question again, we can return the stored answer
-    directly instead of spending another LLM turn.
-
-    The function scans recent session transcripts for adjacent user → assistant
-    turn pairs, scores the new query against the historical user turns, and
-    returns the best assistant response only when the match exceeds min_score.
-
-    Returns:
-        None if no sufficiently strong match exists, otherwise a dict with:
-          question, answer, similarity, session_id, agent, updated_at
-    """
-    if not isinstance(query, str) or not query.strip():
-        return None
-
-    if exclude_session_id:
-        rows = conn.execute(
-            """
-            SELECT session_id, agent, updated_at, transcript
-            FROM sessions
-            WHERE session_id != ?
-            ORDER BY updated_at DESC
-            LIMIT ?
-            """,
-            (exclude_session_id, session_limit),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """
-            SELECT session_id, agent, updated_at, transcript
-            FROM sessions
-            ORDER BY updated_at DESC
-            LIMIT ?
-            """,
-            (session_limit,),
-        ).fetchall()
-
-    best: dict | None = None
-
-    for row in rows:
-        try:
-            turns = json.loads(row["transcript"] or "[]")
-        except Exception:
-            continue
-
-        for i in range(len(turns) - 1):
-            user_turn = turns[i]
-            assistant_turn = turns[i + 1]
-
-            if user_turn.get("role") != "user":
-                continue
-            if assistant_turn.get("role") != "assistant":
-                continue
-
-            question = str(user_turn.get("content") or "").strip()
-            answer   = str(assistant_turn.get("content") or "").strip()
-            if not question or not answer:
-                continue
-
-            score = _qa_match_score(query, question)
-            if score < min_score:
-                continue
-
-            candidate = {
-                "question":   question,
-                "answer":     answer,
-                "similarity": round(score, 4),
-                "session_id": row["session_id"],
-                "agent":      row["agent"],
-                "updated_at": row["updated_at"],
-            }
-
-            if best is None:
-                best = candidate
-                continue
-
-            if candidate["similarity"] > best["similarity"]:
-                best = candidate
-                continue
-
-            if (
-                candidate["similarity"] == best["similarity"]
-                and str(candidate["updated_at"] or "") > str(best["updated_at"] or "")
-            ):
-                best = candidate
-
-    return best
-
-
-# ---------------------------------------------------------------------------
 # Phase 12 additions: summaries table helpers for consolidation and decay
 # ---------------------------------------------------------------------------
 
@@ -1543,109 +1441,6 @@ def mark_session_processed(conn: sqlite3.Connection, session_id: str) -> None:
         (now, session_id),
     )
     conn.commit()
-
-
-def upsert_insight(
-    conn: sqlite3.Connection,
-    insight_type: str,
-    content: str,
-    evidence: list[str],
-    confidence: float,
-) -> str:
-    """
-    Insert a new insight row and return its UUID.
-
-    Insights always accumulate — every call creates a new row.  The caller
-    is responsible for deduplication (e.g. by checking content before calling).
-
-    Args:
-        conn         — open connection from init_db()
-        insight_type — "pattern", "preference", or "skill"
-        content      — the insight text (e.g. "User consistently uses Python")
-        evidence     — list of session_ids that support this insight
-        confidence   — 0.0–1.0 confidence score (from the LLM)
-
-    Returns:
-        The UUID string assigned to the new insight row.
-    """
-    evidence_json = json.dumps(evidence or [])
-    now = datetime.now(timezone.utc).isoformat()
-
-    # Check for an existing insight with the same type and content before inserting.
-    existing = conn.execute(
-        "SELECT id FROM insights WHERE insight_type = ? AND content = ? LIMIT 1",
-        (insight_type, content),
-    ).fetchone()
-
-    if existing:
-        # Update confidence and timestamp rather than accumulating a duplicate row.
-        insight_id = existing["id"]
-        conn.execute(
-            "UPDATE insights SET confidence = ?, evidence = ?, updated_at = ? WHERE id = ?",
-            (confidence, evidence_json, now, insight_id),
-        )
-    else:
-        insight_id = str(uuid.uuid4())
-        conn.execute(
-            """
-            INSERT INTO insights (id, insight_type, content, evidence, confidence, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (insight_id, insight_type, content, evidence_json, confidence, now, now),
-        )
-    conn.commit()
-    return insight_id
-
-
-def list_insights(
-    conn: sqlite3.Connection,
-    insight_type: str | None = None,
-    limit: int = 20,
-) -> list[dict]:
-    """
-    Return stored insights, optionally filtered by type.
-
-    Args:
-        conn         — open connection from init_db()
-        insight_type — optional filter: "pattern", "preference", "skill", or "topic_cluster";
-                       pass None to return all types
-        limit        — maximum number of insights to return (default 20)
-
-    Returns:
-        List of dicts with keys: id, insight_type, content, evidence (as list),
-        confidence, created_at, updated_at. Newest first.
-    """
-    if insight_type is not None:
-        # Filter to only the requested type.
-        rows = conn.execute(
-            """
-            SELECT id, insight_type, content, evidence, confidence, created_at, updated_at
-            FROM insights
-            WHERE insight_type = ?
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (insight_type, limit),
-        ).fetchall()
-    else:
-        # No filter — return all insight types.
-        rows = conn.execute(
-            """
-            SELECT id, insight_type, content, evidence, confidence, created_at, updated_at
-            FROM insights
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-
-    result = []
-    for row in rows:
-        d = dict(row)
-        # Parse the JSON evidence list back into a Python list.
-        d["evidence"] = json.loads(d["evidence"] or "[]")
-        result.append(d)
-    return result
 
 
 def assign_to_cluster(
@@ -1956,19 +1751,420 @@ def prune_transcript(conn: sqlite3.Connection, session_id: str) -> int:
     Returns:
         The old turn_count value (before pruning) so callers can log it.
     """
-    # Fetch the old turn_count before we wipe the transcript.
     row = conn.execute(
         "SELECT turn_count FROM sessions WHERE session_id = ?", (session_id,)
     ).fetchone()
 
-    # Default to 0 if the session doesn't exist (shouldn't happen in normal use).
     turn_count = row["turn_count"] if row else 0
 
-    # Set transcript to '[]' — an empty JSON array — rather than NULL.
-    # This keeps the column type consistent and avoids NULL checks in other queries.
     conn.execute(
         "UPDATE sessions SET transcript = '[]' WHERE session_id = ?", (session_id,)
     )
     conn.commit()
 
     return turn_count
+
+
+# ---------------------------------------------------------------------------
+# New memory architecture: working, episodic, compacted, procedural
+# ---------------------------------------------------------------------------
+
+def upsert_working_memory(
+    conn: sqlite3.Connection,
+    cluster_id: str,
+    session_id: str,
+    summary_addition: str,
+) -> str:
+    """
+    Create or update the working memory entry for a topic cluster.
+
+    On first call for a cluster: creates a new working_memory row.
+    On subsequent calls: appends the session to session_ids and appends to summary.
+
+    Returns the working_memory id.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+
+    existing = conn.execute(
+        "SELECT id, summary, session_ids FROM working_memory WHERE cluster_id = ? AND closed_at IS NULL",
+        (cluster_id,),
+    ).fetchone()
+
+    if existing:
+        wm_id = existing["id"]
+        session_ids = json.loads(existing["session_ids"] or "[]")
+        if session_id not in session_ids:
+            session_ids.append(session_id)
+        new_summary = existing["summary"] + "\n\n---\n" + summary_addition
+        conn.execute(
+            "UPDATE working_memory SET summary = ?, session_ids = ?, updated_at = ? WHERE id = ?",
+            (new_summary, json.dumps(session_ids), now, wm_id),
+        )
+    else:
+        wm_id = str(uuid.uuid4())
+        conn.execute(
+            """
+            INSERT INTO working_memory (id, cluster_id, summary, session_ids, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (wm_id, cluster_id, summary_addition, json.dumps([session_id]), now, now),
+        )
+
+    conn.commit()
+    return wm_id
+
+
+def get_active_working_memory(
+    conn: sqlite3.Connection,
+    cluster_id: str,
+) -> dict | None:
+    """
+    Return the active (not closed) working memory entry for a cluster, or None.
+
+    Returns dict with keys: id, cluster_id, summary, session_ids (list), created_at, updated_at.
+    """
+    row = conn.execute(
+        """
+        SELECT id, cluster_id, summary, session_ids, created_at, updated_at
+        FROM working_memory
+        WHERE cluster_id = ? AND closed_at IS NULL
+        """,
+        (cluster_id,),
+    ).fetchone()
+
+    if not row:
+        return None
+
+    d = dict(row)
+    d["session_ids"] = json.loads(d["session_ids"] or "[]")
+    return d
+
+
+def get_stale_working_memory(
+    conn: sqlite3.Connection,
+    days: int = 14,
+) -> list[dict]:
+    """
+    Return working memory entries with no activity for more than `days` days.
+
+    Returns list of dicts with keys: id, cluster_id, summary, session_ids, updated_at.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    rows = conn.execute(
+        """
+        SELECT id, cluster_id, summary, session_ids, updated_at
+        FROM working_memory
+        WHERE closed_at IS NULL AND updated_at < ?
+        ORDER BY updated_at ASC
+        """,
+        (cutoff,),
+    ).fetchall()
+    result = []
+    for row in rows:
+        d = dict(row)
+        d["session_ids"] = json.loads(d["session_ids"] or "[]")
+        result.append(d)
+    return result
+
+
+def close_working_memory(conn: sqlite3.Connection, wm_id: str) -> None:
+    """Stamp closed_at on a working memory entry to mark it inactive."""
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "UPDATE working_memory SET closed_at = ? WHERE id = ?",
+        (now, wm_id),
+    )
+    conn.commit()
+
+
+def insert_episodic(
+    conn: sqlite3.Connection,
+    session_id: str,
+    title: str,
+    abstract: str,
+    happened_at: str | None = None,
+) -> str:
+    """
+    Create an episodic memory entry for a session.
+
+    Args:
+        session_id  — the session this episode describes
+        title       — short one-line title (LLM-generated)
+        abstract    — 2-sentence description of what happened
+        happened_at — ISO timestamp; defaults to now
+
+    Returns the UUID of the new episodic entry.
+    """
+    ep_id = str(uuid.uuid4())
+    if not happened_at:
+        happened_at = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO episodic_memory (id, session_id, title, abstract, happened_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (ep_id, session_id, title, abstract, happened_at),
+    )
+    conn.commit()
+    return ep_id
+
+
+def upsert_compacted_session(
+    conn: sqlite3.Connection,
+    cluster_id: str,
+    content: str,
+    embedding: list[float] | None,
+    source_session_ids: list[str],
+) -> str:
+    """
+    Create or update the compacted session entry for a cluster.
+
+    If an entry already exists for this cluster the content and vector are
+    updated. Otherwise a new row is created.
+
+    Returns the compacted_sessions id.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    blob = _pack_vector(embedding) if embedding is not None else None
+
+    existing = conn.execute(
+        "SELECT id, source_session_ids FROM compacted_sessions WHERE cluster_id = ?",
+        (cluster_id,),
+    ).fetchone()
+
+    if existing:
+        cs_id = existing["id"]
+        old_ids = json.loads(existing["source_session_ids"] or "[]")
+        merged_ids = list(set(old_ids + source_session_ids))
+        conn.execute(
+            """
+            UPDATE compacted_sessions
+            SET content = ?, embedding = ?, source_session_ids = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (content, blob, json.dumps(merged_ids), now, cs_id),
+        )
+    else:
+        cs_id = str(uuid.uuid4())
+        conn.execute(
+            """
+            INSERT INTO compacted_sessions
+                (id, cluster_id, content, embedding, source_session_ids, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (cs_id, cluster_id, content, blob, json.dumps(source_session_ids), now, now),
+        )
+
+    conn.commit()
+    return cs_id
+
+
+def search_compacted_sessions(
+    conn: sqlite3.Connection,
+    query_vector: list[float],
+    limit: int = 5,
+) -> list[dict]:
+    """
+    Find compacted sessions semantically similar to a query vector.
+
+    Returns similarity (not distance) so callers apply intuitive thresholds:
+    0.96 = cache hit, 0.70 = enrichment context.
+
+    Returns list of dicts with keys: id, cluster_id, content, similarity, hit_count.
+    Sorted by similarity descending.
+    """
+    rows = conn.execute(
+        "SELECT id, cluster_id, content, embedding, hit_count FROM compacted_sessions WHERE embedding IS NOT NULL"
+    ).fetchall()
+
+    if not rows:
+        return []
+
+    scored = []
+    for row in rows:
+        dist = _cosine_distance(query_vector, bytes(row["embedding"]))
+        scored.append({
+            "id":         row["id"],
+            "cluster_id": row["cluster_id"],
+            "content":    row["content"],
+            "similarity": round(1.0 - dist, 4),
+            "hit_count":  row["hit_count"],
+        })
+
+    scored.sort(key=lambda r: r["similarity"], reverse=True)
+    return scored[:limit]
+
+
+def increment_compacted_hit(conn: sqlite3.Connection, cs_id: str) -> None:
+    """Increment hit_count for a compacted session when a cache hit occurs."""
+    conn.execute(
+        "UPDATE compacted_sessions SET hit_count = hit_count + 1 WHERE id = ?",
+        (cs_id,),
+    )
+    conn.commit()
+
+
+def get_near_duplicate_compacted(
+    conn: sqlite3.Connection,
+    similarity_threshold: float = 0.92,
+) -> list[tuple[str, str]]:
+    """
+    Find pairs of compacted_sessions entries that are near-duplicates.
+
+    Returns list of (id_a, id_b) pairs where cosine similarity >= threshold.
+    """
+    rows = conn.execute(
+        "SELECT id, embedding FROM compacted_sessions WHERE embedding IS NOT NULL"
+    ).fetchall()
+
+    if len(rows) < 2:
+        return []
+
+    pairs = []
+    for i in range(len(rows)):
+        for j in range(i + 1, len(rows)):
+            n = len(bytes(rows[i]["embedding"])) // 4
+            a_vec = list(struct.unpack(f"<{n}f", bytes(rows[i]["embedding"])))
+            dist = _cosine_distance(a_vec, bytes(rows[j]["embedding"]))
+            if 1.0 - dist >= similarity_threshold:
+                pairs.append((rows[i]["id"], rows[j]["id"]))
+
+    return pairs
+
+
+def merge_compacted_sessions(
+    conn: sqlite3.Connection,
+    keep_id: str,
+    drop_id: str,
+    merged_content: str,
+    merged_embedding: list[float] | None,
+) -> None:
+    """
+    Merge two compacted session entries into one, deleting the other.
+
+    Args:
+        keep_id          — the id to keep and update
+        drop_id          — the id to delete after merging
+        merged_content   — LLM-merged summary text
+        merged_embedding — embedding of the merged content
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    blob = _pack_vector(merged_embedding) if merged_embedding is not None else None
+
+    drop_row = conn.execute(
+        "SELECT source_session_ids, hit_count FROM compacted_sessions WHERE id = ?",
+        (drop_id,),
+    ).fetchone()
+    keep_row = conn.execute(
+        "SELECT source_session_ids, hit_count FROM compacted_sessions WHERE id = ?",
+        (keep_id,),
+    ).fetchone()
+
+    if not drop_row or not keep_row:
+        return
+
+    merged_ids = list(set(
+        json.loads(keep_row["source_session_ids"] or "[]") +
+        json.loads(drop_row["source_session_ids"] or "[]")
+    ))
+    total_hits = (keep_row["hit_count"] or 0) + (drop_row["hit_count"] or 0)
+
+    conn.execute(
+        """
+        UPDATE compacted_sessions
+        SET content = ?, embedding = ?, source_session_ids = ?,
+            hit_count = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (merged_content, blob, json.dumps(merged_ids), total_hits, now, keep_id),
+    )
+    conn.execute("DELETE FROM compacted_sessions WHERE id = ?", (drop_id,))
+    conn.commit()
+
+
+def upsert_procedural(
+    conn: sqlite3.Connection,
+    title: str,
+    steps: str,
+    confidence_delta: float = 0.1,
+) -> str:
+    """
+    Create or update a procedural memory entry.
+
+    If an entry with the same title already exists, confidence is incremented
+    by confidence_delta (clamped to 1.0) and observation_count is increased.
+    Otherwise a new entry is created with confidence 0.5.
+
+    Returns the UUID of the created or updated entry.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+
+    existing = conn.execute(
+        "SELECT id, confidence, observation_count FROM procedural_memory WHERE title = ?",
+        (title,),
+    ).fetchone()
+
+    if existing:
+        proc_id = existing["id"]
+        new_confidence = min(1.0, (existing["confidence"] or 0.5) + confidence_delta)
+        new_count = (existing["observation_count"] or 1) + 1
+        conn.execute(
+            """
+            UPDATE procedural_memory
+            SET steps = ?, confidence = ?, observation_count = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (steps, new_confidence, new_count, now, proc_id),
+        )
+    else:
+        proc_id = str(uuid.uuid4())
+        conn.execute(
+            """
+            INSERT INTO procedural_memory (id, title, steps, confidence, observation_count, created_at, updated_at)
+            VALUES (?, ?, ?, 0.5, 1, ?, ?)
+            """,
+            (proc_id, title, steps, now, now),
+        )
+
+    conn.commit()
+    return proc_id
+
+
+def search_procedural(
+    conn: sqlite3.Connection,
+    query: str,
+    min_confidence: float = 0.6,
+    limit: int = 3,
+) -> list[dict]:
+    """
+    Find procedural memory entries relevant to a query.
+
+    Uses LIKE search on title and steps columns. Only returns entries with
+    confidence >= min_confidence so low-quality patterns are filtered out.
+
+    Returns list of dicts with keys: id, title, steps, confidence, observation_count.
+    """
+    tokens = [t for t in query.lower().split() if len(t) > 2]
+    if not tokens:
+        return []
+
+    conditions = " OR ".join(
+        "lower(title) LIKE ? OR lower(steps) LIKE ?" for _ in tokens
+    )
+    params: list = []
+    for t in tokens:
+        params.extend([f"%{t}%", f"%{t}%"])
+    params.extend([min_confidence, limit])
+
+    rows = conn.execute(
+        f"""
+        SELECT id, title, steps, confidence, observation_count
+        FROM procedural_memory
+        WHERE ({conditions}) AND confidence >= ?
+        ORDER BY confidence DESC, observation_count DESC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+
+    return [dict(r) for r in rows]

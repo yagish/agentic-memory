@@ -1,173 +1,209 @@
 # Agentic Memory
 
-A local-first memory system that gives AI assistants persistent memory across sessions — without sending data to any cloud service.
+A persistent memory system for Claude Code that makes every new session feel like a continuation — not a cold start. It stores, compacts, and retrieves conversation history so Claude always has the right context without you having to re-explain anything.
 
-Every conversation is automatically saved and indexed. Before each prompt, the system checks whether a cached answer already exists and injects it directly. Relevant facts and cross-session patterns are surfaced silently. A background daemon continuously learns from past sessions, extracts facts, and prunes stale data.
-
-All inference runs locally via [Ollama](https://ollama.com) and [sentence-transformers](https://www.sbert.net). No data leaves your machine.
+**Two goals:**
+1. Remove the "start from scratch" annoyance across sessions.
+2. Reduce wasted tokens re-establishing context at the beginning of every conversation.
 
 ---
 
 ## How it works — end to end
 
 ```
-You type a prompt
-       │
-       ▼
-┌─────────────────────────────────────────────┐
-│  wake_up.py  (UserPromptSubmit hook)         │
-│                                             │
-│  1. Semantic search: does memory have an    │
-│     answer ≥ 93% similar to this prompt?   │
-│     → YES: inject [Cached Answer] block     │
-│             Claude responds with [From      │
-│             Memory] prefix                  │
-│     → NO:  continue to LLM                 │
-│  2. FTS5 search: relevant facts for prompt  │
-│  3. First message of session: inject        │
-│     cross-session insights (once per        │
-│     session only)                           │
-│  4. Always inject identity profile (L0)     │
-└──────────────────┬──────────────────────────┘
-                   │ suffix appended to prompt
-                   ▼
-          Claude LLM call (or skipped if cached)
-                   │
-                   ▼
-         Claude responds
-                   │
-                   ▼
-┌─────────────────────────────────────────────┐
-│  save_hook.py  (Stop hook)                  │
-│                                             │
-│  Runs after EVERY assistant response:       │
-│  1. Reads JSONL transcript                  │
-│  2. Upserts session to SQLite (FTS5 index)  │
-│  3. Embeds transcript → session_vecs        │
-│  4. Chunks transcript into 6-turn windows   │
-│     → embeds each chunk for retrieval       │
-└──────────────────┬──────────────────────────┘
-                   │
-                   ▼
-          ~/.memory/memory.db
-
-                   │ (every 5 min, background)
-                   ▼
-┌─────────────────────────────────────────────┐
-│  daemon.py                                  │
-│                                             │
-│  For each unprocessed session:              │
-│  1. Extract facts (LLM)                     │
-│  2. Assign topic cluster                    │
-│  Every 10 sessions:                         │
-│  3. Generate cross-session insights (LLM)   │
-│  Every cycle:                               │
-│  4. Prune processed sessions > 30 days old  │
-└─────────────────────────────────────────────┘
+User sends a prompt
+        │
+        ▼
+┌─────────────────────────────────────────────────────┐
+│  wake_up.py  (UserPromptSubmit hook)                │
+│                                                     │
+│  1. Trivial prompt? → skip all injection            │
+│  2. Embed prompt → semantic search compacted_sessions│
+│     ≥ 96%  → inject as [From Memory] cache hit     │
+│     70–95% → inject as enrichment context           │
+│  3. Working memory (first message of session only)  │
+│  4. Relevant facts (identity surfaces when needed)  │
+│  5. Procedural memory (how-to prompts only)         │
+│  6. Enforce 500-token injection budget              │
+└─────────────────────────────────────────────────────┘
+        │
+        ▼
+   Claude processes prompt + injected context
+        │
+        ▼
+┌─────────────────────────────────────────────────────┐
+│  save_hook.py  (Stop hook)                          │
+│                                                     │
+│  • Saves full transcript → sessions table           │
+│  • Generates session embedding → session_vecs       │
+│  • Chunks transcript → session_chunks (fine-grained)│
+└─────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────┐
+│  daemon.py  (background process)                    │
+│                                                     │
+│  Pass 1 — per new session:                          │
+│  • LLM → episodic entry (title + abstract)          │
+│  • Assign to topic cluster                          │
+│  • Update working_memory for that cluster           │
+│  • If cluster ≥ 3 sessions → compact:               │
+│    - LLM generates structured summary               │
+│    - Tiered length by session size                  │
+│    - Merge into compacted_sessions + store vector   │
+│    - Null out raw transcripts of source sessions    │
+│  • LLM → extract procedural patterns               │
+│                                                     │
+│  Pass 2 — periodic sweep:                           │
+│  • Close working_memory inactive > 14 days          │
+│  • Merge near-duplicate compacted_sessions (≥ 92%)  │
+└─────────────────────────────────────────────────────┘
 ```
-
----
-
-## Services
-
-Three background services run at all times (managed by launchd on macOS):
-
-| Service | Port | Purpose | Log |
-|---|---|---|---|
-| **daemon** | — | Extracts facts, clusters topics, generates insights, prunes old sessions | `~/.memory/daemon.log` |
-| **ingest server** | 7747 | HTTP write API — any agent can POST sessions here | `~/.memory/ingest.log` |
-| **dashboard server** | 7748 | Dashboard UI + operational API (restart, compress, logs) | `~/.memory/query.log` |
-
-**Dashboard:** `http://localhost:7748`
 
 ---
 
 ## Memory layers
 
-Each prompt injects context in priority order:
+| Layer | Table | Lifetime | What it contains |
+|---|---|---|---|
+| **Working** | `working_memory` | 14 days of inactivity | Rolling task context — what you've been working on across recent sessions |
+| **Episodic** | `episodic_memory` | Forever | Thin log: one title + 2-sentence abstract per session |
+| **Semantic cache** | `compacted_sessions` | Forever | LLM-compacted session summaries with vectors — the primary retrieval target |
+| **Procedural** | `procedural_memory` | Forever | Reusable how-to patterns and workflows extracted from sessions |
+| **Identity facts** | `facts` | Until updated | User name, role, preferences — synced from `~/.memory/identity.md` |
 
-| Layer | What | When |
+### Why no Insights table?
+
+The old `insights` table stored cross-session patterns. In the new architecture those naturally fall into either procedural memory (workflow patterns) or the compacted session store (stable knowledge). The separate table added complexity without adding value.
+
+---
+
+## Token efficiency design
+
+Wake_up.py applies several gates before injecting anything:
+
+**Trivial prompt gate** — if the prompt is under 25 characters or is a continuation word (`yes`, `ok`, `continue`, `done`, `sure`, etc.), injection is skipped entirely. These prompts appear constantly in multi-step tasks and need no memory context.
+
+**Semantic threshold** — compacted session context is only injected if cosine similarity ≥ 70%. Below that the match is noise, not signal.
+
+**Working memory — first message only** — working memory is task context that's useful once at session start, not re-read on every turn.
+
+**Procedural memory — conditional** — only injected when the prompt contains how-to markers (`how`, `steps`, `best way`, `should I`, `approach`, `workflow`).
+
+**Identity — demand only** — identity facts live in the `facts` table and surface through the same FTS5 search as any other fact. They appear when the prompt is about the user; they're skipped for unrelated prompts. `identity.md` is never injected verbatim.
+
+**500-token budget** — total injection is capped at 500 tokens. Priority if budget is exceeded: cache hit > working memory > enrichment context > facts > procedural.
+
+---
+
+## Compacted session format
+
+The daemon compacts sessions into a structured summary:
+
+```
+Task: [one line — what the session was about]
+Context: [repo, language, key components involved]
+What was tried: [bullet points]
+Outcome: [what worked / current state]
+Left off at: [where to pick up next time]
+```
+
+Summary length scales with session size:
+
+| Session size | Summary target |
+|---|---|
+| < 5 turns | Skipped |
+| 5–15 turns | ~150 tokens |
+| 16–40 turns | ~400 tokens |
+| 40+ turns | ~800 tokens |
+
+The structured format lets wake_up.py inject just the `Task` + `Left off at` fields (≈ 40 tokens) for quick enrichment, or the full summary for a 96%+ cache hit.
+
+---
+
+## Retrieval — how a cache hit works
+
+Because Claude Code's UserPromptSubmit hook can only inject a prompt suffix (it cannot intercept the response), a 96%+ semantic match works by injecting a strong instruction:
+
+```
+[Cached Answer — 98% match]
+Q: <stored question>
+A: <stored answer>
+Return this answer verbatim, prefixed with [From Memory].
+```
+
+Claude reads the injected instruction and returns the cached answer. The effect is identical to a cache hit — Claude doesn't need to reason through the problem again.
+
+---
+
+## Services
+
+| Process | How to run | What it does |
 |---|---|---|
-| **Cached Answer** | A past Q&A pair ≥ 93% semantically similar to this prompt | Every prompt (if found) |
-| **Identity (L0)** | `~/.memory/identity.md` — your name, role, preferences | Every prompt |
-| **Relevant Facts (L2)** | Facts from the DB matching this prompt (FTS5) | Every prompt |
-| **Insights (L3)** | Cross-session patterns learned by the daemon | Once per session (first message only) |
+| Daemon | `python3 memory/daemon.py` | Compacts sessions, builds memory layers in background |
+| Dashboard | `python3 memory/dashboard_server.py` | Web UI at `http://localhost:8765` |
+| MCP server | `python3 memory/mcp_server.py` | Exposes memory tools to Claude via MCP |
 
-When a cached answer is used, Claude prefixes its response with `[From Memory]` so you know the answer came from stored memory, not a fresh LLM call.
+The daemon is the only required background process. Dashboard and MCP server are optional.
 
 ---
 
 ## Local models
 
-| Component | Model | Size | When it runs |
-|---|---|---|---|
-| Embeddings | `all-MiniLM-L6-v2` (sentence-transformers) | ~90 MB | Save hook, wake-up hook, daemon |
-| Fact extraction | `llama3.2:3b` (Ollama) | ~2 GB | Daemon, every new session |
-| Insights | `llama3.2:3b` (Ollama) | ~2 GB | Daemon, every 10 sessions |
-| Compression | `llama3.2:3b` (Ollama) | ~2 GB | Manual or dashboard button |
+All LLM calls in the daemon go through a local [ollama](https://ollama.com) instance — no Anthropic API tokens are consumed for compaction.
 
-Override the Ollama model: `export MEMORY_OLLAMA_MODEL=llama3.1:8b`
+```bash
+# Install ollama, then pull the default model
+ollama pull llama3.2:3b
+```
 
-Ollama loads the model into RAM only while actively running and unloads it after idle. The daemon checks CPU load before each inference cycle and skips if load is above 70%.
+Override the model with the environment variable:
+```bash
+MEMORY_OLLAMA_MODEL=mistral python3 memory/daemon.py
+```
+
+Embeddings use `sentence-transformers/all-MiniLM-L6-v2` (~90 MB, runs fully locally, no GPU required).
 
 ---
 
 ## Installation
 
-**Prerequisites:**
-- macOS (launchd required for background services)
-- Python 3.8+
-- [Ollama](https://ollama.com) — install via `brew install ollama`
-- Claude Code
-
 ```bash
-git clone <repo-url> ~/agentic-memory
-cd ~/agentic-memory
-bash install.sh
+# 1. Clone and install Python dependencies
+git clone <repo>
+cd agentic-memory
+pip install -r requirements.txt
+
+# 2. Create your identity profile
+mkdir -p ~/.memory
+cat > ~/.memory/identity.md << 'EOF'
+- **Name**: Your Name
+- **Role**: What you do
+- **Tech stack**: Languages/frameworks you use
+- **Working style**: Any preferences Claude should know
+EOF
+
+# 3. Register the hooks in ~/.claude/settings.json
+# Add under "hooks":
+# {
+#   "UserPromptSubmit": [{"command": "python3 /path/to/hooks/wake_up.py"}],
+#   "Stop":             [{"command": "python3 /path/to/hooks/save_hook.py"}]
+# }
+
+# 4. Start the daemon
+python3 memory/daemon.py &
+
+# 5. Sync your identity profile into the facts table
+python3 cli.py sync-identity
 ```
-
-The installer runs these steps:
-
-1. Checks Python 3.8+
-2. Installs Python deps: `mcp fastmcp sentence-transformers fastapi uvicorn pydantic psutil setproctitle`
-3. Downloads and imports the Ollama model (see [Model download](#model-download) below)
-4. Creates `~/.memory/` directory
-5. Writes `~/.memory/identity.md` (interactive prompts for name, role, tech stack — skipped if file exists)
-6. Registers `save_hook.py` (Stop hook) in `~/.claude/settings.json`
-7. Registers `wake_up.py` (UserPromptSubmit hook) in `~/.claude/settings.json`
-8. Registers the MCP server in `~/.claude/mcp.json`
-9. Installs and starts `com.memory.daemon` via launchd
-10. Installs and starts `com.memory.ingest` (port 7747) via launchd
-11. Installs and starts `com.memory.query` (port 7748) via launchd
-
-**Then restart Claude Code** for hooks and MCP server to take effect.
 
 ### Model download
 
-The installer uses `qwen2.5:3b` by default and handles corporate proxy environments that block the Ollama registry:
-
-1. **Try `ollama pull qwen2.5:3b`** directly from the Ollama registry
-2. **If that fails** (e.g. proxy blocks `registry.ollama.ai`), download the GGUF file from HuggingFace (`~2 GB`) to `~/.memory/models/` and import it with `ollama create`
-3. **Skip** the whole step if the model is already present in Ollama
-
-HuggingFace is used as the fallback because most corporate proxies allow it while blocking the Ollama registry.
-
-The GGUF is stored at `~/.memory/models/` — it survives reinstalls and is never in the repo.
-
-**Override env vars:**
+On first run, `save_hook.py` downloads the embedding model (~90 MB):
 
 ```bash
-# Use a different Ollama model (must be available via pull or manual import)
-export MEMORY_OLLAMA_MODEL=phi3.5:mini
-
-# Use a different HuggingFace GGUF URL for the fallback download
-export MEMORY_HF_GGUF_URL=https://huggingface.co/microsoft/Phi-3.5-mini-instruct-gguf/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf
-```
-
-**Uninstall** (all data in `~/.memory/` is preserved):
-
-```bash
-bash install.sh --uninstall
+# Pre-download to avoid a delay on the first hook invocation
+python3 -c "from memory.db import embed; embed('warmup')"
 ```
 
 ---
@@ -176,152 +212,83 @@ bash install.sh --uninstall
 
 ```
 agentic-memory/
-├── install.sh                   one-command installer + uninstaller
 ├── hooks/
-│   ├── wake_up.py               UserPromptSubmit hook — cached answer + memory injection
-│   └── save_hook.py             Stop hook — upserts session after every response
+│   ├── wake_up.py        # UserPromptSubmit hook — injects memory context
+│   └── save_hook.py      # Stop hook — saves transcripts + embeddings
 ├── memory/
-│   ├── db.py                    storage layer (SQLite, FTS5, embeddings, facts)
-│   ├── mcp_server.py            MCP server — 11 tools Claude can call mid-conversation
-│   ├── daemon.py                background learner (facts, insights, topic clusters, pruning)
-│   ├── ingest_server.py         HTTP write API for non-Claude agents (port 7747)
-│   ├── dashboard_server.py      dashboard UI + ops API (port 7748)
-│   ├── compress.py              LLM-based map-reduce compression of all sessions
-│   ├── consolidation.py         session summarisation and transcript pruning
-│   ├── client.py                thin Python client for the ingest API
-│   └── logger.py                structured activity and error logging
-├── dashboard.html               dashboard frontend (served by dashboard_server.py)
-└── tests/
-
-~/.memory/                       created on first use, never deleted by uninstall
-├── memory.db                    SQLite — sessions, facts, chunks, insights, retrievals
-├── identity.md                  your L0 identity profile (edit freely)
-├── compressed_memory.md         latest compressed memory document (if compression was run)
-├── activity.log                 one line per memory operation
-├── daemon.log                   daemon activity (fact extraction, insights, pruning)
-├── ingest.log                   ingest server
-├── query.log                    dashboard server
-└── wake_up.log                  wake-up hook errors
+│   ├── db.py             # All SQLite operations — schema, CRUD, search
+│   ├── daemon.py         # Background compaction and memory extraction
+│   ├── mcp_server.py     # MCP tools (memory_search, memory_save_fact, etc.)
+│   └── dashboard_server.py # Web UI
+├── cli.py                # Management commands (sync-identity, compact, status)
+└── ~/.memory/
+    ├── memory.db         # SQLite database (all memory tables)
+    ├── identity.md       # User profile — source of truth for identity facts
+    ├── wake_up.log       # Hook injection log
+    └── save_hook.log     # Session save log
 ```
 
 ---
 
 ## Database schema
 
-```
-sessions         — raw transcripts, turn count, dates, daemon_processed_at
-sessions_fts     — FTS5 full-text index (auto-synced via trigger)
-session_vecs     — whole-session embeddings (semantic search)
-chunks           — 6-turn overlapping windows with embeddings (sub-session retrieval)
-facts            — extracted facts with tags and source session
-insights         — cross-session patterns (type, confidence)
-topic_clusters   — session groupings with centroid embeddings
-retrievals       — usage log (tool, query, result size, timestamp)
-compressed_memory — output of map-reduce compression runs
-```
+| Table | Purpose |
+|---|---|
+| `sessions` | Raw transcripts (transcript nulled after compaction) |
+| `session_vecs` | Whole-session embeddings |
+| `session_chunks` | Sub-session chunk embeddings for fine-grained search |
+| `working_memory` | Active task context per topic cluster (14-day TTL) |
+| `episodic_memory` | Thin event log — title + abstract per session |
+| `compacted_sessions` | LLM-compacted summaries + vectors (primary retrieval target) |
+| `procedural_memory` | Reusable how-to patterns with confidence scores |
+| `facts` | Identity facts synced from identity.md |
+| `topic_clusters` | Cluster centroids for topic grouping |
+| `cluster_memberships` | Session → cluster assignments |
+| `retrievals` | Audit log of every memory injection |
 
 ---
 
-## MCP tools
+## CLI commands
 
-Claude can call these tools mid-conversation when it needs memory:
-
-| Tool | What it does |
-|---|---|
-| `memory_hybrid_search(query)` | Fuses FTS5 + semantic results via Reciprocal Rank Fusion |
-| `memory_search(query)` | Keyword-only FTS5 search |
-| `memory_semantic_search(query)` | Meaning-based vector search |
-| `memory_get_session(id)` | Full verbatim transcript for one session |
-| `memory_status()` | Session count, turn count, date range |
-| `memory_save_fact(content, tags?)` | Save a fact worth remembering |
-| `memory_update_fact(id, ...)` | Update a stored fact |
-| `memory_delete_fact(id)` | Delete a stored fact |
-| `memory_list_facts(tag?)` | Browse stored facts |
-| `memory_list_insights(type?)` | Cross-session patterns from the daemon |
-| `memory_list_clusters()` | Topic clusters |
+```bash
+python3 cli.py sync-identity     # Re-sync identity.md → facts table
+python3 cli.py compact           # Manually trigger daemon compaction pass
+python3 cli.py status            # Show DB stats (sessions, facts, compacted entries)
+```
 
 ---
 
 ## Personalise your identity profile
 
-Edit `~/.memory/identity.md`. Injected at the start of every session:
+Edit `~/.memory/identity.md` using this format:
 
 ```markdown
-# Identity
-
-Name: Alex Chen
-Role: Senior backend engineer
-
-## About me
-Primary tech: Python, Go, AWS
-Experience: 8 years
-
-## Preferences
-- Concise responses — skip the preamble
-- Always show file paths when referencing code
-- I use pytest, not unittest
+- **Name**: Alex Johnson
+- **Role**: Senior backend engineer
+- **Tech stack**: Python, Go, PostgreSQL, Kubernetes
+- **Working style**: Prefers concise responses, no trailing summaries
 ```
 
-The assistant will silently add more facts here as it learns them.
+Run `python3 cli.py sync-identity` after changes. The daemon picks up changes automatically on the next session's first message.
 
 ---
 
 ## Send sessions from another agent
 
-Any agent (Cursor, LangChain, custom scripts) can write to the same store.
-
-**Python client:**
-
-```python
-from memory.client import MemoryClient
-
-client = MemoryClient()  # connects to localhost:7747
-client.save_session(
-    session_id="my-session-001",
-    agent="cursor",
-    turns=[
-        {"role": "user",      "content": "How does the auth flow work?"},
-        {"role": "assistant", "content": "The auth flow starts with..."},
-    ],
-)
-```
-
-**HTTP directly:**
+Set the `MEMORY_AGENT_NAME` environment variable before running save_hook:
 
 ```bash
-curl -X POST http://localhost:7747/ingest \
-  -H "Content-Type: application/json" \
-  -d '{
-    "session_id": "my-session-001",
-    "agent": "cursor",
-    "turns": [
-      {"role": "user", "content": "..."},
-      {"role": "assistant", "content": "..."}
-    ]
-  }'
+MEMORY_AGENT_NAME=cursor python3 hooks/save_hook.py
 ```
 
----
-
-## Compress memory (manual)
-
-The dashboard has a **Compress Memory** button that runs a map-reduce LLM pass over all sessions, produces a single structured markdown document, and deletes the raw sessions. Use it when the DB grows large or before handing off to a new agent.
-
-CLI:
-
-```bash
-python3 memory/compress.py             # compress + delete sessions
-python3 memory/compress.py --dry-run   # preview only
-python3 memory/compress.py --model llama3.1:8b
-```
-
-Output saved to `~/.memory/compressed_memory.md` and the `compressed_memory` table.
+Sessions are tagged with the agent name in the database.
 
 ---
 
 ## Data privacy
 
-- All data stays on your machine in `~/.memory/memory.db`
-- No data is sent to any external service
-- Ollama runs 100% locally — the LLM never sees your prompts over the network
-- `bash install.sh --uninstall` removes hooks and services but never touches `~/.memory/`
+All data stays local:
+- SQLite database at `~/.memory/memory.db`
+- Embeddings computed locally via `sentence-transformers`
+- Compaction LLM calls go to local ollama — nothing leaves your machine
+- No cloud sync, no telemetry
