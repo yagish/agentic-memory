@@ -4,12 +4,20 @@
 
 import json       # used to convert Python dicts ↔ text for storage
 import math       # used for cosine similarity calculation (sqrt, dot product)
+import os
 import re
 import sqlite3    # Python's built-in SQLite driver — no install needed
 import struct     # used to pack float32 arrays into bytes for SQLite blob storage
 from difflib import SequenceMatcher
 from datetime import datetime, timezone, timedelta
 import uuid
+
+# Force Hugging Face/Transformers offline mode for this process.
+# HF_HUB_OFFLINE=1: disables HTTP calls in huggingface_hub (metadata/file fetches).
+# TRANSFORMERS_OFFLINE=1: prevents Transformers from attempting online resolution.
+# We use setdefault() so callers can still override explicitly before import.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 # Try to import SentenceTransformer — the library that converts text into vectors.
 # If not installed, embed() will raise a clear ImportError with a helpful message.
@@ -416,6 +424,21 @@ def init_db(path: str) -> sqlite3.Connection:
         conn.execute("ALTER TABLE sessions ADD COLUMN metadata TEXT")
     conn.commit()
 
+    # Add embedding columns to tables that need semantic search.
+    # This enables embedding-based similarity search for these memory types.
+    tables_needing_embeddings = [
+        "facts",
+        "procedural_memory",
+        "insights",
+        "episodic_memory",
+        "working_memory",
+    ]
+    for table_name in tables_needing_embeddings:
+        existing_cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table_name})")}
+        if "embedding" not in existing_cols:
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN embedding BLOB")
+    conn.commit()
+
     return conn
 
 
@@ -559,9 +582,16 @@ def embed(text: str) -> list[float]:
     # _model is declared at module level; 'global' lets us reassign it here.
     global _model
     if _model is None:
-        # SentenceTransformer downloads the model on first use (~90MB).
-        # After that it's cached in ~/.cache/huggingface and loads instantly.
-        _model = SentenceTransformer(_MODEL_NAME)
+        # local_files_only=True guarantees no Hugging Face network calls.
+        # The model must already exist in local cache (default: ~/.cache/huggingface).
+        try:
+            _model = SentenceTransformer(_MODEL_NAME, local_files_only=True)
+        except Exception as exc:
+            raise RuntimeError(
+                "Embedding model not available in local cache while offline mode is enabled. "
+                "Preload sentence-transformers/all-MiniLM-L6-v2 into ~/.cache/huggingface "
+                "before running this service."
+            ) from exc
 
     # encode() returns a numpy array; .tolist() converts it to a plain Python list
     # of floats, which is easier to pass around without the numpy dependency.
@@ -930,12 +960,24 @@ def insert_fact(
     # Both created_at and updated_at start at the same timestamp — the moment of creation.
     now = datetime.now(timezone.utc).isoformat()
 
+    # Generate embedding for semantic search.
+    # If embedding fails, we still store the fact but without embedding — it won't be
+    # searchable by semantic_search_facts_semantic(), but will still work with FTS5.
+    embedding_blob = None
+    try:
+        from memory.inference import embed_text
+        embedding_vec = embed_text(content)
+        embedding_blob = _pack_vector(embedding_vec)
+    except Exception:
+        # Silent fail — fact is still usable, just not semantically searchable
+        pass
+
     conn.execute(
         """
-        INSERT INTO facts (id, content, tags, source, session_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO facts (id, content, tags, source, session_id, created_at, updated_at, embedding)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (fact_id, content, tags_json, source, session_id, now, now),
+        (fact_id, content, tags_json, source, session_id, now, now, embedding_blob),
     )
     conn.commit()  # flush the write to disk
 
@@ -977,6 +1019,15 @@ def update_fact(
         # Caller wants to change the fact text.
         set_clauses.append("content = ?")
         values.append(content)
+        # Re-embed the updated content for semantic search
+        try:
+            from memory.inference import embed_text
+            embedding_vec = embed_text(content)
+            set_clauses.append("embedding = ?")
+            values.append(_pack_vector(embedding_vec))
+        except Exception:
+            # Silent fail — still update content, just lose semantic searchability
+            pass
 
     if tags is not None:
         # Caller wants to change the tags — re-encode to JSON for storage.
@@ -1081,6 +1132,323 @@ def search_facts(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[
         d["tags"] = json.loads(d["tags"] or "[]")
         result.append(d)
     return result
+
+
+def search_facts_semantic(
+    conn: sqlite3.Connection,
+    query_vector: list[float],
+    limit: int = 5,
+) -> list[dict]:
+    """
+    Find facts semantically similar to a query vector.
+
+    Uses embedding-based cosine similarity (no keyword matching).
+    Only searches facts that have been embedded (embedding IS NOT NULL).
+
+    Returns similarity score (0.0-1.0, where 1.0 = perfect match).
+    Results sorted by similarity descending.
+
+    Args:
+        conn         — open connection from init_db()
+        query_vector — 384-dimensional embedding vector
+        limit        — maximum results to return (default 5)
+
+    Returns:
+        List of dicts with keys: id, content, tags (as list), similarity.
+    """
+    rows = conn.execute(
+        "SELECT id, content, tags, embedding FROM facts WHERE embedding IS NOT NULL"
+    ).fetchall()
+
+    if not rows:
+        return []
+
+    scored = []
+    for row in rows:
+        dist = _cosine_distance(query_vector, bytes(row["embedding"]))
+        scored.append({
+            "id": row["id"],
+            "content": row["content"],
+            "tags": json.loads(row["tags"] or "[]"),
+            "similarity": round(1.0 - dist, 4),
+        })
+
+    scored.sort(key=lambda r: r["similarity"], reverse=True)
+    return scored[:limit]
+
+
+def search_procedural_semantic(
+    conn: sqlite3.Connection,
+    query_vector: list[float],
+    min_confidence: float = 0.6,
+    limit: int = 3,
+) -> list[dict]:
+    """
+    Find procedural memory entries semantically similar to query vector.
+
+    Only returns entries with confidence >= min_confidence.
+    Results sorted by similarity (confidence as secondary sort).
+
+    Args:
+        conn         — open connection from init_db()
+        query_vector — 384-dimensional embedding vector
+        min_confidence — minimum confidence threshold (default 0.6)
+        limit        — maximum results to return (default 3)
+
+    Returns:
+        List of dicts with keys: id, title, steps, similarity, confidence.
+    """
+    rows = conn.execute(
+        """
+        SELECT id, title, steps, embedding, confidence
+        FROM procedural_memory
+        WHERE embedding IS NOT NULL AND confidence >= ?
+        """,
+        (min_confidence,)
+    ).fetchall()
+
+    if not rows:
+        return []
+
+    scored = []
+    for row in rows:
+        dist = _cosine_distance(query_vector, bytes(row["embedding"]))
+        scored.append({
+            "id": row["id"],
+            "title": row["title"],
+            "steps": row["steps"],
+            "similarity": round(1.0 - dist, 4),
+            "confidence": row["confidence"],
+        })
+
+    scored.sort(key=lambda r: (r["similarity"], r["confidence"]), reverse=True)
+    return scored[:limit]
+
+
+def search_insights_semantic(
+    conn: sqlite3.Connection,
+    query_vector: list[float],
+    limit: int = 5,
+) -> list[dict]:
+    """
+    Find insights semantically similar to a query vector.
+
+    Results sorted by similarity descending.
+
+    Args:
+        conn         — open connection from init_db()
+        query_vector — 384-dimensional embedding vector
+        limit        — maximum results to return (default 5)
+
+    Returns:
+        List of dicts with keys: id, insight_type, content, similarity, confidence.
+    """
+    rows = conn.execute(
+        "SELECT id, insight_type, content, embedding, confidence FROM insights WHERE embedding IS NOT NULL"
+    ).fetchall()
+
+    if not rows:
+        return []
+
+    scored = []
+    for row in rows:
+        dist = _cosine_distance(query_vector, bytes(row["embedding"]))
+        scored.append({
+            "id": row["id"],
+            "insight_type": row["insight_type"],
+            "content": row["content"],
+            "similarity": round(1.0 - dist, 4),
+            "confidence": row["confidence"],
+        })
+
+    scored.sort(key=lambda r: r["similarity"], reverse=True)
+    return scored[:limit]
+
+
+def search_episodic_semantic(
+    conn: sqlite3.Connection,
+    query_vector: list[float],
+    limit: int = 3,
+) -> list[dict]:
+    """
+    Find episodic memory entries semantically similar to query vector.
+
+    Results sorted by similarity descending.
+
+    Args:
+        conn         — open connection from init_db()
+        query_vector — 384-dimensional embedding vector
+        limit        — maximum results to return (default 3)
+
+    Returns:
+        List of dicts with keys: id, title, abstract, similarity.
+    """
+    rows = conn.execute(
+        "SELECT id, title, abstract, embedding FROM episodic_memory WHERE embedding IS NOT NULL"
+    ).fetchall()
+
+    if not rows:
+        return []
+
+    scored = []
+    for row in rows:
+        dist = _cosine_distance(query_vector, bytes(row["embedding"]))
+        scored.append({
+            "id": row["id"],
+            "title": row["title"],
+            "abstract": row["abstract"],
+            "similarity": round(1.0 - dist, 4),
+        })
+
+    scored.sort(key=lambda r: r["similarity"], reverse=True)
+    return scored[:limit]
+
+
+def search_working_memory_semantic(
+    conn: sqlite3.Connection,
+    query_vector: list[float],
+    limit: int = 3,
+) -> list[dict]:
+    """
+    Find active working memory entries semantically similar to query vector.
+
+    Only searches unclosed working memory (closed_at IS NULL).
+    Results sorted by similarity descending.
+
+    Args:
+        conn         — open connection from init_db()
+        query_vector — 384-dimensional embedding vector
+        limit        — maximum results to return (default 3)
+
+    Returns:
+        List of dicts with keys: id, cluster_id, summary, similarity.
+    """
+    rows = conn.execute(
+        """
+        SELECT id, cluster_id, summary, embedding
+        FROM working_memory
+        WHERE embedding IS NOT NULL AND closed_at IS NULL
+        """
+    ).fetchall()
+
+    if not rows:
+        return []
+
+    scored = []
+    for row in rows:
+        dist = _cosine_distance(query_vector, bytes(row["embedding"]))
+        scored.append({
+            "id": row["id"],
+            "cluster_id": row["cluster_id"],
+            "summary": row["summary"],
+            "similarity": round(1.0 - dist, 4),
+        })
+
+    scored.sort(key=lambda r: r["similarity"], reverse=True)
+    return scored[:limit]
+
+
+def populate_missing_embeddings(conn: sqlite3.Connection, batch_size: int = 10) -> dict:
+    """
+    Populate NULL embeddings for existing records in all tables.
+
+    Runs incrementally in batches to avoid timeout. Silently skips on embedding errors.
+    Safe to call multiple times — skips records that already have embeddings.
+
+    Args:
+        conn       — open connection from init_db()
+        batch_size — number of records to process per table per call (default 10)
+
+    Returns:
+        Dict with counts: {"facts": N, "procedural": N, "insights": N, "episodic": N, "working": N}
+    """
+    from memory.inference import embed_text
+
+    counts = {"facts": 0, "procedural": 0, "insights": 0, "episodic": 0, "working": 0}
+
+    # Process facts table
+    rows = conn.execute(
+        "SELECT id, content FROM facts WHERE embedding IS NULL LIMIT ?",
+        (batch_size,)
+    ).fetchall()
+    for row in rows:
+        try:
+            embedding = embed_text(row["content"])
+            embedding_blob = _pack_vector(embedding)
+            conn.execute("UPDATE facts SET embedding = ? WHERE id = ?", (embedding_blob, row["id"]))
+            counts["facts"] += 1
+        except Exception:
+            pass  # Silent fail — fact still exists, just not searchable
+    if rows:
+        conn.commit()
+
+    # Process procedural_memory table
+    rows = conn.execute(
+        "SELECT id, title, steps FROM procedural_memory WHERE embedding IS NULL LIMIT ?",
+        (batch_size,)
+    ).fetchall()
+    for row in rows:
+        try:
+            # Embed title + steps concatenated
+            text_to_embed = f"{row['title']}\n{row['steps']}"
+            embedding = embed_text(text_to_embed)
+            embedding_blob = _pack_vector(embedding)
+            conn.execute("UPDATE procedural_memory SET embedding = ? WHERE id = ?", (embedding_blob, row["id"]))
+            counts["procedural"] += 1
+        except Exception:
+            pass
+    if rows:
+        conn.commit()
+
+    # Process insights table
+    rows = conn.execute(
+        "SELECT id, content FROM insights WHERE embedding IS NULL LIMIT ?",
+        (batch_size,)
+    ).fetchall()
+    for row in rows:
+        try:
+            embedding = embed_text(row["content"])
+            embedding_blob = _pack_vector(embedding)
+            conn.execute("UPDATE insights SET embedding = ? WHERE id = ?", (embedding_blob, row["id"]))
+            counts["insights"] += 1
+        except Exception:
+            pass
+    if rows:
+        conn.commit()
+
+    # Process episodic_memory table
+    rows = conn.execute(
+        "SELECT id, abstract FROM episodic_memory WHERE embedding IS NULL LIMIT ?",
+        (batch_size,)
+    ).fetchall()
+    for row in rows:
+        try:
+            embedding = embed_text(row["abstract"])
+            embedding_blob = _pack_vector(embedding)
+            conn.execute("UPDATE episodic_memory SET embedding = ? WHERE id = ?", (embedding_blob, row["id"]))
+            counts["episodic"] += 1
+        except Exception:
+            pass
+    if rows:
+        conn.commit()
+
+    # Process working_memory table
+    rows = conn.execute(
+        "SELECT id, summary FROM working_memory WHERE embedding IS NULL LIMIT ?",
+        (batch_size,)
+    ).fetchall()
+    for row in rows:
+        try:
+            embedding = embed_text(row["summary"])
+            embedding_blob = _pack_vector(embedding)
+            conn.execute("UPDATE working_memory SET embedding = ? WHERE id = ?", (embedding_blob, row["id"]))
+            counts["working"] += 1
+        except Exception:
+            pass
+    if rows:
+        conn.commit()
+
+    return counts
 
 
 def list_facts(

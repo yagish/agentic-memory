@@ -36,9 +36,11 @@ class TestBuildWakeUpInjection(unittest.TestCase):
                 [],
             )
         )
-        self.assertIn("[Cached Session — 97% match]", result)
+        self.assertTrue(result.startswith("[Memory context: "))
+        self.assertIn("You answered this question before (97% match)", result)
+        self.assertIn("Previous answer:", result)
         self.assertIn("Task: fix auth bug", result)
-        self.assertIn("[From Memory]", result)
+        self.assertNotIn("Return", result)
 
     def test_includes_working_memory_facts_and_procedural_sections(self):
         result = build_wake_up_injection(
@@ -50,13 +52,13 @@ class TestBuildWakeUpInjection(unittest.TestCase):
                 [{"title": "Deploy workflow", "steps": "1. Build\n2. Ship"}],
             )
         )
-        self.assertIn("[Working Memory — current task context]", result)
-        self.assertIn("[Relevant Past Work]", result)
-        self.assertIn("(82% match)", result)
-        self.assertIn("[Relevant Facts — authoritative]", result)
-        self.assertIn("User prefers dark mode", result)
-        self.assertIn("[How-To Patterns]", result)
+        self.assertTrue(result.startswith("[Memory context: "))
+        self.assertIn("Current task context", result)
+        self.assertIn("Relevant prior conversation (82% match)", result)
+        self.assertIn("User prefers dark mode.", result)
+        self.assertIn("Relevant how-to pattern", result)
         self.assertIn("Deploy workflow", result)
+        self.assertNotIn("verbatim", result)
 
 
 class TestRetrieveWakeUpContext(unittest.TestCase):
@@ -67,8 +69,8 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
             {"id": "cs-1", "cluster_id": "cluster-1", "content": "Task: fix auth bug", "similarity": 0.97}
         ]), patch("memory.retrieval.increment_compacted_hit") as increment_hit, \
              patch("memory.retrieval.get_active_working_memory", return_value={"summary": "Current task context"}), \
-             patch("memory.retrieval.search_facts", return_value=[]), \
-             patch("memory.retrieval.search_procedural", return_value=[]):
+             patch("memory.retrieval.search_facts_semantic", return_value=[]), \
+             patch("memory.retrieval.search_procedural_semantic", return_value=[]):
             context = retrieve_wake_up_context(
                 conn,
                 "fix auth bug",
@@ -88,8 +90,8 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
         conn = MagicMock()
 
         with patch("memory.retrieval.search_compacted_sessions", return_value=[]), \
-             patch("memory.retrieval.search_facts", return_value=[]), \
-             patch("memory.retrieval.search_procedural", return_value=[]) as search_procedural:
+             patch("memory.retrieval.search_facts_semantic", return_value=[]), \
+             patch("memory.retrieval.search_procedural_semantic", return_value=[]) as search_procedural:
             retrieve_wake_up_context(
                 conn,
                 "hello there",
@@ -99,21 +101,21 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
         search_procedural.assert_not_called()
 
         with patch("memory.retrieval.search_compacted_sessions", return_value=[]), \
-             patch("memory.retrieval.search_facts", return_value=[]), \
-             patch("memory.retrieval.search_procedural", return_value=[]) as search_procedural:
+             patch("memory.retrieval.search_facts_semantic", return_value=[]), \
+             patch("memory.retrieval.search_procedural_semantic", return_value=[]) as search_procedural:
             retrieve_wake_up_context(
                 conn,
                 "how should i deploy this?",
                 include_working_memory=False,
                 embed_fn=lambda prompt: [0.1],
             )
-        search_procedural.assert_called_once_with(conn, "how should i deploy this?", min_confidence=0.6, limit=3)
+        search_procedural.assert_called_once_with(conn, [0.1], min_confidence=0.6, limit=3)
 
     def test_non_fatal_retrieval_errors_become_warnings(self):
         conn = MagicMock()
 
         with patch("memory.retrieval.search_compacted_sessions", side_effect=RuntimeError("compacted boom")), \
-             patch("memory.retrieval.search_facts", side_effect=RuntimeError("facts boom")):
+             patch("memory.retrieval.search_facts_semantic", side_effect=RuntimeError("facts boom")):
             context = retrieve_wake_up_context(
                 conn,
                 "what is my name?",

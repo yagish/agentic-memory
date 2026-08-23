@@ -39,9 +39,11 @@ class TestBuildInjection(unittest.TestCase):
                 [],
             )
         )
-        self.assertIn("[Cached Session — 97% match]", result)
+        self.assertTrue(result.startswith("[Memory context: "))
+        self.assertIn("You answered this question before (97% match)", result)
+        self.assertIn("Previous answer:", result)
         self.assertIn("Task: fix auth bug", result)
-        self.assertIn("[From Memory]", result)
+        self.assertNotIn("Return", result)
 
     def test_includes_working_memory_facts_and_procedural_sections(self):
         result = _build_injection(
@@ -53,13 +55,13 @@ class TestBuildInjection(unittest.TestCase):
                 [{"title": "Deploy workflow", "steps": "1. Build\n2. Ship"}],
             )
         )
-        self.assertIn("[Working Memory — current task context]", result)
-        self.assertIn("[Relevant Past Work]", result)
-        self.assertIn("(82% match)", result)
-        self.assertIn("[Relevant Facts — authoritative]", result)
-        self.assertIn("User prefers dark mode", result)
-        self.assertIn("[How-To Patterns]", result)
+        self.assertTrue(result.startswith("[Memory context: "))
+        self.assertIn("Current task context", result)
+        self.assertIn("Relevant prior conversation (82% match)", result)
+        self.assertIn("User prefers dark mode.", result)
+        self.assertIn("Relevant how-to pattern", result)
         self.assertIn("Deploy workflow", result)
+        self.assertNotIn("verbatim", result)
 
 
 class TestMainIntegration(unittest.TestCase):
@@ -113,10 +115,13 @@ class TestMainIntegration(unittest.TestCase):
             ),
             first_message=False,
         )
-        suffix = result["output"]["hookSpecificOutput"]["userPromptSuffix"]
+        user_prompt = result["output"]["hookSpecificOutput"]["userPrompt"]
         self.assertEqual(result["output"]["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
-        self.assertIn("[Cached Session — 97% match]", suffix)
-        self.assertIn("Task: fix auth bug", suffix)
+        self.assertTrue(user_prompt.startswith("[Memory context: "))
+        self.assertIn("You answered this question before (97% match)", user_prompt)
+        self.assertIn("Previous answer:", user_prompt)
+        self.assertIn("Task: fix auth bug", user_prompt)
+        self.assertTrue(user_prompt.endswith("User: fix auth bug"))
         result["retrieve_context"].assert_called_once_with(
             result["conn"],
             "fix auth bug",
@@ -136,8 +141,9 @@ class TestMainIntegration(unittest.TestCase):
             ),
             first_message=True,
         )
-        first_suffix = first["output"]["hookSpecificOutput"]["userPromptSuffix"]
-        self.assertIn("Current task context", first_suffix)
+        first_prompt = first["output"]["hookSpecificOutput"]["userPrompt"]
+        self.assertIn("Current task context", first_prompt)
+        self.assertTrue(first_prompt.endswith("User: continue the task"))
 
         later = self._run_main(
             prompt="continue the task",
@@ -150,8 +156,8 @@ class TestMainIntegration(unittest.TestCase):
             ),
             first_message=False,
         )
-        later_suffix = later["output"]["hookSpecificOutput"]["userPromptSuffix"]
-        self.assertNotIn("Current task context", later_suffix)
+        later_prompt = later["output"]["hookSpecificOutput"]["userPrompt"]
+        self.assertNotIn("Current task context", later_prompt)
 
     def test_retrieval_is_called_with_first_message_flag(self):
         first = self._run_main(prompt="hello there", first_message=True)

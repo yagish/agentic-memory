@@ -7,7 +7,7 @@
 #   1. Cache hit  — compacted session ≥ 96% similar to this prompt
 #   2. Working memory — rolling task context (first message of session only)
 #   3. Enrichment   — compacted sessions 70–95% similar
-#   4. Facts         — FTS5 search over facts table (identity surfaces here)
+#   4. Facts         — semantic search over facts table (identity surfaces here)
 #   5. Procedural    — how-to patterns (only when prompt has how-to markers)
 #
 # Gates that skip ALL injection:
@@ -18,7 +18,7 @@
 # nothing in the DB and produce no injection, so zero extra LLM tokens are spent.
 #
 # Output protocol (JSON to stdout):
-#   {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "userPromptSuffix": "..."}}
+#   {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "userPrompt": "..."}}
 #   {}  → do nothing
 
 import json
@@ -52,6 +52,15 @@ def _log_error(msg: str) -> None:
         pass
 
 
+def _log_info(msg: str) -> None:
+    ts = datetime.now(timezone.utc).isoformat()
+    try:
+        with open(LOG_PATH, "a") as f:
+            f.write(f"{ts} INFO {msg}\n")
+    except Exception:
+        pass
+
+
 def _allow() -> None:
     print(json.dumps({}))
     sys.exit(0)
@@ -75,6 +84,8 @@ def _is_first_message(session_id: str) -> bool:
 
 def main() -> None:
     enable_debug("wake_up")
+    _log_info("=" * 60)
+    _log_info("HOOK INVOKED BY CLAUDE CODE")
     try:
         payload = json.load(sys.stdin)
         raw_sid = payload.get("session_id", "unknown")
@@ -84,6 +95,8 @@ def main() -> None:
     except Exception as exc:
         _log_error(f"failed to parse stdin: {exc}")
         _allow()
+
+    _log_info(f"hook invoked, prompt={prompt!r}")
 
     # Gate 1: no prompt, no injection.
     if not prompt:
@@ -98,6 +111,7 @@ def main() -> None:
         _log_error(f"failed to open DB: {traceback.format_exc()}")
         _allow()
 
+    _log_info(f"running semantic search for prompt={prompt!r}")
     try:
         context = retrieve_wake_up_context(
             conn,
@@ -116,8 +130,12 @@ def main() -> None:
     injection = _build_injection(context)
 
     if not injection:
+        _log_info("semantic search complete, no injection produced")
         conn.close()
         _allow()
+
+    updated_prompt = f"{injection}\nUser: {prompt}"
+    _log_info(f"semantic search complete, updated prompt={updated_prompt!r}")
 
     # Log the retrieval for the audit trail.
     try:
@@ -142,7 +160,7 @@ def main() -> None:
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
-            "userPromptSuffix": "\n\n" + injection,
+            "userPrompt": updated_prompt,
         }
     }))
     sys.exit(0)

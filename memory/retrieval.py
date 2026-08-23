@@ -13,8 +13,8 @@ from memory.db import (
     get_active_working_memory,
     increment_compacted_hit,
     search_compacted_sessions,
-    search_facts,
-    search_procedural,
+    search_facts_semantic,
+    search_procedural_semantic,
 )
 from memory.inference import embed_text
 
@@ -77,8 +77,26 @@ def build_wake_up_injection(context: WakeUpContext) -> str:
     sections: list[str] = []
     chars_used = 0
 
+    def _normalize(content: str) -> str:
+        return re.sub(r"\s+", " ", content).strip()
+
+    def _sentence(content: str) -> str:
+        content = _normalize(content)
+        if not content:
+            return ""
+        return content if content.endswith((".", "!", "?")) else f"{content}."
+
+    def _naturalize_fact(content: str) -> str:
+        content = _sentence(content)
+        if content.startswith("User's "):
+            return "The user's " + content[len("User's "):]
+        return content
+
     def _add(block: str) -> bool:
         nonlocal chars_used
+        block = _normalize(block)
+        if not block:
+            return True
         if chars_used + len(block) > CHARS_BUDGET:
             return False
         sections.append(block)
@@ -89,47 +107,38 @@ def build_wake_up_injection(context: WakeUpContext) -> str:
         sim = context.cache_hit.get("similarity", 0)
         content = context.cache_hit.get("content", "")
         _add(
-            f"[Cached Session — {sim:.0%} match]\n"
-            f"{content}\n\n"
-            "[System] A cached session summary closely matches this prompt. "
-            "Respond from this memory, prefix your answer with [From Memory].\n"
+            f"You answered this question before ({sim:.0%} match). Previous answer: {_sentence(content)}"
         )
 
     if context.working_mem:
         _add(
-            "[Working Memory — current task context]\n"
-            f"{context.working_mem['summary']}\n"
+            f"Current task context: {context.working_mem['summary']}"
         )
 
     if context.enrichment:
-        lines = ["[Relevant Past Work]"]
+        lines = []
         for compacted in context.enrichment:
             sim = compacted.get("similarity", 0)
-            lines.append(f"({sim:.0%} match)")
-            lines.append(compacted.get("content", ""))
-        _add("\n".join(lines) + "\n")
+            lines.append(f"Relevant prior conversation ({sim:.0%} match): {_sentence(compacted.get('content', ''))}")
+        _add(" ".join(lines))
 
     if context.facts:
-        lines = ["[Relevant Facts — authoritative]"]
-        for fact in context.facts:
-            lines.append(f"• {fact.get('content', '')}")
-        _add("\n".join(lines) + "\n")
+        top_fact = _normalize(context.facts[0].get("content", ""))
+        if top_fact:
+            _add(_naturalize_fact(top_fact))
 
     if context.procedural:
-        lines = ["[How-To Patterns]"]
+        lines = []
         for procedural in context.procedural:
-            lines.append(f"**{procedural.get('title', '')}**")
-            lines.append(procedural.get("steps", ""))
-        _add("\n".join(lines) + "\n")
+            title = procedural.get("title", "")
+            steps = procedural.get("steps", "")
+            lines.append(f"Relevant how-to pattern: {_sentence(f'{title}: {steps}')}")
+        _add(" ".join(lines))
 
     if not sections:
         return ""
 
-    header = (
-        "[I have a persistent memory system that retrieved the following context for this prompt. "
-        "Please use it to answer my question:]\n\n"
-    )
-    return header + "\n".join(sections)
+    return f"[Memory context: {' '.join(sections)}]"
 
 
 def retrieve_wake_up_context(
@@ -174,16 +183,17 @@ def retrieve_wake_up_context(
 
     facts: list[dict] = []
     try:
-        fact_query = build_fact_query(prompt)
-        if fact_query:
-            facts = search_facts(conn, fact_query, limit=5)
+        # Use semantic search to find facts similar to the prompt.
+        # This handles queries like "what everyone calls me" → "User's name is Yagish"
+        facts = search_facts_semantic(conn, prompt_vec, limit=5)
     except Exception as exc:
         warnings.append(RetrievalWarning("facts", str(exc)))
 
     procedural: list[dict] = []
     if is_how_to(prompt):
         try:
-            procedural = search_procedural(conn, prompt, min_confidence=0.6, limit=3)
+            # Use semantic search for procedural patterns.
+            procedural = search_procedural_semantic(conn, prompt_vec, min_confidence=0.6, limit=3)
         except Exception as exc:
             warnings.append(RetrievalWarning("procedural", str(exc)))
 
