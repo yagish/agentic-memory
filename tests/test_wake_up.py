@@ -74,25 +74,31 @@ class TestMainIntegration(unittest.TestCase):
         first_message=True,
     ):
         payload = json.dumps({"session_id": session_id, "prompt": prompt})
-        output = io.StringIO()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
         conn = MagicMock()
         retrieval_context = context or WakeUpContext(None, None, [], [], [])
 
+        exit_code = None
         with patch("sys.stdin", io.StringIO(payload)), \
-             patch("sys.stdout", output), \
-             patch("sys.exit", side_effect=SystemExit), \
+             patch("sys.stdout", stdout), \
+             patch("sys.stderr", stderr), \
+             patch("sys.exit", side_effect=lambda code=0: (_ for _ in ()).throw(SystemExit(code))), \
              patch.object(_wu, "DB_PATH", "/fake/test.db"), \
              patch("os.path.exists", return_value=True), \
-             patch.object(_wu, "init_db", return_value=conn), \
+             patch.object(_wu, "open_db", return_value=conn), \
              patch.object(_wu, "_is_first_message", return_value=first_message), \
              patch.object(_wu, "retrieve_wake_up_context", return_value=retrieval_context) as retrieve_context, \
              patch.object(_wu, "log_retrieval") as log_retrieval, \
              patch.object(_wu, "activity_log"):
-            with self.assertRaises(SystemExit):
+            with self.assertRaises(SystemExit) as raised:
                 main()
+            exit_code = raised.exception.code
 
         return {
-            "output": json.loads(output.getvalue()),
+            "stdout": stdout.getvalue(),
+            "stderr": stderr.getvalue(),
+            "exit_code": exit_code,
             "conn": conn,
             "retrieve_context": retrieve_context,
             "log_retrieval": log_retrieval,
@@ -100,10 +106,12 @@ class TestMainIntegration(unittest.TestCase):
 
     def test_outputs_empty_object_when_nothing_matches(self):
         result = self._run_main(prompt="hello", first_message=False)
-        self.assertEqual(result["output"], {})
+        self.assertEqual(json.loads(result["stdout"]), {})
+        self.assertEqual(result["stderr"], "")
+        self.assertEqual(result["exit_code"], 0)
         result["conn"].close.assert_called_once()
 
-    def test_cache_hit_is_injected_and_logged(self):
+    def test_cache_hit_short_circuits_with_saved_response(self):
         result = self._run_main(
             prompt="fix auth bug",
             context=WakeUpContext(
@@ -115,19 +123,21 @@ class TestMainIntegration(unittest.TestCase):
             ),
             first_message=False,
         )
-        user_prompt = result["output"]["hookSpecificOutput"]["userPrompt"]
-        self.assertEqual(result["output"]["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
-        self.assertTrue(user_prompt.startswith("[Memory context: "))
-        self.assertIn("You answered this question before (97% match)", user_prompt)
-        self.assertIn("Previous answer:", user_prompt)
-        self.assertIn("Task: fix auth bug", user_prompt)
-        self.assertTrue(user_prompt.endswith("User: fix auth bug"))
+        self.assertEqual(result["stdout"], "")
+        self.assertEqual(result["stderr"], "Task: fix auth bug\n")
+        self.assertEqual(result["exit_code"], 2)
         result["retrieve_context"].assert_called_once_with(
             result["conn"],
             "fix auth bug",
             include_working_memory=False,
         )
-        result["log_retrieval"].assert_called_once()
+        result["log_retrieval"].assert_called_once_with(
+            result["conn"],
+            "wake_up_cache_hit",
+            "fix auth bug",
+            len("Task: fix auth bug") // 4,
+        )
+        result["conn"].close.assert_called_once()
 
     def test_working_memory_only_on_first_message(self):
         first = self._run_main(
@@ -141,9 +151,11 @@ class TestMainIntegration(unittest.TestCase):
             ),
             first_message=True,
         )
-        first_prompt = first["output"]["hookSpecificOutput"]["userPrompt"]
+        first_output = json.loads(first["stdout"])
+        first_prompt = first_output["hookSpecificOutput"]["userPrompt"]
         self.assertIn("Current task context", first_prompt)
         self.assertTrue(first_prompt.endswith("User: continue the task"))
+        self.assertEqual(first["exit_code"], 0)
 
         later = self._run_main(
             prompt="continue the task",
@@ -156,7 +168,8 @@ class TestMainIntegration(unittest.TestCase):
             ),
             first_message=False,
         )
-        later_prompt = later["output"]["hookSpecificOutput"]["userPrompt"]
+        later_output = json.loads(later["stdout"])
+        later_prompt = later_output["hookSpecificOutput"]["userPrompt"]
         self.assertNotIn("Current task context", later_prompt)
 
     def test_retrieval_is_called_with_first_message_flag(self):

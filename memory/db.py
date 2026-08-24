@@ -328,14 +328,13 @@ def _cosine_distance(a: list[float], b_blob: bytes) -> float:
     return 1.0 - dot / (mag_a * mag_b)
 
 
-def init_db(path: str) -> sqlite3.Connection:
+def open_db(path: str) -> sqlite3.Connection:
     """
-    Open (or create) the SQLite database at `path` and ensure the schema exists.
+    Open a SQLite connection without running schema creation or migrations.
 
-    Pass ":memory:" for path to create a temporary in-memory database —
-    useful for tests because nothing is written to disk.
-
-    Returns a connection object you pass to the other functions.
+    This is the hot-path helper for hooks and request handlers that only need
+    an already-bootstrapped database. It still applies connection-level PRAGMAs
+    and row_factory so callers get the same runtime behaviour as before.
     """
     conn = sqlite3.connect(path)
 
@@ -355,56 +354,34 @@ def init_db(path: str) -> sqlite3.Connection:
     # row_factory makes each result row behave like a dict (row["column_name"])
     # instead of a plain tuple (row[0]). Much easier to work with.
     conn.row_factory = sqlite3.Row
+    return conn
 
-    # Run the core schema — sessions table + FTS5 index + triggers.
-    conn.executescript(_SCHEMA)
-    conn.commit()
 
-    # Create the vector table. This is a plain SQLite table (no extension needed).
-    # Cosine similarity is computed in Python inside semantic_search().
-    conn.executescript(_VEC_SCHEMA)
-    conn.commit()
+def ensure_schema(conn: sqlite3.Connection) -> None:
+    """
+    Apply the full schema and lightweight migrations to an open connection.
 
-    # Create the retrievals table for tracking MCP tool usage.
-    conn.executescript(_RETRIEVAL_SCHEMA)
-    conn.commit()
-
-    # Create the chunks table for sub-session semantic search (Phase 7).
-    # This follows the same pattern as _VEC_SCHEMA above.
-    conn.executescript(_CHUNK_SCHEMA)
-    conn.commit()
-
-    # Create the facts table for proactive structured fact storage (Phase 8).
-    # This follows the same pattern as _CHUNK_SCHEMA above.
-    conn.executescript(_FACTS_SCHEMA)
-    conn.commit()
-
-    # Create the summaries table for LLM-generated session summaries (Phase 12).
-    # Summaries are stored here once ollama has processed an old session.
-    conn.executescript(_SUMMARIES_SCHEMA)
-    conn.commit()
-
-    # Create Phase 13 tables: insights, topic_clusters, cluster_memberships.
-    conn.executescript(_INSIGHTS_SCHEMA)
-    conn.commit()
-    conn.executescript(_TOPIC_CLUSTERS_SCHEMA)
-    conn.commit()
-    conn.executescript(_CLUSTER_MEMBERSHIPS_SCHEMA)
-    conn.commit()
-
-    # Create the compressed_memory table for full compression runs.
-    conn.executescript(_COMPRESSED_MEMORY_SCHEMA)
-    conn.commit()
-
-    # Create the new memory architecture tables.
-    conn.executescript(_WORKING_MEMORY_SCHEMA)
-    conn.commit()
-    conn.executescript(_EPISODIC_MEMORY_SCHEMA)
-    conn.commit()
-    conn.executescript(_COMPACTED_SESSIONS_SCHEMA)
-    conn.commit()
-    conn.executescript(_PROCEDURAL_MEMORY_SCHEMA)
-    conn.commit()
+    This is intended for bootstrap/install time, not the per-request or per-hook
+    hot path. It is safe to run multiple times because the schema uses IF NOT
+    EXISTS guards and the migrations check current columns before altering.
+    """
+    for script in [
+        _SCHEMA,
+        _VEC_SCHEMA,
+        _RETRIEVAL_SCHEMA,
+        _CHUNK_SCHEMA,
+        _FACTS_SCHEMA,
+        _SUMMARIES_SCHEMA,
+        _INSIGHTS_SCHEMA,
+        _TOPIC_CLUSTERS_SCHEMA,
+        _CLUSTER_MEMBERSHIPS_SCHEMA,
+        _COMPRESSED_MEMORY_SCHEMA,
+        _WORKING_MEMORY_SCHEMA,
+        _EPISODIC_MEMORY_SCHEMA,
+        _COMPACTED_SESSIONS_SCHEMA,
+        _PROCEDURAL_MEMORY_SCHEMA,
+    ]:
+        conn.executescript(script)
 
     # Add daemon_processed_at column to sessions if not already present.
     # SQLite's ALTER TABLE does not support IF NOT EXISTS, so we check
@@ -414,7 +391,6 @@ def init_db(path: str) -> sqlite3.Connection:
         # This column is stamped by mark_session_processed() once the daemon
         # has fully processed a session (extracted facts, assigned cluster).
         conn.execute("ALTER TABLE sessions ADD COLUMN daemon_processed_at TEXT")
-    conn.commit()
 
     # Add metadata column to sessions if not already present.
     # metadata stores arbitrary agent-supplied key-value pairs as a JSON string.
@@ -422,7 +398,6 @@ def init_db(path: str) -> sqlite3.Connection:
     existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
     if "metadata" not in existing_cols:
         conn.execute("ALTER TABLE sessions ADD COLUMN metadata TEXT")
-    conn.commit()
 
     # Add embedding columns to tables that need semantic search.
     # This enables embedding-based similarity search for these memory types.
@@ -437,9 +412,43 @@ def init_db(path: str) -> sqlite3.Connection:
         existing_cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table_name})")}
         if "embedding" not in existing_cols:
             conn.execute(f"ALTER TABLE {table_name} ADD COLUMN embedding BLOB")
+
     conn.commit()
 
+
+
+def bootstrap_db(path: str) -> sqlite3.Connection:
+    """
+    Open (or create) the SQLite database at `path` and ensure the schema exists.
+
+    Pass ":memory:" for path to create a temporary in-memory database — useful
+    for tests because nothing is written to disk.
+
+    Returns a connection object you pass to the other functions.
+    """
+    if path != ":memory:":
+        dir_path = os.path.dirname(path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
+
+    conn = open_db(path)
+    try:
+        ensure_schema(conn)
+    except Exception:
+        conn.close()
+        raise
     return conn
+
+
+
+def init_db(path: str) -> sqlite3.Connection:
+    """
+    Backward-compatible alias for bootstrap_db().
+
+    Older call sites and tests still import init_db(); new hot-path code should
+    prefer open_db() after an explicit bootstrap step has already happened.
+    """
+    return bootstrap_db(path)
 
 
 def upsert_session(

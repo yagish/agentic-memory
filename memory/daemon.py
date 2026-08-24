@@ -33,7 +33,8 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from memory.db import (
-    init_db,
+    bootstrap_db,
+    open_db,
     get_unprocessed_sessions,
     mark_session_processed,
     assign_to_cluster,
@@ -579,6 +580,10 @@ def run(once: bool = False) -> None:
 
     _daemon_log("daemon started")
 
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    bootstrap_conn = bootstrap_db(DB_PATH)
+    bootstrap_conn.close()
+
     while not _shutdown:
         # CPU check: skip heavy LLM work if the machine is busy.
         try:
@@ -595,7 +600,7 @@ def run(once: bool = False) -> None:
             time.sleep(60)
             continue
 
-        conn = init_db(DB_PATH)
+        conn = open_db(DB_PATH)
         sessions = get_unprocessed_sessions(conn, limit=10)
 
         if sessions:

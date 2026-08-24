@@ -7,11 +7,16 @@
 # If an assertion fails, the test fails and prints what went wrong.
 
 import json
+import os
+import sqlite3
+import tempfile
 import unittest
 
 # Import the storage and chunking functions we want to test.
 from memory.db import (
+    bootstrap_db,
     init_db,
+    open_db,
     upsert_session,
     search,
     store_chunk,
@@ -51,6 +56,40 @@ TRANSCRIPT_B = TRANSCRIPT_A + [
     {"role": "user",      "content": "Can you elaborate on the Bell inequality?"},
     {"role": "assistant", "content": "The Bell inequality tests whether local hidden variables can explain entanglement."},
 ]
+
+
+# ---------------------------------------------------------------------------
+# Test group 0: connection/bootstrap split
+# ---------------------------------------------------------------------------
+
+class TestConnectionBootstrapSplit(unittest.TestCase):
+
+    def test_open_db_does_not_apply_schema(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+            path = tmp.name
+
+        try:
+            conn = open_db(path)
+            with self.assertRaises(sqlite3.OperationalError):
+                conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
+            conn.close()
+        finally:
+            os.unlink(path)
+
+    def test_bootstrap_db_creates_schema_for_runtime_open(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+            path = tmp.name
+
+        try:
+            conn = bootstrap_db(path)
+            conn.close()
+
+            reopened = open_db(path)
+            row = reopened.execute("SELECT COUNT(*) AS c FROM sessions").fetchone()
+            self.assertEqual(row["c"], 0)
+            reopened.close()
+        finally:
+            os.unlink(path)
 
 
 # ---------------------------------------------------------------------------

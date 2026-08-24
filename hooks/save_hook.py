@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 # __file__ is this script's path; we go up one level to reach the project root.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from memory.db import init_db
+from memory.db import bootstrap_db, open_db
 from memory.ingest_pipeline import ingest_session
 from memory.logger import activity_log, error_log
 from memory.debug import enable_debug
@@ -169,10 +169,12 @@ def save_session(payload: dict, dry_run: bool = False) -> None:
             print(f"[dry-run]   ... {len(turns) - 4} more turns")
         return
 
-    # Ensure the ~/.memory directory exists before opening the DB.
+    # Bootstrap only when the DB does not exist yet (or is an empty temp file).
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-
-    conn = init_db(DB_PATH)
+    if not os.path.exists(DB_PATH) or os.path.getsize(DB_PATH) == 0:
+        conn = bootstrap_db(DB_PATH)
+    else:
+        conn = open_db(DB_PATH)
     # Agent name is read from MEMORY_AGENT_NAME env var so any tool using this
     # hook can identify itself without code changes (defaults to "assistant").
     agent_name = os.environ.get("MEMORY_AGENT_NAME", "assistant")

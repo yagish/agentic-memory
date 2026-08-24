@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from memory.db import (
-    init_db,
+    bootstrap_db,
     list_insights,
     get_all_sessions_for_compression,
     save_compressed_memory,
@@ -234,7 +234,11 @@ def _intermediate_summary(session_texts: list[str], model: str) -> str:
         "Write concise bullet points only. No preamble, no section headers.\n\n"
         f"Sessions:\n{numbered}"
     )
-    return _call_ollama(prompt, model)
+    print(f"prompt: {prompt}, session_texts: {session_texts}")
+    response = _call_ollama(prompt, model)
+
+    print(f"compressed response: {response}")
+    return response
 
 
 def _final_compress(
@@ -399,7 +403,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = init_db(DB_PATH)
+    conn = bootstrap_db(DB_PATH)
     try:
         result = compress_memory(conn, model=args.model, dry_run=args.dry_run)
         prefix = "[DRY RUN] " if args.dry_run else ""

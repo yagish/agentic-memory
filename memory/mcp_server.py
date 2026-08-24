@@ -23,7 +23,8 @@ from memory.logger import activity_log, error_log
 from memory.debug import enable_debug
 
 from memory.db import (
-    init_db,
+    bootstrap_db,
+    open_db,
     search as db_search,
     semantic_search as db_semantic_search,
     semantic_search_chunks as db_semantic_search_chunks,
@@ -52,11 +53,13 @@ def get_conn():
     """
     Open a connection to the memory database.
 
-    Creates the DB file (and the ~/.memory directory) if they don't exist yet,
-    so the server starts cleanly even before any sessions have been saved.
+    Bootstraps the schema only when the DB file is missing or empty; otherwise
+    this stays on the fast runtime path and only opens the existing database.
     """
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    return init_db(DB_PATH)
+    if not os.path.exists(DB_PATH) or os.path.getsize(DB_PATH) == 0:
+        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+        return bootstrap_db(DB_PATH)
+    return open_db(DB_PATH)
 
 
 # Create the MCP server. The name "memory" is what Claude sees in its tool list.

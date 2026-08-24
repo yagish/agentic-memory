@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import re
 
-from memory.db import init_db, search, semantic_search, insert_fact, delete_fact
+from memory.db import bootstrap_db, open_db, search, semantic_search, insert_fact, delete_fact
 from memory.consolidation import consolidate_old_sessions, prune_old_transcripts
 from memory.debug import enable_debug
 
@@ -34,11 +34,11 @@ DASHBOARD_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashb
 
 def get_conn():
     """Open the memory database. Exits with a clear message if it doesn't exist yet."""
-    if not os.path.exists(DB_PATH):
+    if not os.path.exists(DB_PATH) or os.path.getsize(DB_PATH) == 0:
         print("No memory database found at", DB_PATH)
-        print("Start a Claude Code session to create it.")
+        print("Run: python3 cli.py bootstrap  (or start a Claude Code session to create it).")
         sys.exit(1)
-    return init_db(DB_PATH)
+    return open_db(DB_PATH)
 
 
 # ---------------------------------------------------------------------------
@@ -618,7 +618,7 @@ def cmd_daemon(args):
             # Show how many sessions were processed today by counting processed sessions
             # from the database.
             if os.path.exists(DB_PATH):
-                conn = init_db(DB_PATH)
+                conn = open_db(DB_PATH)
                 today = __import__("datetime").date.today().isoformat()
                 count = conn.execute(
                     """
@@ -654,6 +654,18 @@ def cmd_compact(_args):
 
 
 # ---------------------------------------------------------------------------
+# Command: bootstrap
+# ---------------------------------------------------------------------------
+
+
+def cmd_bootstrap(_args):
+    """Create or migrate the memory database schema explicitly."""
+    conn = bootstrap_db(DB_PATH)
+    conn.close()
+    print(f"Bootstrapped memory DB at {DB_PATH}")
+
+
+# ---------------------------------------------------------------------------
 # Command: install
 # ---------------------------------------------------------------------------
 
@@ -663,6 +675,10 @@ _CLAUDE_SETTINGS_PATH = os.path.expanduser("~/.claude/settings.json")
 
 def cmd_install(_args):
     """Wire wake_up.py and save_hook.py into the global ~/.claude/settings.json."""
+    # Install time is also an explicit bootstrap boundary for the DB schema.
+    conn = bootstrap_db(DB_PATH)
+    conn.close()
+
     # Compute absolute paths to the hook scripts based on this file's location.
     repo_root  = os.path.dirname(os.path.abspath(__file__))
     wake_up    = os.path.join(repo_root, "hooks", "wake_up.py")
@@ -867,6 +883,12 @@ def main():
         help="Run one daemon compaction pass: episodic entries, working memory, compacted sessions, procedural patterns",
     )
 
+    # bootstrap — create or migrate the DB schema explicitly
+    sub.add_parser(
+        "bootstrap",
+        help="Create or migrate the memory database schema",
+    )
+
     # install — wire hooks into the global ~/.claude/settings.json
     sub.add_parser(
         "install",
@@ -908,6 +930,7 @@ def main():
         "daemon":        cmd_daemon,
         "ingest-server":   cmd_ingest_server,
         "compact":         cmd_compact,
+        "bootstrap":       cmd_bootstrap,
         "install":         cmd_install,
         "sync-identity":   cmd_sync_identity,
     }

@@ -42,7 +42,8 @@ import uvicorn
 from uvicorn.config import LOGGING_CONFIG as UVICORN_LOGGING_CONFIG
 
 from memory.db import (
-    init_db,
+    bootstrap_db,
+    open_db,
     semantic_search_chunks,
     search_facts,
     list_insights,
@@ -73,6 +74,22 @@ _UVICORN_LOG_CONFIG["formatters"]["access"]["fmt"] = (
 _UVICORN_LOG_CONFIG["formatters"]["access"]["datefmt"] = "%Y-%m-%dT%H:%M:%S"
 
 app = FastAPI(title="Memory Ingest Server", version="1.0.0")
+
+
+@app.on_event("startup")
+def _bootstrap_database() -> None:
+    """Create or migrate the DB once when the ingest server starts."""
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    conn = bootstrap_db(DB_PATH)
+    conn.close()
+
+
+def _get_conn():
+    """Open the bootstrapped DB, creating schema only when the file is empty."""
+    if not os.path.exists(DB_PATH) or os.path.getsize(DB_PATH) == 0:
+        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+        return bootstrap_db(DB_PATH)
+    return open_db(DB_PATH)
 
 # ── CORS — let browser-based agents POST from known domains ──────────────────
 # Override with MEMORY_INGEST_CORS_ORIGINS (comma-separated) if needed.
@@ -279,8 +296,7 @@ def post_ingest(req: IngestRequest) -> dict:
     conn = None
     try:
         turns_as_dicts = [{"role": t.role, "content": t.content} for t in req.turns]
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-        conn = init_db(DB_PATH)
+        conn = _get_conn()
 
         updated_at = datetime.now(timezone.utc).isoformat()
         started_at = req.started_at or updated_at
@@ -329,8 +345,7 @@ def post_recall(req: RecallRequest) -> dict:
     """Build a memory wake-up digest for a prompt (agent-facing)."""
     conn = None
     try:
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-        conn = init_db(DB_PATH)
+        conn = _get_conn()
         query = (req.query or "").strip()
 
         identity = _read_identity()
@@ -376,8 +391,7 @@ def post_answer(req: AnswerRequest) -> dict:
     """Try to answer a prompt directly from memory without calling the LLM."""
     conn = None
     try:
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-        conn = init_db(DB_PATH)
+        conn = _get_conn()
         match = find_direct_answer(conn, req.query, min_score=req.min_score,
                                    exclude_session_id=req.session_id)
         result = {"ok": True, "answered": match is not None, "match": match}
@@ -407,8 +421,7 @@ def post_compress() -> dict:
     from memory.compress import compress_memory  # noqa: PLC0415
 
     try:
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-        conn = init_db(DB_PATH)
+        conn = _get_conn()
     except Exception as exc:
         raise HTTPException(status_code=500, detail={"ok": False, "error": str(exc)})
 
