@@ -5,11 +5,13 @@
 #     1. Creates an episodic memory entry (title + abstract)
 #     2. Assigns session to a topic cluster
 #     3. Updates working memory for that cluster
-#     4. Compacts the cluster into a vector-indexed summary (when ≥ 3 sessions ready)
+#     4. Compacts the cluster into a vector-indexed summary (when ≥ COMPACT_MIN_SESSIONS ready)
 #     5. Extracts reusable procedural patterns
+#     6. Extracts durable cross-session insights
+#     7. Extracts durable facts about the user (identity, preferences, decisions)
 #   Pass 2 — periodic maintenance (every PERIODIC_EVERY_N sessions):
-#     6. Closes working memory entries inactive > 14 days
-#     7. Merges near-duplicate compacted session entries (≥ 92% similarity)
+#     8. Closes working memory entries inactive > 14 days
+#     9. Merges near-duplicate compacted session entries (≥ 92% similarity)
 #
 # Run:
 #   python3 memory/daemon.py            # runs forever
@@ -22,12 +24,10 @@
 
 import json
 import os
+import psutil
 import signal
-import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -47,21 +47,24 @@ from memory.db import (
     get_near_duplicate_compacted,
     merge_compacted_sessions,
     upsert_procedural,
+    upsert_insight,
+    insert_fact,
     prune_transcript,
     delete_sessions,
     embed,
 )
 from memory.logger import activity_log, error_log
 from memory.debug import enable_debug
+from memory.ollama import (
+    call_ollama as _call_ollama,
+    start_ollama_if_needed as _start_ollama_if_needed,
+    stop_ollama as _stop_ollama,
+)
 
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-
-_OLLAMA_URL  = "http://localhost:11434/api/generate"
-_OLLAMA_BASE = "http://localhost:11434"
-_DEFAULT_MODEL = "qwen2.5:3b"
 
 DB_PATH           = os.path.expanduser("~/.memory/memory.db")
 _DAEMON_LOG_PATH  = os.path.expanduser("~/.memory/daemon.log")
@@ -70,7 +73,11 @@ POLL_INTERVAL      = 5 * 60    # seconds between cycles when work exists
 LONG_POLL_INTERVAL = 30 * 60   # seconds between cycles when idle
 CPU_THRESHOLD      = 70         # skip LLM work above this CPU %
 RETAIN_PROCESSED_DAYS = 30      # delete processed sessions older than this
-COMPACT_MIN_SESSIONS  = 3       # minimum uncompacted sessions before compaction
+# Compact as soon as a cluster has an uncompacted session — most real sessions land in
+# singleton clusters, so waiting for 3+ meant compaction (and wake-up cache hits) never ran.
+COMPACT_MIN_SESSIONS  = 1
+INSIGHT_MIN_CONFIDENCE = 0.6    # discard low-confidence insight extractions
+FACT_MIN_CONFIDENCE   = 0.6    # discard low-confidence fact extractions
 PERIODIC_EVERY_N      = 20      # run Pass 2 maintenance every N processed sessions
 WORKING_MEMORY_TTL    = 14      # days before working memory is considered stale
 
@@ -82,6 +89,7 @@ _shutdown = False
 # ---------------------------------------------------------------------------
 
 def _handle_sigterm(signum, frame):
+    # Ask the polling loop to stop at its next safe checkpoint.
     global _shutdown
     _shutdown = True
 
@@ -104,94 +112,9 @@ def _daemon_log(message: str) -> None:
         pass
 
 
-# ---------------------------------------------------------------------------
-# Ollama lifecycle
-# ---------------------------------------------------------------------------
-
-def _is_ollama_running() -> bool:
-    try:
-        with urllib.request.urlopen(f"{_OLLAMA_BASE}/api/tags", timeout=2) as resp:
-            return resp.status == 200
-    except Exception:
-        return False
-
-
-def _start_ollama_if_needed() -> "subprocess.Popen | None":
-    if _is_ollama_running():
-        _daemon_log("ollama already running")
-        return None
-    try:
-        proc = subprocess.Popen(
-            ["ollama", "serve"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except FileNotFoundError:
-        _daemon_log("ollama binary not found in PATH — skipping LLM processing")
-        return None
-    except Exception as exc:
-        _daemon_log(f"failed to launch ollama: {exc}")
-        return None
-
-    _daemon_log(f"started ollama (PID {proc.pid})")
-    for attempt in range(12):
-        time.sleep(1)
-        if _is_ollama_running():
-            _daemon_log(f"ollama ready after {attempt + 1}s")
-            return proc
-
-    _daemon_log("ollama did not become ready in 12s — killing it")
-    try:
-        proc.terminate()
-        proc.wait(timeout=5)
-    except Exception:
-        pass
-    return None
-
-
-def _stop_ollama(proc: "subprocess.Popen") -> None:
-    try:
-        proc.terminate()
-        proc.wait(timeout=5)
-        _daemon_log(f"stopped ollama (PID {proc.pid})")
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-    except Exception as exc:
-        _daemon_log(f"error stopping ollama: {exc}")
-
-
-# ---------------------------------------------------------------------------
-# Ollama HTTP client
-# ---------------------------------------------------------------------------
-
-def _call_ollama(prompt_text: str) -> str:
-    model = os.environ.get("MEMORY_OLLAMA_MODEL", _DEFAULT_MODEL)
-    body = json.dumps({
-        "model":  model,
-        "prompt": prompt_text,
-        "stream": False,
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        _OLLAMA_URL,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            raw = resp.read().decode("utf-8")
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Ollama unavailable: {exc}") from exc
-
-    data = json.loads(raw)
-    if "response" not in data:
-        raise RuntimeError(f"Unexpected ollama response: {raw[:200]}")
-    return data["response"]
-
-
 def _parse_json_from(raw: str) -> list | dict:
     """Extract the first JSON array or object from an ollama response."""
+    # Accept both strict JSON responses and responses wrapped in explanatory text.
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
@@ -206,12 +129,36 @@ def _parse_json_from(raw: str) -> list | dict:
     return []
 
 
+def _call_ollama_json(prompt: str, expected_type: type, retries: int = 1):
+    """
+    Call ollama and parse a JSON value of `expected_type` from the response.
+
+    qwen2.5:3b frequently wraps JSON in prose or emits malformed JSON. On a
+    type mismatch we retry once with a stricter instruction appended before
+    giving up, instead of silently discarding the (possibly valid) output.
+
+    Returns the parsed value, or None if no valid response was obtained.
+    """
+    attempt_prompt = prompt
+    for attempt in range(retries + 1):
+        raw = _call_ollama(attempt_prompt, log_fn=_daemon_log)
+        data = _parse_json_from(raw)
+        if isinstance(data, expected_type):
+            return data
+        attempt_prompt = (
+            f"{prompt}\n\nReturn ONLY valid JSON matching the format above. "
+            "No prose, no markdown fences, no explanation."
+        )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
 
-def _build_session_text(turns: list, max_chars: int = 2000) -> str:
+def _build_session_text(turns: list, max_chars: int | None = None) -> str:
     """Concatenate turn content into a readable text sample."""
+    # Preserve full conversation context with role labels for the local model.
     lines = []
     chars = 0
     for turn in turns:
@@ -219,8 +166,8 @@ def _build_session_text(turns: list, max_chars: int = 2000) -> str:
         if not isinstance(content, str) or not content.strip():
             continue
         role = turn.get("role", "")
-        line = f"{role}: {content[:400]}"
-        if chars + len(line) > max_chars:
+        line = f"{role}: {content}"
+        if max_chars is not None and chars + len(line) > max_chars:
             break
         lines.append(line)
         chars += len(line)
@@ -238,38 +185,46 @@ def _summary_target_chars(turn_count: int) -> int | None:
     return 3200       # ~800 tokens
 
 
-# ---------------------------------------------------------------------------
-# Pass 1 — per-session processing
-# ---------------------------------------------------------------------------
-
-def _create_episodic_entry(conn, session: dict) -> tuple[str, str]:
-    """
-    Generate a title and 2-sentence abstract for the session and store it
-    in episodic_memory. Returns (title, abstract) or ("", "") on failure.
-    """
-    session_id = session["session_id"]
+def _session_text_sample(session: dict, max_chars: int | None = None) -> str:
+    """Prepare full transcript for per-session LLM prompts."""
     try:
         turns = json.loads(session.get("transcript") or "[]")
     except json.JSONDecodeError:
         turns = []
+    return _build_session_text(turns, max_chars=max_chars)
 
-    if not turns:
+
+# ---------------------------------------------------------------------------
+# Pass 1 — per-session processing
+# ---------------------------------------------------------------------------
+
+def _create_episodic_entry(
+    conn,
+    session: dict,
+    text_sample: str | None = None,
+) -> tuple[str, str]:
+    """
+    Generate a title and 2-sentence abstract for the session and store it
+    in episodic_memory. Returns (title, abstract) or ("", "") on failure.
+    """
+    # Turn the raw transcript into a searchable title and short event summary.
+    session_id = session["session_id"]
+    if text_sample is None:
+        text_sample = _session_text_sample(session)
+    if not text_sample:
         return "", ""
-
-    text_sample = _build_session_text(turns, max_chars=1500)
 
     prompt = (
         "Summarize this conversation:\n"
         "1. TITLE: One line, max 10 words, describing what was done.\n"
         "2. ABSTRACT: Two sentences — what happened and what was resolved.\n\n"
         'Return ONLY a JSON object: {"title": "...", "abstract": "..."}\n\n'
-        f"Conversation ({len(turns)} turns):\n{text_sample}"
+        f"Conversation sample:\n{text_sample}"
     )
 
     try:
-        raw = _call_ollama(prompt)
-        data = _parse_json_from(raw)
-        if not isinstance(data, dict):
+        data = _call_ollama_json(prompt, dict)
+        if data is None:
             return "", ""
         title    = data.get("title", "").strip()[:200]
         abstract = data.get("abstract", "").strip()[:500]
@@ -286,6 +241,7 @@ def _create_episodic_entry(conn, session: dict) -> tuple[str, str]:
 
 def _assign_cluster(conn, session: dict) -> str | None:
     """Embed the session and assign it to the nearest topic cluster."""
+    # Use a short transcript sample so clustering stays cheap and consistent.
     session_id = session["session_id"]
     try:
         turns = json.loads(session.get("transcript") or "[]")
@@ -318,6 +274,7 @@ def _compact_cluster_if_ready(conn, cluster_id: str) -> None:
     Triggers only when ≥ COMPACT_MIN_SESSIONS sessions have uncompacted transcripts.
     Source session transcripts are nulled out after successful compaction.
     """
+    # Compact only complete groups of related sessions, leaving small groups intact.
     session_ids = get_cluster_sessions(conn, cluster_id)
     if not session_ids:
         return
@@ -368,7 +325,7 @@ def _compact_cluster_if_ready(conn, cluster_id: str) -> None:
     )
 
     try:
-        summary = _call_ollama(prompt)
+        summary = _call_ollama(prompt, log_fn=_daemon_log)
         summary = summary.strip()
         if not summary:
             return
@@ -397,21 +354,21 @@ def _compact_cluster_if_ready(conn, cluster_id: str) -> None:
         error_log("daemon", f"compaction failed for cluster {cluster_id}: {exc}", exc=exc)
 
 
-def _extract_procedural_patterns(conn, session: dict) -> None:
+def _extract_procedural_patterns(
+    conn,
+    session: dict,
+    text_sample: str | None = None,
+) -> None:
     """
     Identify reusable how-to patterns from a session and store them in
     procedural_memory. Only generalizable procedures are stored.
     """
+    # Ask the local model to retain only workflows that generalize beyond this session.
     session_id = session["session_id"]
-    try:
-        turns = json.loads(session.get("transcript") or "[]")
-    except json.JSONDecodeError:
-        turns = []
-
-    if not turns:
+    if text_sample is None:
+        text_sample = _session_text_sample(session)
+    if not text_sample:
         return
-
-    text_sample = _build_session_text(turns, max_chars=1500)
 
     prompt = (
         "Identify any reusable how-to patterns or workflows in this conversation.\n"
@@ -422,9 +379,8 @@ def _extract_procedural_patterns(conn, session: dict) -> None:
     )
 
     try:
-        raw = _call_ollama(prompt)
-        data = _parse_json_from(raw)
-        if not isinstance(data, list):
+        data = _call_ollama_json(prompt, list)
+        if not data:
             return
 
         count = 0
@@ -444,6 +400,103 @@ def _extract_procedural_patterns(conn, session: dict) -> None:
         error_log("daemon", f"procedural extraction failed for {session_id}: {exc}", exc=exc)
 
 
+def _extract_insight_patterns(
+    conn,
+    session: dict,
+    text_sample: str | None = None,
+) -> None:
+    """
+    Identify a durable cross-session insight (recurring mistake, strong
+    preference, or skill gap) from a session and store it in insights.
+    Only high-confidence, generalizable observations are kept.
+    """
+    session_id = session["session_id"]
+    if text_sample is None:
+        text_sample = _session_text_sample(session)
+    if not text_sample:
+        return
+
+    prompt = (
+        "Identify ONE durable cross-session insight about the user or their work from "
+        "this conversation \u2014 e.g. a recurring mistake, a strong preference, or a skill gap. "
+        "Skip anything only relevant to this single session.\n\n"
+        'Return ONLY a JSON object: {"insight_type": "preference|pattern|skill_gap", '
+        '"content": "...", "confidence": 0.0-1.0}\n'
+        "Return {} if no durable insight exists.\n\n"
+        f"Conversation:\n{text_sample}"
+    )
+
+    try:
+        data = _call_ollama_json(prompt, dict)
+        if not data:
+            return
+
+        insight_type = data.get("insight_type", "").strip()[:50]
+        content = data.get("content", "").strip()[:500]
+        confidence = data.get("confidence")
+        if not isinstance(confidence, (int, float)):
+            confidence = None
+
+        if insight_type and content and (confidence is None or confidence >= INSIGHT_MIN_CONFIDENCE):
+            upsert_insight(conn, insight_type, content, [session_id], confidence)
+            activity_log("daemon", "insight", session=session_id, insight_type=insight_type)
+            _daemon_log(f"extracted insight ({insight_type}) from {session_id}")
+    except Exception as exc:
+        error_log("daemon", f"insight extraction failed for {session_id}: {exc}", exc=exc)
+
+
+def _extract_facts(
+    conn,
+    session: dict,
+    text_sample: str | None = None,
+) -> None:
+    """
+    Identify durable facts about the user (identity, preferences, decisions) from
+    a session and store them in facts. Only clearly-stated, generalizable facts
+    are kept — skips anything only relevant to this single session.
+    """
+    session_id = session["session_id"]
+    if text_sample is None:
+        text_sample = _session_text_sample(session)
+    if not text_sample:
+        return
+
+    prompt = (
+        "Identify any durable facts about the user worth remembering permanently — "
+        "their name, role, background, preferences, or key decisions they made. "
+        "Skip anything only relevant to this single session.\n\n"
+        'Return ONLY a JSON array: [{"content": "...", "tags": ["tag1"], "confidence": 0.0-1.0}]\n'
+        "Return [] if no durable facts exist.\n\n"
+        f"Conversation:\n{text_sample}"
+    )
+
+    try:
+        data = _call_ollama_json(prompt, list)
+        if not data:
+            return
+
+        count = 0
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content", "").strip()[:500]
+            tags = item.get("tags") or []
+            if not isinstance(tags, list):
+                tags = []
+            confidence = item.get("confidence")
+            if not isinstance(confidence, (int, float)):
+                confidence = None
+            if content and (confidence is None or confidence >= FACT_MIN_CONFIDENCE):
+                insert_fact(conn, content, tags=tags, source="daemon", session_id=session_id)
+                count += 1
+
+        if count:
+            activity_log("daemon", "fact", session=session_id, facts=count)
+            _daemon_log(f"extracted {count} facts from {session_id}")
+    except Exception as exc:
+        error_log("daemon", f"fact extraction failed for {session_id}: {exc}", exc=exc)
+
+
 # ---------------------------------------------------------------------------
 # Pass 2 — periodic maintenance
 # ---------------------------------------------------------------------------
@@ -453,6 +506,7 @@ def _close_stale_working_memory(conn) -> None:
     Close working memory entries that have had no activity for WORKING_MEMORY_TTL days.
     Stamps closed_at on each entry after deciding if it warrants a final episodic note.
     """
+    # Preserve significant completed work as an episode before closing stale context.
     stale = get_stale_working_memory(conn, days=WORKING_MEMORY_TTL)
     if not stale:
         return
@@ -465,12 +519,12 @@ def _close_stale_working_memory(conn) -> None:
                 "In one sentence: was anything significant accomplished that should be remembered? "
                 "Start with YES or NO."
             )
-            raw = _call_ollama(prompt)
+            raw = _call_ollama(prompt, log_fn=_daemon_log)
             if raw.strip().upper().startswith("YES"):
                 title_prompt = (
                     f"Give a 5-8 word title for this completed task:\n{wm['summary'][:400]}"
                 )
-                title = _call_ollama(title_prompt).strip()[:150]
+                title = _call_ollama(title_prompt, log_fn=_daemon_log).strip()[:150]
                 insert_episodic(
                     conn, wm["cluster_id"],
                     title or "Completed task (working memory closed)",
@@ -490,6 +544,7 @@ def _merge_near_duplicate_compacted(conn) -> None:
     Find compacted session pairs with vector similarity ≥ 92% and merge them
     into a single entry via LLM. Limits to 3 merges per maintenance cycle.
     """
+    # Collapse highly similar summaries so retrieval does not return duplicates.
     try:
         pairs = get_near_duplicate_compacted(conn, similarity_threshold=0.92)
     except Exception:
@@ -513,7 +568,7 @@ def _merge_near_duplicate_compacted(conn) -> None:
                 f"--- Summary A ---\n{keep_row['content']}\n\n"
                 f"--- Summary B ---\n{drop_row['content']}"
             )
-            merged_content = _call_ollama(prompt).strip()
+            merged_content = _call_ollama(prompt, log_fn=_daemon_log).strip()
             if not merged_content:
                 continue
 
@@ -541,6 +596,7 @@ def prune_old_sessions(conn) -> None:
     Delete processed sessions older than RETAIN_PROCESSED_DAYS days.
     Episodic entries, compacted summaries, and procedural patterns are kept.
     """
+    # Remove raw processed sessions while retaining their derived memory records.
     rows = conn.execute(
         """
         SELECT session_id FROM sessions
@@ -573,6 +629,7 @@ def run(once: bool = False) -> None:
     Args:
         once — if True, run exactly one pass then return (for testing and CLI).
     """
+    # Reset the signal-controlled flag whenever a new daemon run begins.
     global _shutdown
     _shutdown = False
 
@@ -585,12 +642,9 @@ def run(once: bool = False) -> None:
     bootstrap_conn.close()
 
     while not _shutdown:
+        # Each cycle handles new sessions first, then performs occasional maintenance.
         # CPU check: skip heavy LLM work if the machine is busy.
-        try:
-            import psutil
-            cpu = psutil.cpu_percent(interval=1)
-        except ImportError:
-            cpu = 0
+        cpu = psutil.cpu_percent(interval=1)
 
         if cpu > CPU_THRESHOLD:
             activity_log("daemon", "skip_cycle", reason="high_cpu", cpu=cpu)
@@ -601,10 +655,11 @@ def run(once: bool = False) -> None:
             continue
 
         conn = open_db(DB_PATH)
+        # Fetch a batch of unprocessed sessions from the database.
         sessions = get_unprocessed_sessions(conn, limit=10)
 
         if sessions:
-            _ollama_proc = _start_ollama_if_needed()
+            _ollama_proc = _start_ollama_if_needed(log_fn=_daemon_log)
 
             for session in sessions:
                 if _shutdown:
@@ -614,8 +669,13 @@ def run(once: bool = False) -> None:
                 _daemon_log(f"processing session {session_id}")
 
                 try:
+                    # Reuse one bounded transcript sample across per-session LLM prompts.
+                    text_sample = _session_text_sample(session)
+
                     # Step 1: Episodic entry (title + abstract).
-                    title, abstract = _create_episodic_entry(conn, session)
+                    title, abstract = _create_episodic_entry(
+                        conn, session, text_sample=text_sample
+                    )
 
                     # Step 2: Assign to topic cluster.
                     cluster_id = _assign_cluster(conn, session)
@@ -630,9 +690,21 @@ def run(once: bool = False) -> None:
                         _compact_cluster_if_ready(conn, cluster_id)
 
                     # Step 5: Extract procedural patterns.
-                    _extract_procedural_patterns(conn, session)
+                    _extract_procedural_patterns(
+                        conn, session, text_sample=text_sample
+                    )
 
-                    # Step 6: Only mark the session processed after all required
+                    # Step 6: Extract durable cross-session insights.
+                    _extract_insight_patterns(
+                        conn, session, text_sample=text_sample
+                    )
+
+                    # Step 7: Extract durable facts about the user.
+                    _extract_facts(
+                        conn, session, text_sample=text_sample
+                    )
+
+                    # Step 8: Only mark the session processed after all required
                     # per-session steps completed without bubbling an exception.
                     mark_session_processed(conn, session_id)
 
@@ -663,7 +735,7 @@ def run(once: bool = False) -> None:
                 error_log("daemon", "session pruning failed", exc=exc)
 
             if _ollama_proc is not None:
-                _stop_ollama(_ollama_proc)
+                _stop_ollama(_ollama_proc, log_fn=_daemon_log)
 
             poll = POLL_INTERVAL
         else:

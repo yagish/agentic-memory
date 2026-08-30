@@ -10,16 +10,15 @@ import re
 from dataclasses import dataclass, field
 
 from memory.db import (
-    get_active_working_memory,
-    increment_compacted_hit,
+    find_cached_response,
     search_compacted_sessions,
     search_facts_semantic,
     search_procedural_semantic,
+    search_working_memory_semantic,
 )
 from memory.inference import embed_text
 
-# Semantic thresholds for compacted-session retrieval.
-SEMANTIC_CACHE_THRESHOLD = 0.96
+# Semantic thresholds for context retrieval.
 ENRICHMENT_THRESHOLD = 0.70
 WORKING_MEM_THRESHOLD = 0.50
 
@@ -105,7 +104,7 @@ def build_wake_up_injection(context: WakeUpContext) -> str:
 
     if context.cache_hit:
         sim = context.cache_hit.get("similarity", 0)
-        content = context.cache_hit.get("content", "")
+        content = context.cache_hit.get("response", "")
         _add(
             f"You answered this question before ({sim:.0%} match). Previous answer: {_sentence(content)}"
         )
@@ -149,35 +148,43 @@ def retrieve_wake_up_context(
     embed_fn=embed_text,
 ) -> WakeUpContext:
     """Retrieve wake-up context across compacted, working, fact, and procedural layers."""
-    prompt_vec = embed_fn(prompt)
     warnings: list[RetrievalWarning] = []
 
     cache_hit: dict | None = None
     enrichment: list[dict] = []
-    cluster_id_for_wm: str | None = None
+
+    try:
+        cache_hit = find_cached_response(conn, prompt)
+    except Exception as exc:
+        warnings.append(RetrievalWarning("response_cache", str(exc)))
+
+    if cache_hit:
+        return WakeUpContext(
+            cache_hit=cache_hit,
+            working_mem=None,
+            enrichment=[],
+            facts=[],
+            procedural=[],
+            warnings=warnings,
+        )
+
+    prompt_vec = embed_fn(prompt)
 
     try:
         results = search_compacted_sessions(conn, prompt_vec, limit=5)
         for compacted in results:
             sim = compacted.get("similarity", 0)
-            if cluster_id_for_wm is None and sim >= WORKING_MEM_THRESHOLD:
-                cluster_id_for_wm = compacted.get("cluster_id")
-            if sim >= SEMANTIC_CACHE_THRESHOLD:
-                cache_hit = compacted
-                try:
-                    increment_compacted_hit(conn, compacted["id"])
-                except Exception as exc:
-                    warnings.append(RetrievalWarning("compacted_hit_count", str(exc)))
-                break
-            if ENRICHMENT_THRESHOLD <= sim < SEMANTIC_CACHE_THRESHOLD:
+            if sim >= ENRICHMENT_THRESHOLD:
                 enrichment.append(compacted)
     except Exception as exc:
         warnings.append(RetrievalWarning("compacted_search", str(exc)))
 
     working_mem: dict | None = None
-    if include_working_memory and cluster_id_for_wm:
+    if include_working_memory:
         try:
-            working_mem = get_active_working_memory(conn, cluster_id_for_wm)
+            matches = search_working_memory_semantic(conn, prompt_vec, limit=1)
+            if matches and matches[0].get("similarity", 0) >= WORKING_MEM_THRESHOLD:
+                working_mem = matches[0]
         except Exception as exc:
             warnings.append(RetrievalWarning("working_memory", str(exc)))
 

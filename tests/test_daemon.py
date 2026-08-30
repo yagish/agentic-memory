@@ -317,6 +317,7 @@ class TestDaemonOnceMode(unittest.TestCase):
 
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
             tmp_path = tmp.name
+        log_path = tmp_path + ".log"
 
         try:
             setup_conn = init_db(tmp_path)
@@ -328,6 +329,7 @@ class TestDaemonOnceMode(unittest.TestCase):
             with patch.object(daemon_module, "_call_ollama", return_value=mock_response), \
                  patch.object(daemon_module, "_start_ollama_if_needed", return_value=None), \
                  patch("memory.daemon.DB_PATH", tmp_path), \
+                 patch("memory.daemon._DAEMON_LOG_PATH", log_path), \
                  patch("psutil.cpu_percent", return_value=10):
                 daemon_module.run(once=True)
 
@@ -342,6 +344,8 @@ class TestDaemonOnceMode(unittest.TestCase):
             self.assertIsNotNone(row["daemon_processed_at"])
         finally:
             os.unlink(tmp_path)
+            if os.path.exists(log_path):
+                os.unlink(log_path)
 
     def test_daemon_once_mode_leaves_session_unprocessed_when_step_raises(self):
         """
@@ -353,6 +357,7 @@ class TestDaemonOnceMode(unittest.TestCase):
 
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
             tmp_path = tmp.name
+        log_path = tmp_path + ".log"
 
         try:
             setup_conn = init_db(tmp_path)
@@ -365,6 +370,7 @@ class TestDaemonOnceMode(unittest.TestCase):
                  patch.object(daemon_module, "_compact_cluster_if_ready", return_value=None), \
                  patch.object(daemon_module, "_extract_procedural_patterns", side_effect=RuntimeError("boom")), \
                  patch("memory.daemon.DB_PATH", tmp_path), \
+                 patch("memory.daemon._DAEMON_LOG_PATH", log_path), \
                  patch("psutil.cpu_percent", return_value=10):
                 daemon_module.run(once=True)
 
@@ -379,6 +385,8 @@ class TestDaemonOnceMode(unittest.TestCase):
             self.assertIsNone(row["daemon_processed_at"])
         finally:
             os.unlink(tmp_path)
+            if os.path.exists(log_path):
+                os.unlink(log_path)
 
 
 if __name__ == "__main__":

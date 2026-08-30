@@ -12,7 +12,7 @@
 #                   GET /memory/chunks (implementation detail / debug view)
 #   ops_router    — GET /logs/{service}   tail last N lines of a service log
 #                   POST /restart/{service}  launchctl kickstart or open Ollama
-#                   POST /compress           map-reduce session compression
+#                   POST /compress           trigger daemon to process unprocessed sessions
 #
 # Run manually:
 #   python3 memory/dashboard_server.py
@@ -24,6 +24,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -103,6 +104,12 @@ _LOG_SOURCES: dict[str, dict[str, object]] = {
         "description": "Optional debugger attach log",
         "kind": "app_log",
         "paths": [os.path.expanduser("~/.memory/debug.log")],
+    },
+    "compress_debug": {
+        "label": "Compress Debug",
+        "description": "Before/after log for each compression LLM call",
+        "kind": "app_log",
+        "paths": [os.path.expanduser("~/.memory/compress_debug.log")],
     },
 }
 
@@ -387,6 +394,61 @@ def get_memory_sessions() -> dict:
     return {"sessions": rows, "total": len(rows)}
 
 
+@memory_router.get("/sessions/{session_id}/transcript")
+def get_session_transcript(session_id: str) -> dict:
+    """Return the full transcript JSON for one session."""
+    try:
+        conn = open_db(DB_PATH)
+        try:
+            row = conn.execute(
+                "SELECT session_id, agent, turn_count, started_at, updated_at, transcript FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return {"error": "session not found"}
+            # transcript is stored as a JSON string; parse it so the client gets an array.
+            try:
+                turns = json.loads(row["transcript"] or "[]")
+            except Exception:
+                turns = []
+            return {
+                "session_id": row["session_id"],
+                "agent": row["agent"],
+                "turn_count": row["turn_count"],
+                "started_at": row["started_at"],
+                "updated_at": row["updated_at"],
+                "transcript": turns,
+            }
+        finally:
+            conn.close()
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@memory_router.get("/compressed")
+def get_compressed_memory() -> dict:
+    """Return all compressed_memory rows, newest first."""
+    rows: list[dict] = []
+    try:
+        conn = open_db(DB_PATH)
+        try:
+            for r in conn.execute(
+                "SELECT id, content, sessions_compressed, model, created_at FROM compressed_memory ORDER BY id DESC"
+            ).fetchall():
+                rows.append({
+                    "id": r["id"],
+                    "content": r["content"],
+                    "sessions_compressed": r["sessions_compressed"],
+                    "model": r["model"],
+                    "created_at": r["created_at"],
+                })
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return {"compressed": rows, "total": len(rows)}
+
+
 @memory_router.get("/chunks")
 def get_memory_chunks() -> dict:
     """All semantic search chunks (text trimmed to 300 chars for display)."""
@@ -649,28 +711,29 @@ def post_restart(service: str) -> dict:
 @ops_router.post("/compress")
 def post_compress() -> dict:
     """
-    Compress all sessions into a structured memory document and delete them.
-
-    Lives here (dashboard server) so the dashboard can call it same-origin
-    without a cross-origin POST to the ingest server.
+    Trigger the daemon to run one complete pass immediately.
+    
+    This processes all unprocessed sessions (episodic entries, clustering,
+    compaction, insights, and procedural patterns) in a background thread.
+    Returns immediately without waiting for completion.
     """
-    from memory.compress import compress_memory  # noqa: PLC0415
+    from memory.daemon import run  # noqa: PLC0415
 
-    try:
-        conn = open_db(DB_PATH)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail={"ok": False, "error": str(exc)})
-    try:
-        result = compress_memory(conn)
-        return {"ok": True, "sessions_compressed": result.sessions_compressed,
-                "model": result.model, "created_at": result.created_at,
-                "content": result.content}
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail={"ok": False, "error": str(exc)})
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail={"ok": False, "error": str(exc)})
-    finally:
-        conn.close()
+    def _run_daemon_once():
+        """Run daemon in background thread."""
+        try:
+            run(once=True)
+        except Exception as exc:
+            from memory.logger import error_log  # noqa: PLC0415
+            error_log("dashboard_compress", "daemon_run_failed", error=str(exc))
+
+    thread = threading.Thread(target=_run_daemon_once, daemon=True)
+    thread.start()
+    
+    return {
+        "ok": True,
+        "message": "Daemon processing triggered. Check logs for details."
+    }
 
 
 # ── App assembly ──────────────────────────────────────────────────────────────

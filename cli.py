@@ -772,8 +772,6 @@ def cmd_sync_identity(_args):
         print(f"  + {content}")
         facts_added += 1
 
-    # Rebuild the FTS5 index to fix any rowid-mismatch corruption from past edits.
-    conn.execute("INSERT INTO facts_fts(facts_fts) VALUES('rebuild')")
     conn.commit()
 
     conn.close()

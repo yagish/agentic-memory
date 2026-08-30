@@ -32,7 +32,7 @@ class TestBuildInjection(unittest.TestCase):
     def test_cache_hit_includes_from_memory_instruction(self):
         result = _build_injection(
             WakeUpContext(
-                {"similarity": 0.97, "content": "Task: fix auth bug"},
+                {"similarity": 1.0, "response": "The authentication bug is fixed."},
                 None,
                 [],
                 [],
@@ -40,9 +40,9 @@ class TestBuildInjection(unittest.TestCase):
             )
         )
         self.assertTrue(result.startswith("[Memory context: "))
-        self.assertIn("You answered this question before (97% match)", result)
+        self.assertIn("You answered this question before (100% match)", result)
         self.assertIn("Previous answer:", result)
-        self.assertIn("Task: fix auth bug", result)
+        self.assertIn("The authentication bug is fixed.", result)
         self.assertNotIn("Return", result)
 
     def test_includes_working_memory_facts_and_procedural_sections(self):
@@ -115,7 +115,7 @@ class TestMainIntegration(unittest.TestCase):
         result = self._run_main(
             prompt="fix auth bug",
             context=WakeUpContext(
-                {"id": "cs-1", "cluster_id": "cluster-1", "content": "Task: fix auth bug", "similarity": 0.97},
+                {"id": "cache-1", "response": "The authentication bug is fixed.", "similarity": 1.0},
                 None,
                 [],
                 [],
@@ -124,7 +124,8 @@ class TestMainIntegration(unittest.TestCase):
             first_message=False,
         )
         self.assertEqual(result["stdout"], "")
-        self.assertEqual(result["stderr"], "Task: fix auth bug\n")
+        error_payload = json.loads(result["stderr"])
+        self.assertEqual(error_payload["error"]["message"], "The authentication bug is fixed.")
         self.assertEqual(result["exit_code"], 2)
         result["retrieve_context"].assert_called_once_with(
             result["conn"],
@@ -135,7 +136,7 @@ class TestMainIntegration(unittest.TestCase):
             result["conn"],
             "wake_up_cache_hit",
             "fix auth bug",
-            len("Task: fix auth bug") // 4,
+            len("The authentication bug is fixed.") // 4,
         )
         result["conn"].close.assert_called_once()
 

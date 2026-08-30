@@ -149,6 +149,29 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
 .compress-status.ok  { color: var(--green); }
 .compress-status.err { color: var(--red); }
 
+/* ── Compress debug log ────────────────────────────────────── */
+.cdl-toolbar { display: flex; align-items: center; gap: 12px; margin: 20px 0 10px; }
+.cdl-btn { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); font-size: 12px; padding: 5px 12px; cursor: pointer; }
+.cdl-btn:hover { border-color: var(--accent); color: var(--accent); }
+.cdl-meta { font-size: 11px; color: var(--muted); }
+.cdl-entry { background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  margin-bottom: 8px; overflow: hidden; }
+.cdl-head { display: flex; align-items: center; gap: 8px; padding: 7px 12px;
+  border-bottom: 1px solid var(--border); background: var(--surface2); }
+.cdl-badge { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px;
+  letter-spacing: 0.04em; text-transform: uppercase; flex-shrink: 0; }
+.cdl-badge.b-session  { background: rgba(88,166,255,0.15); color: #58a6ff; }
+.cdl-badge.b-map-in   { background: rgba(255,179,71,0.15);  color: #ffb347; }
+.cdl-badge.b-map-out  { background: rgba(63,185,80,0.15);   color: #3fb950; }
+.cdl-badge.b-final    { background: rgba(188,140,255,0.15); color: #bc8cff; }
+.cdl-sid { font-size: 11px; color: var(--muted); }
+.cdl-ts  { font-size: 10px; color: var(--muted); margin-left: auto; }
+.cdl-body { padding: 10px 12px; font-family: "SF Mono","Fira Code",ui-monospace,monospace;
+  font-size: 11px; line-height: 1.6; color: var(--text); white-space: pre-wrap;
+  word-break: break-word; max-height: 280px; overflow-y: auto; }
+.cdl-empty { color: var(--muted); font-size: 13px; padding: 16px 0; }
+
 /* ── Log viewer ───────────────────────────────────────────── */
 #log-view { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
 .log-header { display: flex; align-items: center; gap: 12px; padding: 10px 20px;
@@ -393,10 +416,18 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
     <div class="panel" id="panel-sessions" hidden>
       <input class="tbl-search" id="srch-sessions" type="text" placeholder="Filter sessions…" oninput="filterSessions()">
       <table class="dtbl">
-        <thead><tr><th>Saved</th><th>Agent</th><th>Turns</th><th>Session ID</th></tr></thead>
-        <tbody id="tb-sessions"><tr><td colspan="4" class="tbl-loading">Loading…</td></tr></tbody>
+        <thead><tr><th>Saved</th><th>Agent</th><th>Turns</th><th>Session ID</th><th>Preview</th></tr></thead>
+        <tbody id="tb-sessions"><tr><td colspan="5" class="tbl-loading">Loading…</td></tr></tbody>
       </table>
       <div class="tbl-meta" id="meta-sessions"></div>
+      <!-- transcript viewer — shown when user clicks a session row -->
+      <div id="session-transcript-box" style="display:none;margin-top:16px;border:1px solid var(--border);border-radius:8px;overflow:hidden">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--surface);border-bottom:1px solid var(--border)">
+          <span id="session-transcript-title" style="font-size:13px;font-weight:600"></span>
+          <button onclick="document.getElementById('session-transcript-box').style.display='none'" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:16px">✕</button>
+        </div>
+        <div id="session-transcript-turns" style="padding:14px;max-height:480px;overflow-y:auto;display:flex;flex-direction:column;gap:10px"></div>
+      </div>
     </div>
 
     <!-- Facts -->
@@ -437,6 +468,14 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
         <tbody id="tb-compacted"><tr><td colspan="5" class="tbl-loading">Loading…</td></tr></tbody>
       </table>
       <div class="tbl-meta" id="meta-compacted"></div>
+      <!-- detail viewer — shown when user clicks a compacted-memory row -->
+      <div id="compacted-detail-box" style="display:none;margin-top:16px;border:1px solid var(--border);border-radius:8px;overflow:hidden">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--surface);border-bottom:1px solid var(--border)">
+          <span id="compacted-detail-title" style="font-size:13px;font-weight:600"></span>
+          <button onclick="document.getElementById('compacted-detail-box').style.display='none'" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:16px">✕</button>
+        </div>
+        <div id="compacted-detail-content" style="padding:14px;max-height:480px;overflow-y:auto"></div>
+      </div>
     </div>
 
     <!-- Procedural memory -->
@@ -470,6 +509,18 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
           <div class="compress-status" id="cs2">Ollama must be running. This may take several minutes.</div>
         </div>
       </div>
+
+      <span class="sec-label" style="margin-top:24px;display:block">Compressed Memory Documents</span>
+      <div id="compressed-list" style="display:flex;flex-direction:column;gap:12px;margin-top:12px">
+        <div style="color:var(--muted);font-size:12px">Loading…</div>
+      </div>
+
+      <span class="sec-label" style="margin-top:24px;display:block">Debug Log</span>
+      <div class="cdl-toolbar">
+        <button class="cdl-btn" onclick="loadCompressDebugLog()">&#8635; Refresh</button>
+        <span class="cdl-meta" id="cdl-meta"></span>
+      </div>
+      <div id="cdl-entries"><div class="cdl-empty">Loading…</div></div>
     </div>
 
   </div><!-- /panels -->
@@ -565,7 +616,8 @@ function switchTab(name) {
     else if (name === 'episodic')  loadEpisodic();
     else if (name === 'compacted') loadCompacted();
     else if (name === 'procedural') loadProcedural();
-    else if (name === 'insights')  loadInsights();
+    else if (name === 'insights')    loadInsights();
+    else if (name === 'compression') { loadCompressed(); loadCompressDebugLog(); }
   }
 }
 
@@ -775,19 +827,51 @@ function renderSessions(rows) {
   const q = (document.getElementById('srch-sessions')?.value || '').toLowerCase();
   const f = q ? rows.filter(r =>
     (r.session_id || '').toLowerCase().includes(q) ||
-    (r.agent || '').toLowerCase().includes(q)
+    (r.agent || '').toLowerCase().includes(q) ||
+    (r.preview || '').toLowerCase().includes(q)
   ) : rows;
   const tb = document.getElementById('tb-sessions');
   if (!tb) return;
   tb.innerHTML = f.length
-    ? f.map(s => `<tr>
+    ? f.map(s => `<tr style="cursor:pointer" onclick="loadSessionTranscript('${esc(s.session_id)}', '${esc(s.updated_at)}')">
         <td style="white-space:nowrap">${fmtDate(s.updated_at)}</td>
         <td>${esc(s.agent || '')}</td>
         <td>${s.turn_count}</td>
         <td class="mono" title="${esc(s.session_id)}">${esc((s.session_id || '').slice(0, 22))}…</td>
+        <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)">${esc(s.preview || '')}</td>
       </tr>`).join('')
-    : `<tr><td colspan="4" class="tbl-loading">No sessions found.</td></tr>`;
+    : `<tr><td colspan="5" class="tbl-loading">No sessions found.</td></tr>`;
   set('meta-sessions', `${f.length} of ${rows.length} sessions`);
+}
+
+async function loadSessionTranscript(sessionId, updatedAt) {
+  // show the box immediately with a loading state
+  const box = document.getElementById('session-transcript-box');
+  const title = document.getElementById('session-transcript-title');
+  const turns = document.getElementById('session-transcript-turns');
+  title.textContent = `Session ${sessionId.slice(0, 22)}… — ${fmtDate(updatedAt)}`;
+  turns.innerHTML = '<div style="color:var(--muted);font-size:12px">Loading…</div>';
+  box.style.display = 'block';
+  box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  try {
+    const r = await fetch(`${BASE}/memory/sessions/${encodeURIComponent(sessionId)}/transcript`);
+    if (!r.ok) { turns.innerHTML = '<div style="color:var(--red)">Failed to load transcript.</div>'; return; }
+    const d = await r.json();
+    if (d.error) { turns.innerHTML = `<div style="color:var(--red)">${esc(d.error)}</div>`; return; }
+    // render each turn as a labelled bubble
+    turns.innerHTML = (d.transcript || []).map(t => {
+      const role = t.role || 'unknown';
+      const content = typeof t.content === 'string' ? t.content : JSON.stringify(t.content, null, 2);
+      const bg = role === 'user' ? 'var(--accent)' : 'var(--surface)';
+      const align = role === 'user' ? 'flex-end' : 'flex-start';
+      return `<div style="display:flex;flex-direction:column;align-items:${align};gap:2px">
+        <span style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">${esc(role)}</span>
+        <div style="background:${bg};border:1px solid var(--border);border-radius:8px;padding:8px 12px;max-width:90%;font-size:12px;white-space:pre-wrap;word-break:break-word">${esc(content)}</div>
+      </div>`;
+    }).join('') || '<div style="color:var(--muted)">No turns.</div>';
+  } catch (e) {
+    turns.innerHTML = `<div style="color:var(--red)">${esc(String(e))}</div>`;
+  }
 }
 
 // ── Facts table ────────────────────────────────────────────
@@ -903,24 +987,39 @@ async function loadCompacted() {
 
 function filterCompacted() { renderCompacted(_rawCompacted); }
 
+let _filteredCompacted = [];
+
 function renderCompacted(rows) {
   const q = (document.getElementById('srch-compacted')?.value || '').toLowerCase();
   const f = q ? rows.filter(r =>
     (r.cluster_id || '').toLowerCase().includes(q) ||
     (r.content || '').toLowerCase().includes(q)
   ) : rows;
+  _filteredCompacted = f;
   const tb = document.getElementById('tb-compacted');
   if (!tb) return;
   tb.innerHTML = f.length
-    ? f.map(cs => `<tr>
+    ? f.map((cs, i) => `<tr style="cursor:pointer" onclick="showCompactedDetail(${i})">
         <td style="white-space:nowrap">${fmtDate(cs.updated_at)}</td>
         <td>${fmt(cs.hit_count)}</td>
         <td>${fmt(cs.source_session_count)}</td>
         <td class="mono">${esc((cs.cluster_id || '').slice(0, 18))}${(cs.cluster_id || '').length > 18 ? '…' : ''}</td>
-        <td>${esc(trunc(cs.content, 220))}</td>
+        <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)">${esc(trunc(cs.content, 220))}</td>
       </tr>`).join('')
     : `<tr><td colspan="5" class="tbl-loading">No compacted-memory entries found.</td></tr>`;
   set('meta-compacted', `${f.length} of ${rows.length} compacted-memory entries`);
+}
+
+function showCompactedDetail(i) {
+  const cs = _filteredCompacted[i];
+  if (!cs) return;
+  const box     = document.getElementById('compacted-detail-box');
+  const title   = document.getElementById('compacted-detail-title');
+  const content = document.getElementById('compacted-detail-content');
+  title.textContent = `Cluster ${(cs.cluster_id || '').slice(0, 22)}… — ${fmtDate(cs.updated_at)}`;
+  content.innerHTML = `<pre style="margin:0;white-space:pre-wrap;word-break:break-word;font-size:12px;font-family:inherit">${esc(cs.content || '')}</pre>`;
+  box.style.display = 'block';
+  box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 // ── Procedural memory table ────────────────────────────────
@@ -981,20 +1080,20 @@ async function doCompress(btnId, statusId) {
   const btn = document.getElementById(btnId);
   const sta = document.getElementById(statusId);
   btn.disabled    = true;
-  btn.textContent = 'Compressing…';
+  btn.textContent = 'Processing…';
   sta.className   = 'compress-status';
-  sta.textContent = 'Calling Ollama — this can take several minutes…';
+  sta.textContent = 'Triggering daemon to process unprocessed sessions…';
 
   try {
     const r = await fetch(BASE + '/compress', { method: 'POST' });
     const d = await r.json();
     if (r.ok && d.ok) {
       sta.className   = 'compress-status ok';
-      sta.textContent = `Compressed ${d.sessions_compressed} sessions using ${d.model}.`;
+      sta.textContent = 'Daemon triggered. Check logs for progress.';
       loadServices();
       loadCharts();
     } else {
-      const msg = (d.detail && d.detail.error) || d.error || 'Unknown error';
+      const msg = (d.detail && d.detail.error) || d.error || d.message || 'Unknown error';
       sta.className   = 'compress-status err';
       sta.textContent = msg;
     }
@@ -1004,6 +1103,90 @@ async function doCompress(btnId, statusId) {
   } finally {
     btn.disabled    = false;
     btn.textContent = 'Compress Memory';
+  }
+}
+
+// ── Compress debug log ─────────────────────────────────────
+async function loadCompressed() {
+  // fetch all compressed_memory rows and render them as expandable cards
+  const list = document.getElementById('compressed-list');
+  if (!list) return;
+  list.innerHTML = '<div style="color:var(--muted);font-size:12px">Loading…</div>';
+  try {
+    const r = await fetch(`${BASE}/memory/compressed`);
+    if (!r.ok) { list.innerHTML = '<div style="color:var(--red)">Failed to load.</div>'; return; }
+    const d = await r.json();
+    const rows = d.compressed || [];
+    if (!rows.length) { list.innerHTML = '<div style="color:var(--muted);font-size:12px">No compressed memory documents yet.</div>'; return; }
+    list.innerHTML = rows.map((c, i) => `
+      <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--surface);cursor:pointer"
+             onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
+          <span style="font-size:13px;font-weight:600">Document #${c.id} — ${fmtDate(c.created_at)}</span>
+          <span style="font-size:11px;color:var(--muted)">${c.sessions_compressed} sessions · ${c.model}</span>
+        </div>
+        <div style="display:${i===0?'block':'none'};padding:14px;max-height:400px;overflow-y:auto">
+          <pre style="margin:0;white-space:pre-wrap;word-break:break-word;font-size:12px;font-family:inherit">${esc(c.content || '')}</pre>
+        </div>
+      </div>`).join('');
+  } catch (e) {
+    list.innerHTML = `<div style="color:var(--red)">${esc(String(e))}</div>`;
+  }
+}
+
+async function loadCompressDebugLog() {
+  const container = document.getElementById('cdl-entries');
+  const meta      = document.getElementById('cdl-meta');
+  meta.textContent = 'Loading…';
+  container.innerHTML = '<div class="cdl-empty">Loading…</div>';
+  try {
+    const r = await fetch(BASE + '/logs/compress_debug?lines=2000');
+    const d = await r.json();
+    if (!r.ok || !d.exists) {
+      container.innerHTML = '<div class="cdl-empty">No debug log yet — run a compression first.</div>';
+      meta.textContent = '';
+      return;
+    }
+    // Each entry ends with a line of ─ chars; split on those separators.
+    const raw    = d.lines.join('\n');
+    const blocks = raw.split(/^─{10,}$/m).map(b => b.trim()).filter(Boolean);
+    if (!blocks.length) {
+      container.innerHTML = '<div class="cdl-empty">Log is empty.</div>';
+      meta.textContent = '';
+      return;
+    }
+    meta.textContent = blocks.length + ' entries';
+    container.innerHTML = blocks.map(block => {
+      const nl     = block.indexOf('\n');
+      const header = nl >= 0 ? block.slice(0, nl) : block;
+      const body   = nl >= 0 ? block.slice(nl + 1) : '';
+      const m      = header.match(/^(\S+)\s+\[([^\]]+)\]/);
+      const ts     = m ? m[1].replace('T',' ').replace(/\.\d+/,'').replace('+00:00','Z') : '';
+      const label  = m ? m[2] : header;
+      let cls = 'b-session', badge = label, sid = '';
+      if (label.startsWith('session_text:summary')) {
+        badge = 'session · summary'; sid = label.replace('session_text:summary session=','');
+      } else if (label.startsWith('session_text:transcript')) {
+        badge = 'session · transcript'; sid = label.replace('session_text:transcript session=','');
+      } else if (label === 'intermediate_summary:input') {
+        cls = 'b-map-in';  badge = 'map · input';
+      } else if (label === 'intermediate_summary:output') {
+        cls = 'b-map-out'; badge = 'map · output';
+      } else if (label === 'final_compress:output') {
+        cls = 'b-final';   badge = 'reduce · output';
+      }
+      return `<div class="cdl-entry">
+        <div class="cdl-head">
+          <span class="cdl-badge ${cls}">${esc(badge)}</span>
+          ${sid ? `<span class="cdl-sid">${esc(sid.slice(0,8))}</span>` : ''}
+          <span class="cdl-ts">${esc(ts)}</span>
+        </div>
+        <div class="cdl-body">${esc(body)}</div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    container.innerHTML = `<div class="cdl-empty">Error: ${esc(e.message)}</div>`;
+    meta.textContent = '';
   }
 }
 

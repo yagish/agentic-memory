@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from memory.db import (
+    cache_session_responses,
     chunk_transcript,
     delete_chunks_for_session,
     store_chunk,
@@ -64,6 +65,7 @@ def ingest_session(
         updated_at=updated_at,
         metadata=metadata,
     )
+    cache_session_responses(conn, session_id, turns)
 
     embedding_stored = False
     full_text = " ".join(

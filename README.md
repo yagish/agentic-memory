@@ -8,6 +8,78 @@ A persistent memory system for Claude Code that makes every new session feel lik
 
 ---
 
+## Quick Start
+
+### Prerequisites
+- Python 3.9+
+- Ollama (for local LLM inference) — [install here](https://ollama.com)
+- A Claude Code workspace
+
+### Installation
+
+```bash
+# 1. Clone the repo
+git clone <repo>
+cd agentic-memory
+
+# 2. Run the installer (handles dependencies, hooks, and launchd setup)
+./install.sh
+
+# 3. Alternatively, install manually
+python3 -m pip install --user \
+  mcp fastmcp sentence-transformers fastapi uvicorn \
+  pydantic psutil setproctitle debugpy
+
+# 4. Pull the default Ollama model
+ollama pull llama3.2:3b
+
+# 5. Sync your identity/profile into the facts table (optional)
+python3 cli.py sync-identity
+```
+
+### First Run
+
+```bash
+# Start the daemon (processes sessions, compacts memory, maintains retention)
+python3 memory/daemon.py &
+
+# Check status
+python3 cli.py status
+
+# Open the dashboard (optional)
+python3 cli.py dashboard
+```
+
+---
+
+## System Architecture
+
+Agentic Memory is a **multi-layer system** with three concurrent services and a deep module architecture:
+
+### Three Services
+
+| Service | Port | Purpose |
+|---------|------|---------|
+| **MCP Server** | N/A | Exposes memory tools to Claude via Model Context Protocol. Started automatically by Claude Code. |
+| **Ingest Server** | 7747 | HTTP API for ingesting sessions from other agents and querying memory via `/ingest`, `/recall`, `/answer`. |
+| **Dashboard Server** | 7748 | Web UI and operational API for monitoring, searching, and managing memory. |
+| **Daemon** | N/A | Long-lived background process that processes raw sessions into compacted, searchable memory. |
+
+### Four Deep Modules (ADR-0001)
+
+The system is built on four deep, domain-focused modules:
+
+| Module | Responsibility |
+|--------|-----------------|
+| **`memory/inference.py`** | All model calls (Ollama): text generation, embeddings, JSON parsing, model config |
+| **`memory/ingest_pipeline.py`** | End-to-end session ingestion: upsert, chunk, embed, return structured outcomes |
+| **`memory/retrieval.py`** | Retrieval policy: wake-up assembly, recall digests, ranking, budget decisions |
+| **`memory/vectors.py`** | Vector operations: embeddings, packing, cosine distance, model loading |
+
+These modules are stateless and testable, with adapters (`save_hook.py`, `ingest_server.py`, `mcp_server.py`, `daemon.py`) orchestrating them.
+
+---
+
 ## How it works — end to end
 
 ```
@@ -66,6 +138,163 @@ User sends a prompt
 │  • POST /answer  → repeated-question lookup         │
 └─────────────────────────────────────────────────────┘
 ```
+
+---
+
+## How the Daemon Works
+
+The daemon is a **long-lived background process** that transforms raw session transcripts into organized, compacted, and searchable memory. It runs two types of passes:
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│         Raw Sessions (unprocessed transcripts)           │
+└──────────────────────┬──────────────────────────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │   PASS 1: Per-Session Work    │
+        │   (runs on each new session)   │
+        └──────────────────────────────┘
+           │    │    │    │    │
+           ▼    ▼    ▼    ▼    ▼
+        1️⃣  2️⃣  3️⃣  4️⃣  5️⃣
+        Episodic  Clustering  Working  Compaction  Procedural
+        Memory    Assignment   Memory   (when ≥3)   Patterns
+           │                              │
+           └──────────────┬───────────────┘
+                          ▼
+        ┌──────────────────────────────┐
+        │ PASS 2: Maintenance (every   │
+        │ 20 sessions processed)        │
+        └──────────────────────────────┘
+           │    │    │
+           ▼    ▼    ▼
+        Close   Merge  Prune
+        Stale   Near-  Old
+        WM      Dupes  Sessions
+```
+
+### Concrete Example: Processing 3 Related Sessions
+
+Imagine you work on authentication in a TypeScript project across 3 sessions:
+- **Session 1:** "Added JWT token validation"
+- **Session 2:** "Fixed refresh token bugs"
+- **Session 3:** "Implemented role-based access control (RBAC)"
+
+#### Pass 1 — Session 1
+
+```
+STEP 1: Create Episodic Entry
+  • Ollama prompt: "Summarize this conversation in title + abstract"
+  • Output: title = "Added JWT token validation"
+           abstract = "Implemented JWT validation middleware..."
+  • Stored in episodic_memory table
+
+STEP 2: Assign to Topic Cluster
+  • Embed session content
+  • Assign to cluster_id = "cluster_auth_001" (or create new)
+
+STEP 3: Update Working Memory
+  • Append to cluster's working memory:
+    "**Added JWT token validation** - Implemented JWT..."
+  • Stored in working_memory for future reference
+
+STEP 4: Try to Compact (needs ≥ 3 sessions)
+  • Only 1 session in cluster → SKIP (wait for sessions 2 & 3)
+
+STEP 5: Extract Procedural Patterns
+  • Ollama prompt: "Identify reusable how-to patterns"
+  • Output: [
+      {title: "How to validate JWTs", steps: "1. Import lib\n2. ..."},
+      {title: "Verify token expiration", steps: "1. Check exp claim\n..."}
+    ]
+  • Stored in procedural_memory table
+```
+
+#### Pass 1 — Sessions 2 & 3 follow the same steps
+
+After session 3, `cluster_auth_001` now contains 3 sessions with full transcripts.
+
+#### Pass 1 — Compaction Trigger (when ≥ 3 uncompacted sessions exist)
+
+```
+STEP 4 (on session 3): Compact cluster_auth_001
+  • Gather all turns from sessions 1, 2, 3 (~24 turns total)
+  • Ollama prompt:
+    "Summarize these 3 related work sessions into a structured note.
+     Task: [what the work was about]
+     Context: [repo, language, key components]
+     What was tried: [bullet points]
+     Outcome: [what worked]
+     Left off at: [where to pick up next time]"
+  
+  • Output stored in compacted_sessions:
+    {
+      cluster_id: "cluster_auth_001",
+      content: "Task: TypeScript authentication system
+               Context: Express + TypeScript, PostgreSQL
+               What was tried:
+                 • JWT token validation middleware
+                 • Refresh token rotation logic
+                 • Role-based access control
+               Outcome: Authentication flow complete. All secured.
+               Left off at: Need integration tests & rate limiting.",
+      vector: [0.23, 0.45, ...],  // embedded summary
+      source_sessions: [sess_1, sess_2, sess_3]
+    }
+  
+  • Transcript columns pruned for all 3 sessions (saved to NULL)
+    → Saves disk space; episodic/compacted records preserve memory
+```
+
+#### Pass 2 — Maintenance (every 20 sessions processed)
+
+After processing 20 new sessions, the daemon runs:
+
+```
+1. CLOSE STALE WORKING MEMORY
+   • Find cluster WM entries inactive > 14 days
+   • Ollama: "Was anything significant accomplished?"
+   • If YES → create final episodic entry, then close WM
+
+2. MERGE NEAR-DUPLICATE COMPACTED SESSIONS
+   • Find pairs with vector similarity ≥ 92%
+   • Ollama: combine into single coherent summary
+   • Keep merged version, discard duplicate
+
+3. PRUNE OLD SESSIONS
+   • Delete raw processed sessions > 30 days old
+   • Keep: episodic entries, compacted summaries, procedural patterns
+   • Effect: Save disk space; memory persists in structured form
+```
+
+### Key Design Patterns
+
+| Pattern | Benefit |
+|---------|---------|
+| **One bounded text_sample per session** | Reused across episodic + procedural LLM calls → consistent reasoning, less overhead |
+| **CPU threshold check (70%)** | Skip expensive LLM work when machine is busy |
+| **Poll intervals (5 min busy, 30 min idle)** | Responsive yet efficient |
+| **Signal handling (SIGTERM)** | Graceful shutdown; finishes current session before exiting |
+| **Ollama process lifecycle** | Starts before batch, stops after → local LLM only when needed |
+| **Transcript pruning after compaction** | Reclaim space; compacted vector summary is the source of truth |
+
+### Running the Daemon
+
+```bash
+# Long-lived background process (production)
+python3 memory/daemon.py
+
+# One pass for testing
+python3 memory/daemon.py --once
+
+# Graceful stop from another terminal
+kill -TERM $(pgrep -f AgenticMemoryDaemon)
+```
+
+Logs to `~/.memory/daemon.log` for each step.
 
 ---
 
@@ -146,20 +375,119 @@ Other agents can use two related retrieval endpoints:
 
 ---
 
-## Services
+## Services & Running
 
-| Process | How to run | What it does |
-|---|---|---|
-| Daemon | `python3 memory/daemon.py` | Compacts sessions, updates episodic/working/procedural memory |
-| Ingest server | `python3 memory/ingest_server.py` | HTTP API for `/ingest`, `/recall`, and `/answer` |
-| Dashboard | `python3 memory/dashboard_server.py` | Web UI and operational API at `http://localhost:7748` |
-| MCP server | `python3 memory/mcp_server.py` | Exposes memory tools to Claude via MCP |
+### Startup sequence
 
-The daemon is the only required background process for Claude Code hook-based memory. Ingest server, dashboard, and MCP server are optional depending on how you use the system.
+```bash
+# 1. Start the daemon (processes sessions in the background)
+python3 memory/daemon.py &
+
+# 2. Start the ingest server (optional, for remote agents)
+python3 memory/ingest_server.py &
+
+# 3. Start the dashboard (optional, for web UI)
+python3 memory/dashboard_server.py &
+
+# MCP server starts automatically when Claude Code launches
+```
+
+### Service reference
+
+| Process | Port | Required? | What it does |
+|---------|------|-----------|-------------|
+| **Daemon** | N/A | ✅ Yes | Compacts sessions, updates episodic/working/procedural memory, prunes old data. Runs continuously. |
+| **MCP Server** | N/A | ✅ Yes (Claude Code) | Exposes memory tools to Claude via Model Context Protocol. Auto-started by Claude Code. |
+| **Ingest Server** | 7747 | ❌ Optional | HTTP API for remote agents: `/ingest` (write sessions), `/recall` (query memory), `/answer` (repeated questions). |
+| **Dashboard Server** | 7748 | ❌ Optional | Web UI for searching, monitoring, and managing memory. Also serves operational APIs. |
+
+### Daemon operation
+
+```bash
+# Normal mode: continuous background processing
+python3 memory/daemon.py
+
+# One-pass mode: process pending sessions and exit
+python3 memory/daemon.py --once
+
+# Graceful shutdown (from another terminal)
+kill -TERM $(pgrep -f AgenticMemoryDaemon)
+```
+
+Logs to `~/.memory/daemon.log` for monitoring.
 
 ---
 
-## Local models
+## CLI Reference
+
+### Database & memory management
+
+```bash
+python3 cli.py status              # Show memory DB stats, token economics
+python3 cli.py search "<query>"    # Full-text keyword search across transcripts
+python3 cli.py semantic "<query>"  # Semantic (vector) search by meaning
+python3 cli.py get-session <id>    # Print full verbatim transcript for one session
+python3 cli.py tail [N]            # Last N sessions (default 10)
+python3 cli.py dashboard           # Open dashboard at http://localhost:7748
+```
+
+### Administration
+
+```bash
+python3 cli.py bootstrap          # Initialize the database (auto-done by install.sh)
+python3 cli.py install            # Wire hooks into ~/.claude/settings.json
+python3 cli.py sync-identity       # Re-sync identity.md → facts table
+python3 cli.py compact             # Manually trigger compaction pass
+```
+
+### Debugging
+
+```bash
+python3 cli.py logs                # Show activity and error logs
+python3 cli.py delete-old          # Prune sessions > 30 days old
+python3 cli.py export              # Export sessions to JSON
+```
+
+---
+
+## Configuration
+
+### Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MEMORY_OLLAMA_MODEL` | `llama3.2:3b` | Local LLM model for compaction. Must be installed via `ollama pull` |
+| `MEMORY_OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
+| `MEMORY_INGEST_PORT` | `7747` | Ingest server listen port |
+| `MEMORY_DASHBOARD_PORT` | `7748` | Dashboard server listen port |
+| `MEMORY_DAEMON_POLL_BUSY_SECS` | `300` | How often daemon checks for new sessions when CPU > 70% |
+| `MEMORY_DAEMON_POLL_IDLE_SECS` | `1800` | How often daemon checks for new sessions when CPU ≤ 70% |
+| `MEMORY_DAEMON_CPU_THRESHOLD` | `70` | Skip compaction if CPU usage exceeds this % |
+| `MEMORY_COMPACTION_TRIGGER` | `3` | Compact cluster after this many uncompacted sessions |
+| `MEMORY_RETENTION_DAYS` | `30` | Keep raw session transcripts for this many days before pruning |
+| `MEMORY_WORKING_MEMORY_TTL_DAYS` | `14` | Close working memory entries inactive for this many days |
+
+### Database location
+
+```bash
+~/.memory/memory.db           # SQLite database (all tables)
+~/.memory/identity.md          # User profile (source of truth for identity facts)
+~/.memory/daemon.log           # Daemon activity log
+~/.memory/activity.log         # System activity log
+~/.memory/error.log            # Error and warning log
+~/.memory/debug.log            # Debugger attachment log
+```
+
+### Hooks
+
+Claude Code hooks are registered in `~/.claude/settings.json` by `./install.sh`:
+
+- **UserPromptSubmit hook** → `hooks/wake_up.py` (injects context before Claude sees the prompt)
+- **Stop hook** → `hooks/save_hook.py` (saves transcript after Claude responds)
+
+---
+
+## Local Models
 
 All LLM calls in the daemon go through a local [ollama](https://ollama.com) instance — no Anthropic API tokens are consumed for compaction.
 
@@ -168,38 +496,16 @@ All LLM calls in the daemon go through a local [ollama](https://ollama.com) inst
 ollama pull llama3.2:3b
 ```
 
-Override the model with the environment variable:
+Override the model:
 ```bash
 MEMORY_OLLAMA_MODEL=mistral python3 memory/daemon.py
 ```
 
-Embeddings use `sentence-transformers/all-MiniLM-L6-v2` (~90 MB, runs fully locally, no GPU required).
+**Embeddings:** Uses `sentence-transformers/all-MiniLM-L6-v2` (~90 MB, CPU-only, no GPU required).
 
 ---
 
-## Installation
-
-```bash
-# 1. Clone the repo
-git clone <repo>
-cd agentic-memory
-
-# 2. Install everything with the bootstrap script
-./install.sh
-
-# 3. If you want to do it manually instead of using install.sh:
-python3 -m pip install --user \
-  mcp fastmcp sentence-transformers fastapi uvicorn \
-  pydantic psutil setproctitle debugpy
-
-# 4. Start the daemon if install.sh did not already register/run it for you
-python3 memory/daemon.py &
-
-# 5. Sync your identity profile into the facts table
-python3 cli.py sync-identity
-```
-
-## Remote debugging
+## Remote Debugging
 
 All entry scripts support env-gated `debugpy` attach via `memory/debug.py`.
 
@@ -301,18 +607,7 @@ agentic-memory/
 
 ---
 
-## CLI commands
-
-```bash
-python3 cli.py install           # Wire hooks into ~/.claude/settings.json (run once after cloning)
-python3 cli.py sync-identity     # Re-sync identity.md → facts table
-python3 cli.py compact           # Manually trigger daemon compaction pass
-python3 cli.py status            # Show DB stats (sessions, facts, compacted entries)
-```
-
----
-
-## Personalise your identity profile
+## Personalize your identity profile
 
 Edit `~/.memory/identity.md` using this format:
 

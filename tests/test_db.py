@@ -30,6 +30,9 @@ from memory.db import (
     list_facts,
     hybrid_search,
     find_direct_answer,
+    find_cached_response,
+    upsert_response_cache,
+    ensure_schema,
     # Phase 12 helpers
     insert_summary,
     sessions_needing_prune,
@@ -675,6 +678,57 @@ class TestDirectAnswerLookup(unittest.TestCase):
             exclude_session_id="qa-2",
         )
         self.assertIsNone(result)
+
+
+class TestResponseCache(unittest.TestCase):
+
+    def setUp(self):
+        self.conn = init_db(":memory:")
+
+    def test_exact_normalized_lookup_returns_cached_response(self):
+        upsert_response_cache(
+            self.conn,
+            "How do I run the tests?",
+            "Run python3 -m pytest -q.",
+            "session-1",
+        )
+
+        result = find_cached_response(self.conn, "how do i run the tests")
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result["response"], "Run python3 -m pytest -q.")
+        self.assertEqual(result["similarity"], 1.0)
+
+    def test_lookup_does_not_return_partial_prompt_match(self):
+        upsert_response_cache(
+            self.conn,
+            "How do I run the tests?",
+            "Run python3 -m pytest -q.",
+            "session-1",
+        )
+
+        self.assertIsNone(find_cached_response(self.conn, "How do I run tests quickly?"))
+
+    def test_schema_bootstrap_backfills_existing_transcripts(self):
+        upsert_session(
+            self.conn,
+            "session-1",
+            "claude",
+            [
+                {"role": "user", "content": "How do I run the tests?"},
+                {"role": "assistant", "content": "Run python3 -m pytest -q."},
+            ],
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:00:00Z",
+        )
+
+        ensure_schema(self.conn)
+
+        result = find_cached_response(self.conn, "How do I run the tests?")
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result["source_session_id"], "session-1")
 
 
 # ---------------------------------------------------------------------------

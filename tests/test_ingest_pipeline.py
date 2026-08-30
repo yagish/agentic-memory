@@ -41,6 +41,14 @@ class TestIngestPipeline(unittest.TestCase):
         self.assertEqual(row["turn_count"], 2)
         self.assertEqual(json.loads(row["transcript"]), self.turns)
 
+        cache_row = self.conn.execute(
+            "SELECT prompt, response, source_session_id FROM response_cache"
+        ).fetchone()
+        self.assertIsNotNone(cache_row)
+        self.assertEqual(cache_row["prompt"], "How do I run the tests?")
+        self.assertEqual(cache_row["response"], "Run python3 -m pytest -q.")
+        self.assertEqual(cache_row["source_session_id"], "sess-1")
+
         chunk_count = self.conn.execute(
             "SELECT COUNT(*) FROM chunks WHERE session_id = ?",
             ("sess-1",),

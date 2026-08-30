@@ -3,42 +3,15 @@
 # Other modules call these functions; they never write SQL themselves.
 
 import json       # used to convert Python dicts ↔ text for storage
-import math       # used for cosine similarity calculation (sqrt, dot product)
 import os
 import re
 import sqlite3    # Python's built-in SQLite driver — no install needed
-import struct     # used to pack float32 arrays into bytes for SQLite blob storage
+import struct     # used to unpack float32 arrays from SQLite blob storage
 from difflib import SequenceMatcher
 from datetime import datetime, timezone, timedelta
 import uuid
 
-# Force Hugging Face/Transformers offline mode for this process.
-# HF_HUB_OFFLINE=1: disables HTTP calls in huggingface_hub (metadata/file fetches).
-# TRANSFORMERS_OFFLINE=1: prevents Transformers from attempting online resolution.
-# We use setdefault() so callers can still override explicitly before import.
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-
-# Try to import SentenceTransformer — the library that converts text into vectors.
-# If not installed, embed() will raise a clear ImportError with a helpful message.
-try:
-    from sentence_transformers import SentenceTransformer
-    _ST_AVAILABLE = True
-except ImportError:
-    _ST_AVAILABLE = False
-
-# _model starts as None and is loaded on the first call to embed().
-# We defer loading so that importing db.py doesn't pay the ~2-second startup
-# cost on every hook invocation that doesn't need embeddings.
-_model = None
-
-# The embedding model we use. all-MiniLM-L6-v2 is ~90MB, runs fully locally,
-# and produces 384-dimensional vectors of good quality for semantic search.
-_MODEL_NAME = "all-MiniLM-L6-v2"
-
-# Number of dimensions in each embedding vector.
-# all-MiniLM-L6-v2 always outputs exactly 384 floats.
-_DIMS = 384
+from memory.vectors import embed, pack_vector, cosine_distance, _ST_AVAILABLE
 
 
 # _SCHEMA defines the base tables. The IF NOT EXISTS guards make it safe to
@@ -55,23 +28,6 @@ CREATE TABLE IF NOT EXISTS sessions (
   transcript   TEXT                -- full conversation as a JSON string
 );
 
--- FTS5 virtual table: a full-text search index that mirrors the sessions table.
--- "content='sessions'" means SQLite keeps the index in sync via triggers below.
--- "session_id UNINDEXED" means session_id is carried along but not searched.
-CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts
-  USING fts5(session_id UNINDEXED, transcript, content='sessions');
-
--- Trigger: when a new session row is inserted, also add it to the FTS index.
-CREATE TRIGGER IF NOT EXISTS sessions_ai AFTER INSERT ON sessions BEGIN
-  INSERT INTO sessions_fts(session_id, transcript) VALUES (new.session_id, new.transcript);
-END;
-
--- Trigger: when a session row is updated (e.g. new turns added), refresh the FTS index.
--- We first delete the old FTS entry, then insert the updated one.
-CREATE TRIGGER IF NOT EXISTS sessions_au AFTER UPDATE ON sessions BEGIN
-  INSERT INTO sessions_fts(sessions_fts, session_id, transcript) VALUES ('delete', old.session_id, old.transcript);
-  INSERT INTO sessions_fts(session_id, transcript) VALUES (new.session_id, new.transcript);
-END;
 """
 
 # _VEC_SCHEMA creates the vector storage table.
@@ -132,29 +88,6 @@ CREATE TABLE IF NOT EXISTS facts (
   updated_at TEXT                -- ISO UTC timestamp of the most recent edit
 );
 
--- FTS5 virtual table for full-text search over fact content and tags.
--- "content='facts'" means SQLite reads the text from the facts table via triggers;
--- the index itself is kept in sync by the three triggers below.
--- "id UNINDEXED" means the id is carried along for JOINs but not searched.
-CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts
-  USING fts5(id UNINDEXED, content, tags, content='facts');
-
--- Trigger: when a new fact row is inserted, add it to the FTS index.
-CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
-  INSERT INTO facts_fts(id, content, tags) VALUES (new.id, new.content, new.tags);
-END;
-
--- Trigger: when a fact row is updated, refresh the FTS index.
--- We delete the old entry first, then insert the new one.
-CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
-  INSERT INTO facts_fts(facts_fts, id, content, tags) VALUES ('delete', old.id, old.content, old.tags);
-  INSERT INTO facts_fts(id, content, tags) VALUES (new.id, new.content, new.tags);
-END;
-
--- Trigger: when a fact row is deleted, remove it from the FTS index.
-CREATE TRIGGER IF NOT EXISTS facts_ad AFTER DELETE ON facts BEGIN
-  INSERT INTO facts_fts(facts_fts, id, content, tags) VALUES ('delete', old.id, old.content, old.tags);
-END;
 """
 
 
@@ -254,6 +187,20 @@ CREATE TABLE IF NOT EXISTS compacted_sessions (
 );
 """
 
+_RESPONSE_CACHE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS response_cache (
+    id                TEXT PRIMARY KEY,
+    prompt_normalized TEXT NOT NULL UNIQUE,
+    prompt            TEXT NOT NULL,
+    response          TEXT NOT NULL,
+    source_session_id TEXT NOT NULL,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    hit_count         INTEGER NOT NULL DEFAULT 0,
+    last_hit_at       TEXT
+);
+"""
+
 _PROCEDURAL_MEMORY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS procedural_memory (
     id                TEXT PRIMARY KEY,
@@ -295,37 +242,7 @@ def log_retrieval(conn: sqlite3.Connection, tool: str, query: str, result_size: 
     conn.commit()
 
 
-def _cosine_distance(a: list[float], b_blob: bytes) -> float:
-    """
-    Compute cosine distance between vector `a` and a packed blob `b_blob`.
 
-    Cosine distance = 1 - cosine_similarity.
-    Range: 0.0 (identical direction) to 2.0 (opposite direction).
-    Lower is more similar — we sort by distance ascending.
-
-    We do this in Python because macOS system Python doesn't support
-    SQLite extension loading (enable_load_extension is unavailable),
-    so we can't use sqlite-vec's vec_distance_cosine() SQL function.
-    For a personal memory system with hundreds of sessions, Python-side
-    math is fast enough — each dot product over 384 floats takes microseconds.
-    """
-    # Unpack the binary blob back into a list of 384 floats.
-    n = len(b_blob) // 4          # 4 bytes per float32
-    b = struct.unpack(f"<{n}f", b_blob)
-
-    # Dot product: sum of element-wise products.
-    dot = sum(x * y for x, y in zip(a, b))
-
-    # Magnitudes (Euclidean norms).
-    mag_a = math.sqrt(sum(x * x for x in a))
-    mag_b = math.sqrt(sum(y * y for y in b))
-
-    if mag_a == 0 or mag_b == 0:
-        return 1.0  # treat zero vectors as maximally distant
-
-    # cosine_similarity = dot / (|a| * |b|)
-    # cosine_distance   = 1 - cosine_similarity
-    return 1.0 - dot / (mag_a * mag_b)
 
 
 def open_db(path: str) -> sqlite3.Connection:
@@ -379,6 +296,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         _WORKING_MEMORY_SCHEMA,
         _EPISODIC_MEMORY_SCHEMA,
         _COMPACTED_SESSIONS_SCHEMA,
+        _RESPONSE_CACHE_SCHEMA,
         _PROCEDURAL_MEMORY_SCHEMA,
     ]:
         conn.executescript(script)
@@ -413,6 +331,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         if "embedding" not in existing_cols:
             conn.execute(f"ALTER TABLE {table_name} ADD COLUMN embedding BLOB")
 
+    backfill_response_cache(conn)
     conn.commit()
 
 
@@ -518,110 +437,20 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict]:
         results = search(conn, "quantum entanglement")
         # → [{"session_id": "abc", "agent": "claude", "updated_at": "...", "snippet": "..."}]
     """
-    try:
-        rows = conn.execute(
-            """
-            SELECT
-              s.session_id,
-              s.agent,
-              s.updated_at,
-              -- snippet() is a built-in FTS5 function that extracts the matching
-              -- portion of text. The '[' and ']' wrap the matched words.
-              -- 16 is the number of surrounding words to include for context.
-              snippet(sessions_fts, 1, '[', ']', '...', 16) AS snippet
-            FROM sessions_fts
-            -- JOIN pulls the real session row so we get agent and updated_at.
-            JOIN sessions s ON s.session_id = sessions_fts.session_id
-            WHERE sessions_fts MATCH ?   -- MATCH is FTS5's search operator
-            ORDER BY rank                -- rank is FTS5's built-in relevance score
-            LIMIT ?
-            """,
-            (query, limit),
-        ).fetchall()
-    except sqlite3.OperationalError:
-        # FTS5 special characters (OR, *, [, etc.) can cause syntax errors.
-        # Fall back to a simple LIKE search so callers always get a result.
-        rows = conn.execute(
-            """
-            SELECT session_id, agent, updated_at,
-                   substr(transcript, 1, 120) AS snippet
-            FROM sessions
-            WHERE transcript LIKE ?
-            ORDER BY updated_at DESC
-            LIMIT ?
-            """,
-            (f"%{query}%", limit),
-        ).fetchall()
+    rows = conn.execute(
+        """
+        SELECT session_id, agent, updated_at,
+               substr(transcript, 1, 120) AS snippet
+        FROM sessions
+        WHERE transcript LIKE ?
+        ORDER BY updated_at DESC
+        LIMIT ?
+        """,
+        (f"%{query}%", limit),
+    ).fetchall()
 
     # Convert each sqlite3.Row object into a plain dict for easier use by callers.
     return [dict(r) for r in rows]
-
-
-# ---------------------------------------------------------------------------
-# Phase 5 additions: embedding + semantic (vector) search
-# ---------------------------------------------------------------------------
-
-def embed(text: str) -> list[float]:
-    """
-    Convert a text string into a 384-dimensional vector of floats.
-
-    Semantically similar texts produce similar vectors — even with different
-    words. "machine learning" and "neural networks" will be close in vector
-    space, so semantic_search() can find relevant sessions without exact
-    keyword matches.
-
-    The model is loaded on first call and cached for the session lifetime.
-    First call takes ~2 seconds (model load); subsequent calls are fast.
-
-    Args:
-        text — any string (transcript text, search query, etc.)
-
-    Returns:
-        A list of 384 floats — the embedding vector.
-
-    Raises:
-        ImportError if sentence-transformers is not installed.
-    """
-    if not _ST_AVAILABLE:
-        raise ImportError(
-            "sentence-transformers is not installed. "
-            "Run: pip3 install sentence-transformers"
-        )
-
-    # _model is declared at module level; 'global' lets us reassign it here.
-    global _model
-    if _model is None:
-        # local_files_only=True guarantees no Hugging Face network calls.
-        # The model must already exist in local cache (default: ~/.cache/huggingface).
-        try:
-            _model = SentenceTransformer(_MODEL_NAME, local_files_only=True)
-        except Exception as exc:
-            raise RuntimeError(
-                "Embedding model not available in local cache while offline mode is enabled. "
-                "Preload sentence-transformers/all-MiniLM-L6-v2 into ~/.cache/huggingface "
-                "before running this service."
-            ) from exc
-
-    # encode() returns a numpy array; .tolist() converts it to a plain Python list
-    # of floats, which is easier to pass around without the numpy dependency.
-    return _model.encode(text).tolist()
-
-
-def _pack_vector(vector: list[float]) -> bytes:
-    """
-    Pack a list of floats into a compact binary blob for SQLite storage.
-
-    SQLite has no native float-array type, so we serialize the vector ourselves.
-    The format is little-endian float32 — this is the format that sqlite-vec's
-    vec_distance_cosine() function expects.
-
-    Example: [0.1, 0.2] → 8 bytes of binary data
-    """
-    # struct.pack format breakdown:
-    #   '<'  = little-endian byte order (required by sqlite-vec)
-    #   'f'  = single-precision (32-bit) float
-    #   repeated len(vector) times
-    return struct.pack(f"<{len(vector)}f", *vector)
 
 
 def store_embedding(conn: sqlite3.Connection, session_id: str, vector: list[float]) -> None:
@@ -648,7 +477,7 @@ def store_embedding(conn: sqlite3.Connection, session_id: str, vector: list[floa
         return
 
     # Pack the float list into the binary format sqlite-vec understands.
-    blob = _pack_vector(vector)
+    blob = pack_vector(vector)
 
     # INSERT OR REPLACE: if a vector for this session already exists, overwrite it.
     conn.execute(
@@ -703,7 +532,7 @@ def semantic_search(conn: sqlite3.Connection, query: str, limit: int = 10) -> li
     # Compute cosine distance for every stored session.
     scored = []
     for row in rows:
-        dist = _cosine_distance(query_vector, bytes(row["embedding"]))
+        dist = cosine_distance(query_vector, bytes(row["embedding"]))
         scored.append({
             "session_id": row["session_id"],
             "agent":      row["agent"],
@@ -806,7 +635,7 @@ def store_chunk(
     chunk_id = f"{session_id}:{chunk_index}"
 
     # Convert the float list to a binary blob, or use None if no embedding.
-    blob = _pack_vector(embedding) if embedding is not None else None
+    blob = pack_vector(embedding) if embedding is not None else None
 
     # created_at records when this chunk was stored — useful for debugging.
     created_at = datetime.now(timezone.utc).isoformat()
@@ -914,7 +743,7 @@ def semantic_search_chunks(conn: sqlite3.Connection, query: str, limit: int = 10
     # Compute cosine distance between the query vector and each chunk embedding.
     scored = []
     for row in rows:
-        dist = _cosine_distance(query_vector, bytes(row["embedding"]))
+        dist = cosine_distance(query_vector, bytes(row["embedding"]))
         scored.append({
             "session_id":  row["session_id"],
             "chunk_index": row["chunk_index"],
@@ -976,7 +805,7 @@ def insert_fact(
     try:
         from memory.inference import embed_text
         embedding_vec = embed_text(content)
-        embedding_blob = _pack_vector(embedding_vec)
+        embedding_blob = pack_vector(embedding_vec)
     except Exception:
         # Silent fail — fact is still usable, just not semantically searchable
         pass
@@ -1033,7 +862,7 @@ def update_fact(
             from memory.inference import embed_text
             embedding_vec = embed_text(content)
             set_clauses.append("embedding = ?")
-            values.append(_pack_vector(embedding_vec))
+            values.append(pack_vector(embedding_vec))
         except Exception:
             # Silent fail — still update content, just lose semantic searchability
             pass
@@ -1095,43 +924,17 @@ def search_facts(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[
         List of dicts with keys: id, content, tags (as list), source, session_id,
         created_at, updated_at, snippet.
     """
-    try:
-        rows = conn.execute(
-            """
-            SELECT
-              f.id,
-              f.content,
-              f.tags,
-              f.source,
-              f.session_id,
-              f.created_at,
-              f.updated_at,
-              -- snippet() extracts the matching portion of text with highlights.
-              -- Column index 1 is 'content' in the facts_fts virtual table definition.
-              -- '[' and ']' wrap matched words; 16 is the surrounding-word context count.
-              snippet(facts_fts, 1, '[', ']', '...', 16) AS snippet
-            FROM facts_fts
-            -- JOIN pulls the real fact row so we get all columns including source.
-            JOIN facts f ON f.id = facts_fts.id
-            WHERE facts_fts MATCH ?   -- MATCH is FTS5's search operator
-            ORDER BY rank             -- rank is FTS5's built-in relevance score
-            LIMIT ?
-            """,
-            (query, limit),
-        ).fetchall()
-    except sqlite3.OperationalError:
-        # FTS5 special characters in the query cause syntax errors; fall back to LIKE.
-        rows = conn.execute(
-            """
-            SELECT id, content, tags, source, session_id, created_at, updated_at,
-                   substr(content, 1, 120) AS snippet
-            FROM facts
-            WHERE content LIKE ?
-            ORDER BY updated_at DESC
-            LIMIT ?
-            """,
-            (f"%{query}%", limit),
-        ).fetchall()
+    rows = conn.execute(
+        """
+        SELECT id, content, tags, source, session_id, created_at, updated_at,
+               substr(content, 1, 120) AS snippet
+        FROM facts
+        WHERE content LIKE ?
+        ORDER BY updated_at DESC
+        LIMIT ?
+        """,
+        (f"%{query}%", limit),
+    ).fetchall()
 
     result = []
     for row in rows:
@@ -1174,7 +977,7 @@ def search_facts_semantic(
 
     scored = []
     for row in rows:
-        dist = _cosine_distance(query_vector, bytes(row["embedding"]))
+        dist = cosine_distance(query_vector, bytes(row["embedding"]))
         scored.append({
             "id": row["id"],
             "content": row["content"],
@@ -1221,7 +1024,7 @@ def search_procedural_semantic(
 
     scored = []
     for row in rows:
-        dist = _cosine_distance(query_vector, bytes(row["embedding"]))
+        dist = cosine_distance(query_vector, bytes(row["embedding"]))
         scored.append({
             "id": row["id"],
             "title": row["title"],
@@ -1261,7 +1064,7 @@ def search_insights_semantic(
 
     scored = []
     for row in rows:
-        dist = _cosine_distance(query_vector, bytes(row["embedding"]))
+        dist = cosine_distance(query_vector, bytes(row["embedding"]))
         scored.append({
             "id": row["id"],
             "insight_type": row["insight_type"],
@@ -1301,7 +1104,7 @@ def search_episodic_semantic(
 
     scored = []
     for row in rows:
-        dist = _cosine_distance(query_vector, bytes(row["embedding"]))
+        dist = cosine_distance(query_vector, bytes(row["embedding"]))
         scored.append({
             "id": row["id"],
             "title": row["title"],
@@ -1345,7 +1148,7 @@ def search_working_memory_semantic(
 
     scored = []
     for row in rows:
-        dist = _cosine_distance(query_vector, bytes(row["embedding"]))
+        dist = cosine_distance(query_vector, bytes(row["embedding"]))
         scored.append({
             "id": row["id"],
             "cluster_id": row["cluster_id"],
@@ -1383,7 +1186,7 @@ def populate_missing_embeddings(conn: sqlite3.Connection, batch_size: int = 10) 
     for row in rows:
         try:
             embedding = embed_text(row["content"])
-            embedding_blob = _pack_vector(embedding)
+            embedding_blob = pack_vector(embedding)
             conn.execute("UPDATE facts SET embedding = ? WHERE id = ?", (embedding_blob, row["id"]))
             counts["facts"] += 1
         except Exception:
@@ -1401,7 +1204,7 @@ def populate_missing_embeddings(conn: sqlite3.Connection, batch_size: int = 10) 
             # Embed title + steps concatenated
             text_to_embed = f"{row['title']}\n{row['steps']}"
             embedding = embed_text(text_to_embed)
-            embedding_blob = _pack_vector(embedding)
+            embedding_blob = pack_vector(embedding)
             conn.execute("UPDATE procedural_memory SET embedding = ? WHERE id = ?", (embedding_blob, row["id"]))
             counts["procedural"] += 1
         except Exception:
@@ -1417,7 +1220,7 @@ def populate_missing_embeddings(conn: sqlite3.Connection, batch_size: int = 10) 
     for row in rows:
         try:
             embedding = embed_text(row["content"])
-            embedding_blob = _pack_vector(embedding)
+            embedding_blob = pack_vector(embedding)
             conn.execute("UPDATE insights SET embedding = ? WHERE id = ?", (embedding_blob, row["id"]))
             counts["insights"] += 1
         except Exception:
@@ -1433,7 +1236,7 @@ def populate_missing_embeddings(conn: sqlite3.Connection, batch_size: int = 10) 
     for row in rows:
         try:
             embedding = embed_text(row["abstract"])
-            embedding_blob = _pack_vector(embedding)
+            embedding_blob = pack_vector(embedding)
             conn.execute("UPDATE episodic_memory SET embedding = ? WHERE id = ?", (embedding_blob, row["id"]))
             counts["episodic"] += 1
         except Exception:
@@ -1449,7 +1252,7 @@ def populate_missing_embeddings(conn: sqlite3.Connection, batch_size: int = 10) 
     for row in rows:
         try:
             embedding = embed_text(row["summary"])
-            embedding_blob = _pack_vector(embedding)
+            embedding_blob = pack_vector(embedding)
             conn.execute("UPDATE working_memory SET embedding = ? WHERE id = ?", (embedding_blob, row["id"]))
             counts["working"] += 1
         except Exception:
@@ -1590,6 +1393,140 @@ def list_insights(
 def _normalize_question(text: str) -> str:
     """Lowercase and strip punctuation so repeated prompts compare reliably."""
     return " ".join(re.findall(r"[a-z0-9]+", (text or "").lower()))
+
+
+def upsert_response_cache(
+    conn: sqlite3.Connection,
+    prompt: str,
+    response: str,
+    source_session_id: str,
+) -> str | None:
+    """Store the latest assistant response for a normalized user prompt."""
+    prompt_normalized = _normalize_question(prompt)
+    if not prompt_normalized or not response.strip():
+        return None
+
+    now = datetime.now(timezone.utc).isoformat()
+    existing = conn.execute(
+        "SELECT id FROM response_cache WHERE prompt_normalized = ?",
+        (prompt_normalized,),
+    ).fetchone()
+
+    if existing:
+        cache_id = existing["id"]
+        conn.execute(
+            """
+            UPDATE response_cache
+            SET prompt = ?, response = ?, source_session_id = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (prompt, response, source_session_id, now, cache_id),
+        )
+    else:
+        cache_id = str(uuid.uuid4())
+        conn.execute(
+            """
+            INSERT INTO response_cache
+                (id, prompt_normalized, prompt, response, source_session_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (cache_id, prompt_normalized, prompt, response, source_session_id, now, now),
+        )
+
+    conn.commit()
+    return cache_id
+
+
+def cache_session_responses(
+    conn: sqlite3.Connection,
+    session_id: str,
+    transcript: list[dict],
+) -> int:
+    """Cache each adjacent user-to-assistant exchange in an ingested transcript."""
+    count = 0
+    for index in range(len(transcript) - 1):
+        prompt_turn = transcript[index] or {}
+        response_turn = transcript[index + 1] or {}
+        if prompt_turn.get("role") != "user" or response_turn.get("role") != "assistant":
+            continue
+        if upsert_response_cache(
+            conn,
+            prompt_turn.get("content") or "",
+            response_turn.get("content") or "",
+            session_id,
+        ):
+            count += 1
+    return count
+
+
+def find_cached_response(conn: sqlite3.Connection, query: str) -> dict | None:
+    """Return a response only for an exact normalized prompt match."""
+    prompt_normalized = _normalize_question(query)
+    if not prompt_normalized:
+        return None
+
+    row = conn.execute(
+        """
+        SELECT id, prompt, response, source_session_id, hit_count
+        FROM response_cache
+        WHERE prompt_normalized = ?
+        """,
+        (prompt_normalized,),
+    ).fetchone()
+    if not row:
+        return None
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "UPDATE response_cache SET hit_count = hit_count + 1, last_hit_at = ? WHERE id = ?",
+        (now, row["id"]),
+    )
+    conn.commit()
+    return {**dict(row), "similarity": 1.0}
+
+
+def backfill_response_cache(conn: sqlite3.Connection) -> int:
+    """Populate missing cache entries from already persisted transcripts."""
+    cached_prompts = {
+        row["prompt_normalized"]
+        for row in conn.execute("SELECT prompt_normalized FROM response_cache")
+    }
+    rows = conn.execute(
+        "SELECT session_id, transcript FROM sessions ORDER BY updated_at DESC"
+    ).fetchall()
+    now = datetime.now(timezone.utc).isoformat()
+    count = 0
+
+    for row in rows:
+        try:
+            transcript = json.loads(row["transcript"] or "[]")
+        except Exception:
+            continue
+
+        for index in range(len(transcript) - 1):
+            prompt_turn = transcript[index] or {}
+            response_turn = transcript[index + 1] or {}
+            if prompt_turn.get("role") != "user" or response_turn.get("role") != "assistant":
+                continue
+
+            prompt = prompt_turn.get("content") or ""
+            response = response_turn.get("content") or ""
+            prompt_normalized = _normalize_question(prompt)
+            if not prompt_normalized or not response.strip() or prompt_normalized in cached_prompts:
+                continue
+
+            conn.execute(
+                """
+                INSERT INTO response_cache
+                    (id, prompt_normalized, prompt, response, source_session_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (str(uuid.uuid4()), prompt_normalized, prompt, response, row["session_id"], now, now),
+            )
+            cached_prompts.add(prompt_normalized)
+            count += 1
+
+    return count
 
 
 def find_direct_answer(
@@ -2018,7 +1955,7 @@ def assign_to_cluster(
 
     for row in cluster_rows:
         centroid_blob = bytes(row["centroid"])
-        dist = _cosine_distance(embedding, centroid_blob)
+        dist = cosine_distance(embedding, centroid_blob)
         if dist < best_distance:
             best_distance = dist
             best_cluster_id = row["id"]
@@ -2036,7 +1973,7 @@ def assign_to_cluster(
         cluster_id = str(uuid.uuid4())
         # Use the supplied label (fallback to first 40 chars of session_id).
         cluster_label = label[:40] if label else session_id[:40]
-        initial_centroid = _pack_vector(embedding)
+        initial_centroid = pack_vector(embedding)
         conn.execute(
             """
             INSERT INTO topic_clusters (id, label, centroid, member_count, updated_at)
@@ -2066,7 +2003,7 @@ def assign_to_cluster(
         (old_centroid[i] * old_count + embedding[i]) / new_count
         for i in range(len(embedding))
     ]
-    new_centroid_blob = _pack_vector(new_centroid)
+    new_centroid_blob = pack_vector(new_centroid)
 
     # ------------------------------------------------------------------ #
     # Step 5: Upsert the cluster_memberships row.                         #
@@ -2239,19 +2176,7 @@ def delete_sessions(conn: sqlite3.Connection, session_ids: list[str]) -> int:
 
     placeholders = ",".join("?" * len(session_ids))
 
-    # Step 1: Remove stale FTS5 entries before deleting the base rows.
-    # The 'delete' command requires the exact transcript text to update the index.
-    rows = conn.execute(
-        f"SELECT session_id, transcript FROM sessions WHERE session_id IN ({placeholders})",
-        session_ids,
-    ).fetchall()
-    for row in rows:
-        conn.execute(
-            "INSERT INTO sessions_fts(sessions_fts, session_id, transcript) VALUES ('delete', ?, ?)",
-            (row["session_id"], row["transcript"] or ""),
-        )
-
-    # Step 2: Delete associated rows (no CASCADE because PRAGMA foreign_keys is off).
+    # Delete associated rows (no CASCADE because PRAGMA foreign_keys is off).
     conn.execute(f"DELETE FROM cluster_memberships WHERE session_id IN ({placeholders})", session_ids)
     conn.execute(f"DELETE FROM session_vecs WHERE session_id IN ({placeholders})", session_ids)
     conn.execute(f"DELETE FROM chunks WHERE session_id IN ({placeholders})", session_ids)
@@ -2455,7 +2380,7 @@ def upsert_compacted_session(
     Returns the compacted_sessions id.
     """
     now = datetime.now(timezone.utc).isoformat()
-    blob = _pack_vector(embedding) if embedding is not None else None
+    blob = pack_vector(embedding) if embedding is not None else None
 
     existing = conn.execute(
         "SELECT id, source_session_ids FROM compacted_sessions WHERE cluster_id = ?",
@@ -2512,7 +2437,7 @@ def search_compacted_sessions(
 
     scored = []
     for row in rows:
-        dist = _cosine_distance(query_vector, bytes(row["embedding"]))
+        dist = cosine_distance(query_vector, bytes(row["embedding"]))
         scored.append({
             "id":         row["id"],
             "cluster_id": row["cluster_id"],
@@ -2555,7 +2480,7 @@ def get_near_duplicate_compacted(
         for j in range(i + 1, len(rows)):
             n = len(bytes(rows[i]["embedding"])) // 4
             a_vec = list(struct.unpack(f"<{n}f", bytes(rows[i]["embedding"])))
-            dist = _cosine_distance(a_vec, bytes(rows[j]["embedding"]))
+            dist = cosine_distance(a_vec, bytes(rows[j]["embedding"]))
             if 1.0 - dist >= similarity_threshold:
                 pairs.append((rows[i]["id"], rows[j]["id"]))
 
@@ -2579,7 +2504,7 @@ def merge_compacted_sessions(
         merged_embedding — embedding of the merged content
     """
     now = datetime.now(timezone.utc).isoformat()
-    blob = _pack_vector(merged_embedding) if merged_embedding is not None else None
+    blob = pack_vector(merged_embedding) if merged_embedding is not None else None
 
     drop_row = conn.execute(
         "SELECT source_session_ids, hit_count FROM compacted_sessions WHERE id = ?",

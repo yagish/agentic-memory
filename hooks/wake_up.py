@@ -87,11 +87,18 @@ def _respond_with_prompt(updated_prompt: str) -> None:
 def _respond_with_saved_response(answer: str) -> None:
     response = answer.strip()
     if response:
-        sys.stderr.write(response)
-        if not response.endswith("\n"):
-            sys.stderr.write("\n")
+        # Wrap the message in the mandatory JSON error envelope
+        error_payload = {
+            "error": {
+                "message": response
+            }
+        }
+        # 3. Write the JSON payload directly to stderr
+        sys.stderr.write(json.dumps(error_payload))
+        sys.stderr.write("\n")
+        
+    # 4. Signal Claude Code to abort and display your message
     sys.exit(2)
-
 
 def _first_message_flag(session_id: str) -> str:
     return f"/tmp/memory_first_msg_{session_id}"
@@ -113,10 +120,24 @@ def _sanitize_session_id(raw_session_id: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "_", raw_session_id)
 
 
+def _strip_xml_tags(prompt: str) -> str:
+    """Remove all XML-like tags and their contents (Claude Code context tags).
+    
+    Claude Code injects context tags like <ide_opened_file>...</ide_opened_file>
+    into the prompt field. Strip all such tags generically to avoid contaminating
+    semantic search embeddings with unrelated context.
+    """
+    # Match any <tag>...</tag> pattern and remove it, including contents and whitespace.
+    cleaned = re.sub(r'<[a-z_]+[^>]*>.*?</[a-z_]+>\s*', '', prompt, flags=re.DOTALL | re.IGNORECASE)
+    return cleaned.strip()
+
+
 def _parse_request() -> HookRequest:
     payload = json.load(sys.stdin)
     raw_sid = payload.get("session_id", "unknown")
     prompt = payload.get("prompt", "").strip()
+    # Strip any XML tags injected by Claude Code before semantic processing.
+    prompt = _strip_xml_tags(prompt)
     return HookRequest(
         session_id=_sanitize_session_id(raw_sid),
         prompt=prompt,
@@ -129,6 +150,7 @@ def _open_connection():
 
 
 def _retrieve_context(conn, request: HookRequest):
+    # Inject working memory once per session; other memory layers run on every prompt.
     include_working_memory = _is_first_message(request.session_id)
     _log_info(
         f"running semantic search for prompt={request.prompt!r}, "
@@ -149,7 +171,7 @@ def _log_context_warnings(context) -> None:
 def _get_saved_response(context) -> str:
     if not context.cache_hit:
         return ""
-    return context.cache_hit.get("content", "").strip()
+    return context.cache_hit.get("response", "").strip()
 
 
 def _log_retrieval_metrics(

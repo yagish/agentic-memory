@@ -13,7 +13,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-from memory.db import embed as _embed_text
+from memory.vectors import embed as _embed_text
 
 
 _OLLAMA_URL = "http://localhost:11434/api/generate"

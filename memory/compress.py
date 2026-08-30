@@ -35,14 +35,16 @@ from memory.db import (
     save_compressed_memory,
     get_compressed_memory,
     delete_sessions,
+    insert_fact,
 )
 from memory.logger import activity_log, error_log
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-DB_PATH     = os.path.expanduser("~/.memory/memory.db")
-OUTPUT_PATH = os.path.expanduser("~/.memory/compressed_memory.md")
+DB_PATH          = os.path.expanduser("~/.memory/memory.db")
+OUTPUT_PATH      = os.path.expanduser("~/.memory/compressed_memory.md")
+_COMPRESS_LOG    = os.path.expanduser("~/.memory/compress_debug.log")
 
 _OLLAMA_URL    = "http://localhost:11434/api/generate"
 _DEFAULT_MODEL = os.environ.get("MEMORY_OLLAMA_MODEL", "qwen2.5:3b")
@@ -56,6 +58,23 @@ _SNIPPET_LEN = 800
 # Ollama request timeout — larger than the daemon's 30 s because compression
 # prompts are longer and each intermediate call may take 1-2 minutes.
 _TIMEOUT = 120
+
+
+# ── Debug logging ─────────────────────────────────────────────────────────────
+
+def _compress_log(label: str, text: str) -> None:
+    # Writes a timestamped before/after entry to compress_debug.log.
+    line = (
+        f"{datetime.now(timezone.utc).isoformat()} [{label}]\n"
+        f"{text}\n"
+        f"{'─' * 60}\n"
+    )
+    try:
+        os.makedirs(os.path.dirname(_COMPRESS_LOG), exist_ok=True)
+        with open(_COMPRESS_LOG, "a") as f:
+            f.write(line)
+    except Exception:
+        pass
 
 
 # ── Result type ───────────────────────────────────────────────────────────────
@@ -197,8 +216,12 @@ def _session_text(session: dict) -> str:
     Prefers the per-session summary (already compressed by the daemon) over
     the raw transcript. If neither is usable, returns an empty string.
     """
+    sid = session.get("session_id", "unknown")
+
     if session.get("summary"):
-        return session["summary"].strip()[:_SNIPPET_LEN]
+        text = session["summary"].strip()[:_SNIPPET_LEN]
+        _compress_log(f"session_text:summary session={sid}", text)
+        return text
 
     # Fall back to extracting text turns from the raw transcript JSON.
     try:
@@ -212,33 +235,69 @@ def _session_text(session: dict) -> str:
         if isinstance(content, str) and content.strip():
             role = t.get("role", "?")
             lines.append(f"{role}: {content}")
-    return "\n".join(lines)[:_SNIPPET_LEN]
+    text = "\n".join(lines)[:_SNIPPET_LEN]
+    _compress_log(f"session_text:transcript session={sid}", text)
+    return text
 
 
 # ── Compression stages ────────────────────────────────────────────────────────
 
 def _intermediate_summary(session_texts: list[str], model: str) -> str:
     """
-    Ask ollama to distil a batch of session texts into key bullet points.
+    Summarise a batch of sessions into what was worked on.
 
-    This is the "map" step of the map-reduce compression. Each batch of up to
-    _BATCH_SIZE sessions is condensed into a short list of things worth keeping.
+    This is the "map" step of the map-reduce compression. Each batch is condensed
+    into concrete bullets covering topics discussed, work done, and decisions made.
     """
     numbered = "\n\n".join(f"[{i + 1}] {t}" for i, t in enumerate(session_texts))
     prompt = (
-        "You are compressing conversation history into a permanent memory. "
-        "From these session summaries, extract ONLY what is worth remembering long-term:\n"
-        "- User facts (name, role, expertise, preferences)\n"
-        "- Technical decisions and project context\n"
-        "- Recurring patterns and working style\n\n"
+        "Summarise what was worked on in these conversation sessions. "
+        "Focus on:\n"
+        "- What topics were discussed\n"
+        "- What was built, changed, or implemented\n"
+        "- What decisions were made and why\n"
+        "- What problems were solved\n\n"
+        "Be specific and concrete — name files, functions, features, bugs. "
         "Write concise bullet points only. No preamble, no section headers.\n\n"
         f"Sessions:\n{numbered}"
     )
-    print(f"prompt: {prompt}, session_texts: {session_texts}")
+    _compress_log("intermediate_summary:input", numbered)
     response = _call_ollama(prompt, model)
-
-    print(f"compressed response: {response}")
+    _compress_log("intermediate_summary:output", response)
     return response
+
+
+def _extract_profile_facts(conn, all_session_texts: list[str], model: str) -> int:
+    """
+    Extract user profile facts from session texts and write them into the facts table.
+
+    Runs a single LLM call over all session content, asking for user preferences,
+    working style, and background. Each bullet becomes one fact with tag 'profile'.
+    Returns the number of facts saved.
+    """
+    combined = "\n\n".join(all_session_texts[:20])  # cap to avoid very long prompts
+    prompt = (
+        "From these conversation sessions, extract facts about the user that are worth "
+        "remembering permanently:\n"
+        "- Who they are (role, background, expertise)\n"
+        "- Their preferences (tools, code style, communication style)\n"
+        "- Their working style\n\n"
+        "Write one fact per line, starting with a dash. Be concise and specific. "
+        "Only include facts clearly supported by the sessions — do not infer or guess.\n\n"
+        f"Sessions:\n{combined}"
+    )
+    _compress_log("extract_profile_facts:input", combined[:500])
+    response = _call_ollama(prompt, model)
+    _compress_log("extract_profile_facts:output", response)
+
+    # parse bullet lines into individual facts
+    saved = 0
+    for line in response.splitlines():
+        line = line.strip().lstrip("-").strip()
+        if len(line) > 10:  # skip empty or noise lines
+            insert_fact(conn, line, tags=["profile"], source="compress")
+            saved += 1
+    return saved
 
 
 def _final_compress(
@@ -269,26 +328,26 @@ def _final_compress(
     prior_note = ", building on prior compressed memory" if previous else ""
 
     prompt = (
-        f"Create a permanent memory document synthesising {session_count} conversation sessions.\n\n"
+        f"Create a session archive document covering {session_count} conversation sessions.\n\n"
         "Output EXACTLY this markdown structure and nothing else:\n\n"
-        f"# Memory — Compressed on {date_str}\n"
-        f"> Synthesized from {session_count} sessions{prior_note}\n\n"
-        "## About the User\n"
-        "[role, expertise, background, personal facts worth remembering]\n\n"
-        "## Working Style & Preferences\n"
-        "[how they like to work, communication style, tooling choices, code preferences]\n\n"
-        "## Active Projects & Context\n"
-        "[current work, goals, domain context, tech stack]\n\n"
-        "## Key Decisions & Facts\n"
-        "[important technical choices, domain facts, constraints worth remembering]\n\n"
-        "## Recurring Patterns\n"
-        "[common problems, repeated questions, habitual approaches, themes]\n\n"
+        f"# Session Archive — Compressed on {date_str}\n"
+        f"> {session_count} sessions{prior_note}\n\n"
+        "## Topics & Work Done\n"
+        "[bullet list of topics discussed and concrete work completed — name files, features, bugs]\n\n"
+        "## Decisions Made\n"
+        "[technical and design decisions, with brief rationale where available]\n\n"
+        "## Problems Solved\n"
+        "[bugs fixed, issues resolved, challenges overcome]\n\n"
+        "## Open Items\n"
+        "[things mentioned but not yet resolved, follow-ups, outstanding questions]\n\n"
         "Fill each section with concise bullets drawn from the source material. "
         "Write '(none noted)' for any section with nothing to say. "
         "Do not include any text outside the above structure.\n\n"
         f"Source material:\n\n{context}"
     )
-    return _call_ollama(prompt, model)
+    result = _call_ollama(prompt, model)
+    _compress_log("final_compress:output", result)
+    return result
 
 
 # ── Main function ─────────────────────────────────────────────────────────────
@@ -340,19 +399,25 @@ def compress_memory(
     insights = [r["content"] for r in insight_rows]
 
     # Step 4 (Map): process sessions in batches → intermediate summaries.
+    all_texts: list[str] = []
     intermediates: list[str] = []
     for i in range(0, len(sessions), _BATCH_SIZE):
         batch = sessions[i : i + _BATCH_SIZE]
         texts = [t for t in (_session_text(s) for s in batch) if t.strip()]
         if not texts:
             continue
+        all_texts.extend(texts)
         summary = _intermediate_summary(texts, m)
         intermediates.append(summary)
 
     if not intermediates:
         raise RuntimeError("No usable session content found — all transcripts are empty.")
 
-    # Step 5 (Reduce): synthesise into one structured document.
+    # Step 4b: extract user profile facts and save them directly into the facts table.
+    facts_saved = _extract_profile_facts(conn, all_texts, m)
+    activity_log("compress", "extract_profile_facts", facts_saved=facts_saved)
+
+    # Step 5 (Reduce): synthesise session content into one archive document.
     final_content = _final_compress(intermediates, insights, previous_content, len(sessions), m)
 
     now = datetime.now(timezone.utc).isoformat()
