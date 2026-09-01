@@ -48,6 +48,10 @@ from mcp.server.fastmcp import FastMCP
 # Where the memory database lives. Must match the path used by the hook.
 DB_PATH = os.path.expanduser("~/.memory/memory.db")
 
+# Tracks which memory_recall session_ids have already had working memory
+# injected once, mirroring wake_up.py's /tmp flag-file behavior per process.
+_RECALLED_SESSIONS: set[str] = set()
+
 
 def get_conn():
     """
@@ -504,6 +508,103 @@ def memory_list_clusters() -> list:
     activity_log("mcp", "memory_list_clusters", results=len(results))
     conn.close()
     return results
+
+
+# ---------------------------------------------------------------------------
+# Tools for agents without hook support (e.g. GitHub Copilot): recall/save
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def memory_recall(prompt: str, session_id: str = "mcp") -> dict:
+    """
+    Retrieve memory context for a prompt (the MCP equivalent of the
+    Claude Code wake_up hook).
+
+    Agents that have no automatic "before response" hook (e.g. GitHub
+    Copilot) should call this tool at the start of a conversation/turn and
+    fold the returned injection text into their own context before replying.
+
+    Args:
+        prompt     — the user's message to search memory against
+        session_id — stable ID for this conversation; pass the same value
+                     across turns so working-memory is only injected once
+
+    Returns a dict with:
+        injection  — ready-to-use "[Memory context: ...]" string, or "" if
+                     nothing relevant was found
+        cache_hit  — a previously saved answer to this exact question, if any
+    """
+    from memory.retrieval import build_wake_up_injection, retrieve_wake_up_context
+
+    conn = get_conn()
+    include_working_memory = session_id not in _RECALLED_SESSIONS
+    _RECALLED_SESSIONS.add(session_id)
+
+    context = retrieve_wake_up_context(
+        conn, prompt, include_working_memory=include_working_memory
+    )
+    injection = build_wake_up_injection(context)
+    saved_response = context.cache_hit.get("response", "").strip() if context.cache_hit else ""
+
+    result = {"injection": injection, "cache_hit": saved_response}
+    log_retrieval(conn, "memory_recall", prompt, len(str(result)))
+    activity_log("mcp", "memory_recall", session=session_id, has_injection=bool(injection))
+    conn.close()
+    return result
+
+
+@mcp.tool()
+def memory_save_session(
+    session_id: str,
+    turns: list[dict],
+    agent: str = "copilot",
+    started_at: str | None = None,
+) -> dict:
+    """
+    Save a conversation transcript to memory (the MCP equivalent of the
+    Claude Code Stop hook).
+
+    Agents that have no automatic "after response" hook (e.g. GitHub
+    Copilot) should call this tool with the full turn history whenever a
+    conversation/task ends, so the daemon can compact and recall it later.
+
+    Args:
+        session_id — stable ID for the conversation being saved
+        turns      — list of {"role": "user"|"assistant", "content": "..."}
+        agent      — name of the calling agent (e.g. "copilot")
+        started_at — ISO timestamp of the first turn; defaults to now
+
+    Returns a dict with:
+        session_id       — echoed back for confirmation
+        turn_count       — number of turns stored
+        embedding_stored — whether a semantic embedding was successfully saved
+    """
+    from datetime import datetime, timezone
+    from memory.ingest_pipeline import ingest_session
+
+    if not turns:
+        return {"error": "turns must not be empty"}
+
+    updated_at = datetime.now(timezone.utc).isoformat()
+    conn = get_conn()
+    outcome = ingest_session(
+        conn,
+        session_id=session_id,
+        agent=agent,
+        turns=turns,
+        started_at=started_at or updated_at,
+        updated_at=updated_at,
+    )
+
+    result = {
+        "session_id": outcome.session_id,
+        "turn_count": outcome.turn_count,
+        "embedding_stored": outcome.embedding_stored,
+    }
+    log_retrieval(conn, "memory_save_session", session_id, len(str(result)))
+    activity_log("mcp", "memory_save_session", session=session_id, agent=agent, turns=outcome.turn_count)
+    conn.close()
+    return result
 
 
 # ---------------------------------------------------------------------------

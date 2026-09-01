@@ -299,7 +299,70 @@ class TestClusters(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Test group 4: daemon run() once mode (current processing pipeline)
+# Test group 4: compaction formatting
+# ---------------------------------------------------------------------------
+
+class TestCompactionFormatting(unittest.TestCase):
+    """Tests for structured compacted-session output."""
+
+    def test_compaction_stores_canonical_structured_note(self):
+        import memory.daemon as daemon_module
+
+        conn = init_db(":memory:")
+        transcript = [
+            {"role": "user", "content": "Need to simplify the memory DB design."},
+            {"role": "assistant", "content": "I will inspect the current schema."},
+            {"role": "user", "content": "Please remove redundant virtual tables."},
+            {"role": "assistant", "content": "I updated the search path and dashboard routes."},
+            {"role": "user", "content": "Also make compression store session details."},
+            {"role": "assistant", "content": "I changed the compression plan accordingly."},
+        ]
+        _make_session(conn, "session-compact", transcript=transcript)
+        cluster_id = assign_to_cluster(conn, "session-compact", _make_embedding(0.5), label="compact-test")
+
+        model_payload = {
+            "task": "Capture real session work in compacted memory",
+            "context": "repo=agentic-memory, language=python",
+            "what_was_tried": [
+                "Removed virtual tables from the dashboard path",
+                "Reworked compression to store session details",
+            ],
+            "outcome": "Compacted sessions now describe the work instead of profile-only summaries",
+            "left_off_at": "Re-run compaction on older sessions after re-ingestion",
+        }
+
+        with patch.object(daemon_module, "_call_ollama_json", return_value=model_payload), \
+             patch.object(daemon_module, "embed", return_value=_make_embedding(0.6)):
+            daemon_module._compact_cluster_if_ready(conn, cluster_id)
+
+        row = conn.execute(
+            "SELECT content FROM compacted_sessions WHERE cluster_id = ?",
+            (cluster_id,),
+        ).fetchone()
+        session_row = conn.execute(
+            "SELECT transcript FROM sessions WHERE session_id = ?",
+            ("session-compact",),
+        ).fetchone()
+        conn.close()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(
+            row["content"],
+            "\n".join([
+                "Task: Capture real session work in compacted memory",
+                "Context: repo=agentic-memory, language=python",
+                "What was tried:",
+                "- Removed virtual tables from the dashboard path",
+                "- Reworked compression to store session details",
+                "Outcome: Compacted sessions now describe the work instead of profile-only summaries",
+                "Left off at: Re-run compaction on older sessions after re-ingestion",
+            ]),
+        )
+        self.assertEqual(session_row["transcript"], "[]")
+
+
+# ---------------------------------------------------------------------------
+# Test group 5: daemon run() once mode (current processing pipeline)
 # ---------------------------------------------------------------------------
 
 class TestDaemonOnceMode(unittest.TestCase):

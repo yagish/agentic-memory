@@ -110,6 +110,46 @@ class TestParseTranscript(unittest.TestCase):
         finally:
             os.unlink(jsonl_path)
 
+    def test_user_block_list_content_supported(self):
+        # Real Claude transcripts store human prompts as a list of typed blocks.
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            jsonl_path = f.name
+
+        try:
+            with open(jsonl_path, "w") as f:
+                f.write(json.dumps({
+                    "type": "user",
+                    "sessionId": "s1",
+                    "timestamp": "2026-08-16T10:00:00Z",
+                    "message": {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "first line"},
+                            {"type": "text", "text": "second line"},
+                        ],
+                    },
+                }) + "\n")
+                # Tool-result pseudo-user events should not become transcript turns.
+                f.write(json.dumps({
+                    "type": "user",
+                    "sessionId": "s1",
+                    "timestamp": "2026-08-16T10:00:01Z",
+                    "message": {
+                        "role": "user",
+                        "content": [
+                            {"type": "tool_result", "tool_use_id": "tool-1", "content": [{"type": "text", "text": "tool bytes"}]},
+                        ],
+                    },
+                }) + "\n")
+
+            turns, started_at, _ = parse_transcript(jsonl_path)
+            self.assertEqual(len(turns), 1)
+            self.assertEqual(turns[0]["role"], "user")
+            self.assertEqual(turns[0]["content"], "first line\nsecond line")
+            self.assertEqual(started_at, "2026-08-16T10:00:00Z")
+        finally:
+            os.unlink(jsonl_path)
+
     def test_assistant_thinking_blocks_excluded(self):
         # Thinking blocks should be stripped; only text blocks are kept.
         with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
@@ -122,6 +162,7 @@ class TestParseTranscript(unittest.TestCase):
                     "sessionId": "s1",
                     "message": {
                         "role": "assistant",
+                        "stop_reason": "end_turn",
                         "content": [
                             {"type": "thinking", "thinking": "internal reasoning here"},
                             {"type": "text",     "text": "visible reply to user"},
@@ -132,6 +173,38 @@ class TestParseTranscript(unittest.TestCase):
             turns, _, _ = parse_transcript(jsonl_path)
             self.assertEqual(len(turns), 1)
             self.assertEqual(turns[0]["content"], "visible reply to user")
+        finally:
+            os.unlink(jsonl_path)
+
+    def test_assistant_tool_use_preamble_excluded(self):
+        # Skip assistant text emitted right before a tool call; keep final answer only.
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            jsonl_path = f.name
+
+        try:
+            with open(jsonl_path, "w") as f:
+                f.write(json.dumps({
+                    "type": "assistant",
+                    "sessionId": "s1",
+                    "message": {
+                        "role": "assistant",
+                        "stop_reason": "tool_use",
+                        "content": [{"type": "text", "text": "Let me inspect the file."}],
+                    },
+                }) + "\n")
+                f.write(json.dumps({
+                    "type": "assistant",
+                    "sessionId": "s1",
+                    "message": {
+                        "role": "assistant",
+                        "stop_reason": "end_turn",
+                        "content": [{"type": "text", "text": "Done. Here is the final answer."}],
+                    },
+                }) + "\n")
+
+            turns, _, _ = parse_transcript(jsonl_path)
+            self.assertEqual(len(turns), 1)
+            self.assertEqual(turns[0]["content"], "Done. Here is the final answer.")
         finally:
             os.unlink(jsonl_path)
 

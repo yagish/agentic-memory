@@ -52,17 +52,33 @@ def _setup_logging() -> None:
     )
 
 
+def _extract_text_content(content) -> str:
+    """Return visible text from either a string or Claude block-list content."""
+    if isinstance(content, str):
+        return content.strip()
+
+    if not isinstance(content, list):
+        return ""
+
+    text_parts = [
+        block.get("text", "")
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "text"
+    ]
+    return "\n".join(part for part in text_parts if part).strip()
+
+
 def parse_transcript(jsonl_path: str) -> tuple[list[dict], str, str]:
     """
     Read the JSONL transcript file and extract conversation turns.
 
-    Each line in the file is a JSON object describing one event in the session.
-    We care only about 'user' and 'assistant' type lines that are real messages
-    (not meta/system events).
+    Claude Code transcripts mix human prompts, assistant progress/tool-use
+    events, tool results, and hook attachments. We retain only visible user
+    text plus the assistant's final visible reply for each turn.
 
     Returns:
         turns       — list of {"role": "user"/"assistant", "content": "..."}
-        started_at  — ISO timestamp of the first turn
+        started_at  — ISO timestamp of the first retained turn
         session_id  — the session ID (taken from the first matching line)
     """
     turns = []
@@ -92,10 +108,8 @@ def parse_transcript(jsonl_path: str) -> tuple[list[dict], str, str]:
                 if obj.get("isMeta"):
                     continue
 
-                content = obj.get("message", {}).get("content", "")
-
-                # content is a plain string for user messages.
-                if not isinstance(content, str) or not content.strip():
+                content = _extract_text_content(obj.get("message", {}).get("content", ""))
+                if not content:
                     continue
 
                 timestamp = obj.get("timestamp")
@@ -106,19 +120,21 @@ def parse_transcript(jsonl_path: str) -> tuple[list[dict], str, str]:
 
             # --- Assistant turns ---
             elif event_type == "assistant":
-                content_blocks = obj.get("message", {}).get("content", [])
+                message = obj.get("message", {})
+                stop_reason = message.get("stop_reason")
 
-                # content is a list of typed blocks: text, thinking, tool_use, etc.
-                # We only want the text blocks — that's the visible response.
-                text_parts = [
-                    block.get("text", "")
-                    for block in content_blocks
-                    if isinstance(block, dict) and block.get("type") == "text"
-                ]
+                # Skip pre-tool chatter like "Let me check..." when Claude is about
+                # to use a tool. Keep only the assistant's final visible response.
+                if stop_reason == "tool_use":
+                    continue
 
-                combined = "\n".join(text_parts).strip()
+                combined = _extract_text_content(message.get("content", []))
                 if not combined:
                     continue
+
+                timestamp = obj.get("timestamp")
+                if started_at is None and timestamp:
+                    started_at = timestamp
 
                 turns.append({"role": "assistant", "content": combined})
 

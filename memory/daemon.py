@@ -118,14 +118,16 @@ def _parse_json_from(raw: str) -> list | dict:
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        for start_char, end_char in [("[", "]"), ("{", "}")]:
-            start = raw.find(start_char)
-            end   = raw.rfind(end_char) + 1
-            if start >= 0 and end > start:
-                try:
-                    return json.loads(raw[start:end])
-                except json.JSONDecodeError:
-                    pass
+        decoder = json.JSONDecoder()
+        for index, char in enumerate(raw):
+            if char not in "[{":
+                continue
+            try:
+                data, _end = decoder.raw_decode(raw[index:])
+                if isinstance(data, (list, dict)):
+                    return data
+            except json.JSONDecodeError:
+                continue
     return []
 
 
@@ -150,6 +152,76 @@ def _call_ollama_json(prompt: str, expected_type: type, retries: int = 1):
             "No prose, no markdown fences, no explanation."
         )
     return None
+
+
+def _clean_summary_text(value: str) -> str:
+    """Normalize one summary field and strip accidental labels/prose markers."""
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    for prefix in [
+        "Task:",
+        "Context:",
+        "What was tried:",
+        "Outcome:",
+        "Left off at:",
+        "- ",
+        "• ",
+    ]:
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
+    return text
+
+
+def _coerce_bullet_list(value) -> list[str]:
+    """Return a clean list of bullet strings from a model-produced field."""
+    if isinstance(value, str):
+        parts = [line.strip() for line in value.splitlines() if line.strip()]
+        return [_clean_summary_text(part) for part in parts if _clean_summary_text(part)]
+    if isinstance(value, list):
+        items = []
+        for item in value:
+            cleaned = _clean_summary_text(str(item)) if item is not None else ""
+            if cleaned:
+                items.append(cleaned)
+        return items
+    return []
+
+
+def _format_compacted_note(data: dict) -> str:
+    """Render a structured compacted summary into one canonical text block."""
+    if not isinstance(data, dict):
+        return ""
+
+    task = _clean_summary_text(data.get("task", "")) or "(not recorded)"
+    context = _clean_summary_text(data.get("context", "")) or "(not recorded)"
+    outcome = _clean_summary_text(data.get("outcome", "")) or "(not recorded)"
+    left_off_at = _clean_summary_text(data.get("left_off_at", "")) or "(not recorded)"
+    tried = _coerce_bullet_list(data.get("what_was_tried", [])) or ["(not recorded)"]
+
+    lines = [
+        f"Task: {task}",
+        f"Context: {context}",
+        "What was tried:",
+        *[f"- {item}" for item in tried],
+        f"Outcome: {outcome}",
+        f"Left off at: {left_off_at}",
+    ]
+    return "\n".join(lines)
+
+
+def _compacted_note_prompt(session_count: int, target_chars: int, text_sample: str) -> str:
+    """Build the compaction prompt for one or more related sessions."""
+    return (
+        f"Summarize these {session_count} related work sessions into a structured note.\n"
+        f"Target length: approximately {target_chars // 4} words.\n\n"
+        "Return ONLY a JSON object with EXACTLY these keys:\n"
+        '{"task": "one line", "context": "repo, language, key components", '
+        '"what_was_tried": ["bullet 1", "bullet 2"], '
+        '"outcome": "current state / what worked", '
+        '"left_off_at": "where to pick up next time"}\n\n'
+        f"Sessions:\n{text_sample}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -312,21 +384,11 @@ def _compact_cluster_if_ready(conn, cluster_id: str) -> None:
 
     text_sample = _build_session_text(all_turns, max_chars=min(target_chars * 2, 6000))
 
-    prompt = (
-        f"Summarize these {len(source_ids)} related work sessions into a structured note.\n"
-        f"Target length: approximately {target_chars // 4} words.\n\n"
-        "Use EXACTLY this format:\n"
-        "Task: [one line — what the work was about]\n"
-        "Context: [repo, language, key components]\n"
-        "What was tried: [bullet points]\n"
-        "Outcome: [what worked / current state]\n"
-        "Left off at: [where to pick up next time]\n\n"
-        f"Sessions:\n{text_sample}"
-    )
+    prompt = _compacted_note_prompt(len(source_ids), target_chars, text_sample)
 
     try:
-        summary = _call_ollama(prompt, log_fn=_daemon_log)
-        summary = summary.strip()
+        data = _call_ollama_json(prompt, dict)
+        summary = _format_compacted_note(data) if data is not None else ""
         if not summary:
             return
 
@@ -563,12 +625,17 @@ def _merge_near_duplicate_compacted(conn) -> None:
                 continue
 
             prompt = (
-                "Merge these two overlapping task summaries into one coherent note. "
-                "Use the same structured format (Task / Context / What was tried / Outcome / Left off at).\n\n"
+                "Merge these two overlapping task summaries into one coherent note.\n\n"
+                "Return ONLY a JSON object with EXACTLY these keys:\n"
+                '{"task": "one line", "context": "repo, language, key components", '
+                '"what_was_tried": ["bullet 1", "bullet 2"], '
+                '"outcome": "current state / what worked", '
+                '"left_off_at": "where to pick up next time"}\n\n'
                 f"--- Summary A ---\n{keep_row['content']}\n\n"
                 f"--- Summary B ---\n{drop_row['content']}"
             )
-            merged_content = _call_ollama(prompt, log_fn=_daemon_log).strip()
+            data = _call_ollama_json(prompt, dict)
+            merged_content = _format_compacted_note(data) if data is not None else ""
             if not merged_content:
                 continue
 
