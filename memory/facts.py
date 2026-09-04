@@ -21,7 +21,7 @@ from memory.inference import (
 
 
 # Keep prompt version explicit so future prompt changes can be tracked in tests.
-_FACT_PROMPT_VERSION = "facts-v1"
+_FACT_PROMPT_VERSION = "facts-v2"
 
 
 # Seam so tests can inject a fake model call while production uses Ollama.
@@ -124,7 +124,9 @@ Rules:
 - Deduplicate exact duplicates with the same entity, attribute, and value.
 - Keep conflicting facts when the entity and attribute are the same but the value differs.
 - Extract durable user-stated facts, not requests, questions, tasks, or temporary chatter.
+- One sentence can contain multiple facts; extract all durable facts it states.
 - Never turn a request like "Can you debug this?" into a fact.
+- If the user says they work at a company as a role/title, extract both company and role.
 
 Examples:
 Input:
@@ -168,6 +170,22 @@ Output:
 [
   {{"entity": "user", "attribute": "role", "value": "backend engineer"}},
   {{"entity": "user", "attribute": "company", "value": "Acme"}}
+]
+
+Input:
+User: I work at Kroger as a Tech lead.
+Output:
+[
+  {{"entity": "user", "attribute": "company", "value": "Kroger"}},
+  {{"entity": "user", "attribute": "role", "value": "Tech lead"}}
+]
+
+Input:
+User: I'm a Tech lead at Kroger.
+Output:
+[
+  {{"entity": "user", "attribute": "role", "value": "Tech lead"}},
+  {{"entity": "user", "attribute": "company", "value": "Kroger"}}
 ]
 
 Input:

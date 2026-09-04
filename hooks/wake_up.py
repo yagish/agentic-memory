@@ -18,9 +18,10 @@
 # nothing in the DB and produce no injection, so zero extra LLM tokens are spent.
 #
 # Output protocol:
-#   {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "userPrompt": "..."}}
-#   stderr + exit code 2  → short-circuit with saved response from memory
-#   {}                    → do nothing
+#   {"decision": "block", "reason": "...", "suppressOriginalPrompt": true}
+#       → deterministically answer facts through a documented UserPromptSubmit block
+#          after rendering the stored fact with the local LLM
+#   {}  → do nothing
 
 from dataclasses import dataclass
 import json
@@ -35,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from memory.db import open_db, log_retrieval
 from memory.logger import activity_log
 from memory.debug import enable_debug
+from memory.fact_renderer import render_fact_answer
 from memory.retrieval import (
     build_fact_query as _build_fact_query,
     build_wake_up_injection as _build_injection,
@@ -74,31 +76,20 @@ def _allow() -> None:
     sys.exit(0)
 
 
-def _respond_with_prompt(updated_prompt: str) -> None:
+def _respond_with_blocked_prompt(reason: str) -> None:
+    """Return the documented UserPromptSubmit block response shape.
+
+    Claude Code's current hooks contract does not allow UserPromptSubmit to
+    replace the user prompt. The supported deterministic path is to block the
+    prompt with a reason shown to the user.
+    """
     print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "UserPromptSubmit",
-            "userPrompt": updated_prompt,
-        }
+        "decision": "block",
+        "reason": reason.strip(),
+        "suppressOriginalPrompt": True,
     }))
     sys.exit(0)
 
-
-def _respond_with_saved_response(answer: str) -> None:
-    response = answer.strip()
-    if response:
-        # Wrap the message in the mandatory JSON error envelope
-        error_payload = {
-            "error": {
-                "message": response
-            }
-        }
-        # 3. Write the JSON payload directly to stderr
-        sys.stderr.write(json.dumps(error_payload))
-        sys.stderr.write("\n")
-        
-    # 4. Signal Claude Code to abort and display your message
-    sys.exit(2)
 
 def _first_message_flag(session_id: str) -> str:
     return f"/tmp/memory_first_msg_{session_id}"
@@ -168,11 +159,19 @@ def _log_context_warnings(context) -> None:
         _log_error(f"{warning.stage} failed: {warning.message}")
 
 
-def _get_fact_response(context) -> str:
-    """Return the top retrieved fact as the direct hook response."""
-    if not context.facts:
-        return ""
-    return str(context.facts[0].get("content", "")).strip()
+def _log_fact_lookup_details(request: HookRequest, context) -> None:
+    """Log the fact-search inputs and outputs for live retrieval debugging."""
+    query_terms = _build_fact_query(request.prompt)
+    _log_info(f"fact lookup query_terms={query_terms!r}")
+
+    results = []
+    for fact in context.facts:
+        results.append({
+            "content": str(fact.get("content", "")).strip(),
+            "similarity": fact.get("similarity"),
+            "id": fact.get("id"),
+        })
+    _log_info(f"fact lookup results={json.dumps(results, ensure_ascii=False)}")
 
 
 def _log_retrieval_metrics(
@@ -200,10 +199,6 @@ def _log_retrieval_metrics(
         )
     except Exception:
         pass
-
-
-def _build_updated_prompt(prompt: str, injection: str) -> str:
-    return f"{injection}\nUser: {prompt}"
 
 
 def main() -> None:
@@ -241,31 +236,39 @@ def main() -> None:
             _allow()
 
         _log_context_warnings(context)
+        _log_fact_lookup_details(request, context)
 
-        fact_response = _get_fact_response(context)
-        if fact_response:
-            _log_info("fact lookup hit; returning retrieved fact directly")
+        if context.facts:
+            fact_contents = [str(fact.get("content", "")) for fact in context.facts]
+            answer = render_fact_answer(request.prompt, fact_contents)
+            canonical_facts = [fact.strip() for fact in fact_contents if fact.strip()]
+            _log_info(f"fact renderer input={json.dumps(canonical_facts, ensure_ascii=False)}")
+            _log_info(f"fact renderer output={answer!r}")
+            if answer.strip() in canonical_facts or answer.strip() == "\n".join(canonical_facts):
+                _log_info("fact lookup hit; renderer fell back to canonical facts")
+            else:
+                _log_info("fact lookup hit; rendered answer from retrieved facts with local llm")
             _log_retrieval_metrics(
                 conn,
                 tool_name="wake_up_fact_hit",
-                action="fact_hit_short_circuit",
+                action="fact_hit_blocked",
                 request=request,
                 context=context,
-                payload_text=fact_response,
+                payload_text=answer,
             )
-            _respond_with_saved_response(fact_response)
+            _respond_with_blocked_prompt(answer)
 
-        miss_response = "No fact found."
-        _log_info("fact lookup miss; returning no fact found")
+        miss_response = "I don't have that fact stored."
+        _log_info("fact lookup miss; returning documented block response")
         _log_retrieval_metrics(
             conn,
             tool_name="wake_up_fact_miss",
-            action="fact_miss_short_circuit",
+            action="fact_miss_blocked",
             request=request,
             context=context,
             payload_text=miss_response,
         )
-        _respond_with_saved_response(miss_response)
+        _respond_with_blocked_prompt(miss_response)
     finally:
         try:
             conn.close()

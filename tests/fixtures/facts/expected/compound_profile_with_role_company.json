@@ -1,0 +1,8 @@
+[
+  {"entity": "user", "attribute": "name", "value": "Yagish"},
+  {"entity": "user", "attribute": "company", "value": "Kroger"},
+  {"entity": "user", "attribute": "role", "value": "Tech lead"},
+  {"entity": "user", "attribute": "timezone", "value": "EST"},
+  {"entity": "repo", "attribute": "name", "value": "agentic memory"},
+  {"entity": "user", "attribute": "location", "value": "West Chester, OH"}
+]
