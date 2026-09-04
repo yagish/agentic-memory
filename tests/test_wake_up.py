@@ -26,40 +26,27 @@ class TestBuildFactQuery(unittest.TestCase):
 
 class TestBuildInjection(unittest.TestCase):
     def test_returns_empty_when_no_sections_exist(self):
-        result = _build_injection(WakeUpContext(None, None, [], [], []))
+        result = _build_injection(WakeUpContext(None, None, [], [], [], []))
         self.assertEqual(result, "")
 
-    def test_cache_hit_includes_from_memory_instruction(self):
+    def test_includes_all_memory_sections(self):
         result = _build_injection(
             WakeUpContext(
-                {"similarity": 1.0, "response": "The authentication bug is fixed."},
-                None,
-                [],
-                [],
-                [],
+                {"id": "cs-1", "similarity": 0.98, "content": "Task: Fix auth middleware"},
+                {"id": "wm-1", "summary": "Current task is cleaning up auth middleware", "similarity": 0.88},
+                [{"id": "cs-2", "similarity": 0.83, "content": "Task: Add JWT refresh flow"}],
+                [{"id": "ep-1", "title": "Resolved auth bug", "abstract": "Fixed the login loop.", "similarity": 0.79}],
+                [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.97}],
+                [{"id": "proc-1", "title": "Deploy workflow", "steps": "1. Build\n2. Ship", "similarity": 0.86}],
             )
         )
         self.assertTrue(result.startswith("[Memory context: "))
-        self.assertIn("You answered this question before (100% match)", result)
-        self.assertIn("Previous answer:", result)
-        self.assertIn("The authentication bug is fixed.", result)
-        self.assertNotIn("Return", result)
-
-    def test_includes_only_facts_in_facts_only_mode(self):
-        result = _build_injection(
-            WakeUpContext(
-                None,
-                {"summary": "Current task context"},
-                [{"similarity": 0.82, "content": "Past summary"}],
-                [{"content": "user.name = Yash"}],
-                [{"title": "Deploy workflow", "steps": "1. Build\n2. Ship"}],
-            )
-        )
-        self.assertTrue(result.startswith("[Memory context: "))
+        self.assertIn("Relevant prior session (98% match): Task: Fix auth middleware.", result)
+        self.assertIn("Current task context: Current task is cleaning up auth middleware.", result)
+        self.assertIn("Related prior session (83% match): Task: Add JWT refresh flow.", result)
+        self.assertIn("Recent related episode: Resolved auth bug. Fixed the login loop.", result)
         self.assertIn("Remembered fact: user.name = Yash.", result)
-        self.assertNotIn("Current task context", result)
-        self.assertNotIn("Relevant prior conversation", result)
-        self.assertNotIn("Relevant how-to pattern", result)
+        self.assertIn("Relevant how-to pattern: Deploy workflow. 1. Build 2. Ship.", result)
 
 
 class TestMainIntegration(unittest.TestCase):
@@ -75,7 +62,7 @@ class TestMainIntegration(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         conn = MagicMock()
-        retrieval_context = context or WakeUpContext(None, None, [], [], [])
+        retrieval_context = context or WakeUpContext(None, None, [], [], [], [])
 
         exit_code = None
         with patch("sys.stdin", io.StringIO(payload)), \
@@ -102,28 +89,21 @@ class TestMainIntegration(unittest.TestCase):
             "log_retrieval": log_retrieval,
         }
 
-    def test_no_fact_found_returns_documented_block_json(self):
+    def test_no_memory_found_allows_prompt(self):
         result = self._run_main(prompt="hello", first_message=False)
         self.assertEqual(result["stderr"], "")
-        payload = json.loads(result["stdout"])
-        self.assertEqual(
-            payload,
-            {
-                "decision": "block",
-                "reason": "I don't have that fact stored.",
-                "suppressOriginalPrompt": True,
-            },
-        )
+        self.assertEqual(json.loads(result["stdout"]), {})
         self.assertEqual(result["exit_code"], 0)
         result["conn"].close.assert_called_once()
 
-    def test_fact_hit_returns_documented_block_json(self):
+    def test_fact_hit_returns_documented_block_json_when_only_facts_match(self):
         with patch.object(_wu, "render_fact_answer", return_value="Your name is Yash.") as render_fact_answer:
             result = self._run_main(
                 prompt="what is my name?",
                 context=WakeUpContext(
                     None,
                     None,
+                    [],
                     [],
                     [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.99}],
                     [],
@@ -154,38 +134,35 @@ class TestMainIntegration(unittest.TestCase):
             len("Your name is Yash.") // 4,
         )
 
-    def test_fact_hit_passes_all_retrieved_facts_to_renderer(self):
-        with patch.object(
-            _wu,
-            "render_fact_answer",
-            return_value="Your name is Yash and you live in Seattle.",
-        ) as render_fact_answer:
+    def test_fact_hit_with_other_memory_layers_allows_prompt(self):
+        with patch.object(_wu, "render_fact_answer") as render_fact_answer:
             result = self._run_main(
-                prompt="what is my name and where do i live?",
+                prompt="continue fixing auth",
                 context=WakeUpContext(
-                    None,
+                    {"id": "cs-1", "similarity": 0.98, "content": "Task: Fix auth middleware"},
                     None,
                     [],
-                    [
-                        {"id": "fact-1", "content": "user.name = Yash", "similarity": 0.99},
-                        {"id": "fact-2", "content": "user.location = Seattle", "similarity": 0.97},
-                    ],
+                    [],
+                    [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.99}],
                     [],
                 ),
                 first_message=False,
             )
 
-        payload = json.loads(result["stdout"])
-        self.assertEqual(payload["reason"], "Your name is Yash and you live in Seattle.")
-        render_fact_answer.assert_called_once_with(
-            "what is my name and where do i live?",
-            ["user.name = Yash", "user.location = Seattle"],
+        self.assertEqual(json.loads(result["stdout"]), {})
+        render_fact_answer.assert_not_called()
+        result["log_retrieval"].assert_called_once_with(
+            result["conn"],
+            "wake_up_context_found",
+            "continue fixing auth",
+            unittest.mock.ANY,
         )
 
     def test_logs_fact_lookup_query_results_and_renderer_io(self):
         retrieval_context = WakeUpContext(
             None,
             None,
+            [],
             [],
             [
                 {"id": "fact-1", "content": "user.name = Yash", "similarity": 0.99},

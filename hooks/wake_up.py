@@ -7,8 +7,9 @@
 #   1. Cache hit      — compacted session ≥ 96% similar to this prompt
 #   2. Working memory — rolling task context (first message of session only)
 #   3. Enrichment     — compacted sessions 70–95% similar
-#   4. Facts          — semantic search over facts table (identity surfaces here)
-#   5. Procedural     — how-to patterns (only when prompt has how-to markers)
+#   4. Episodic       — semantically related session summaries
+#   5. Facts          — semantic search over facts table (identity surfaces here)
+#   6. Procedural     — how-to patterns (only when prompt has how-to markers)
 #
 # Gates that skip ALL injection:
 #   - DB not found
@@ -19,8 +20,8 @@
 #
 # Output protocol:
 #   {"decision": "block", "reason": "...", "suppressOriginalPrompt": true}
-#       → deterministically answer facts through a documented UserPromptSubmit block
-#          after rendering the stored fact with the local LLM
+#       → deterministically answer direct fact questions through a documented
+#          UserPromptSubmit block after rendering the stored facts with the local LLM
 #   {}  → do nothing
 
 from dataclasses import dataclass
@@ -174,6 +175,61 @@ def _log_fact_lookup_details(request: HookRequest, context) -> None:
     _log_info(f"fact lookup results={json.dumps(results, ensure_ascii=False)}")
 
 
+
+def _log_context_details(context) -> None:
+    """Log the other retrieved memory layers for wake-up debugging."""
+    if context.cache_hit:
+        _log_info(
+            "cache hit=" + json.dumps(
+                {
+                    "id": context.cache_hit.get("id"),
+                    "similarity": context.cache_hit.get("similarity"),
+                    "content": str(context.cache_hit.get("content", "")).strip(),
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    if context.working_mem:
+        _log_info(
+            "working memory=" + json.dumps(
+                {
+                    "id": context.working_mem.get("id"),
+                    "similarity": context.working_mem.get("similarity"),
+                    "summary": str(context.working_mem.get("summary", "")).strip(),
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    if context.enrichment:
+        _log_info("enrichment=" + json.dumps(context.enrichment, ensure_ascii=False))
+
+    if context.episodic:
+        _log_info("episodic=" + json.dumps(context.episodic, ensure_ascii=False))
+
+    if context.procedural:
+        _log_info("procedural=" + json.dumps(context.procedural, ensure_ascii=False))
+
+
+
+def _should_block_with_fact_answer(request: HookRequest, context) -> bool:
+    """Only block when wake-up found facts and no richer context layers compete.
+
+    Claude Code's UserPromptSubmit hook cannot inject context into the prompt, so
+    direct blocking is reserved for fact-only recall. When other memory layers are
+    relevant we log them and allow the prompt through unchanged.
+    """
+    return bool(context.facts) and not any([
+        context.cache_hit,
+        context.working_mem,
+        context.enrichment,
+        context.episodic,
+        context.procedural,
+    ])
+
+
+
 def _log_retrieval_metrics(
     conn,
     *,
@@ -193,6 +249,7 @@ def _log_retrieval_metrics(
             has_cache_hit=bool(context.cache_hit),
             has_working_mem=bool(context.working_mem),
             enrichment_count=len(context.enrichment),
+            episodic_count=len(context.episodic),
             facts_count=len(context.facts),
             procedural_count=len(context.procedural),
             est_tokens=est_tokens,
@@ -237,8 +294,9 @@ def main() -> None:
 
         _log_context_warnings(context)
         _log_fact_lookup_details(request, context)
+        _log_context_details(context)
 
-        if context.facts:
+        if _should_block_with_fact_answer(request, context):
             fact_contents = [str(fact.get("content", "")) for fact in context.facts]
             answer = render_fact_answer(request.prompt, fact_contents)
             canonical_facts = [fact.strip() for fact in fact_contents if fact.strip()]
@@ -258,17 +316,28 @@ def main() -> None:
             )
             _respond_with_blocked_prompt(answer)
 
-        miss_response = "I don't have that fact stored."
-        _log_info("fact lookup miss; returning documented block response")
-        _log_retrieval_metrics(
-            conn,
-            tool_name="wake_up_fact_miss",
-            action="fact_miss_blocked",
-            request=request,
-            context=context,
-            payload_text=miss_response,
-        )
-        _respond_with_blocked_prompt(miss_response)
+        injection = _build_injection(context)
+        if injection:
+            _log_info(f"wake-up context found but prompt injection is unavailable for this hook: {injection}")
+            _log_retrieval_metrics(
+                conn,
+                tool_name="wake_up_context_found",
+                action="context_found_allow",
+                request=request,
+                context=context,
+                payload_text=injection,
+            )
+        else:
+            _log_info("no wake-up memory found; allowing prompt through")
+            _log_retrieval_metrics(
+                conn,
+                tool_name="wake_up_noop",
+                action="context_miss_allow",
+                request=request,
+                context=context,
+                payload_text="",
+            )
+        _allow()
     finally:
         try:
             conn.close()

@@ -6,10 +6,10 @@
 #     2. Extracts durable facts about the user (identity, preferences, decisions)
 #     3. Persists those facts into the existing facts table
 #
-# Facts-first runtime note:
-# Older integrations for episodic, working, compacted, procedural, and insight
-# memory are intentionally left in this file but disabled in the active run loop
-# while the new facts architecture is validated end-to-end with Claude.
+# Runtime note:
+# The daemon now processes the full memory stack incrementally: facts,
+# episodic memory, working memory, compacted session memory, procedural
+# patterns, and insights. The dashboard and existing tables remain intact.
 #
 # Run:
 #   python3 memory/daemon.py            # runs forever
@@ -49,6 +49,7 @@ from memory.db import (
     prune_transcript,
     delete_sessions,
     embed,
+    populate_missing_embeddings,
 )
 from memory.fact_repository import save_extracted_facts
 from memory.facts import extract_facts_from_session_text
@@ -723,26 +724,21 @@ def run(once: bool = False) -> None:
                     # Reuse one bounded transcript sample across per-session LLM prompts.
                     text_sample = _session_text_sample(session)
 
-                    # Facts-first runtime: only structured fact extraction stays active.
-                    # The older per-session integrations remain in the file for later
-                    # reintroduction, but are intentionally disabled here for a clean
-                    # Claude-facing facts-only vertical slice.
-                    #
-                    # Disabled for now:
-                    # title, abstract = _create_episodic_entry(conn, session, text_sample=text_sample)
-                    # cluster_id = _assign_cluster(conn, session)
-                    # if cluster_id and title:
-                    #     summary_addition = f"**{title}**\n{abstract}"
-                    #     upsert_working_memory(conn, cluster_id, session_id, summary_addition)
-                    # if cluster_id:
-                    #     _compact_cluster_if_ready(conn, cluster_id)
-                    # _extract_procedural_patterns(conn, session, text_sample=text_sample)
-                    # _extract_insight_patterns(conn, session, text_sample=text_sample)
+                    title, abstract = _create_episodic_entry(conn, session, text_sample=text_sample)
+                    cluster_id = _assign_cluster(conn, session)
+                    if cluster_id and title and abstract:
+                        summary_addition = f"**{title}**\n{abstract}"
+                        upsert_working_memory(conn, cluster_id, session_id, summary_addition)
+                    if cluster_id:
+                        _compact_cluster_if_ready(conn, cluster_id)
 
                     _extract_facts(conn, session, text_sample=text_sample)
+                    _extract_procedural_patterns(conn, session, text_sample=text_sample)
+                    _extract_insight_patterns(conn, session, text_sample=text_sample)
+                    populate_missing_embeddings(conn, batch_size=50)
 
-                    # Only mark the session processed after the active facts step
-                    # completed without bubbling an exception.
+                    # Only mark the session processed after the per-session memory
+                    # extraction pipeline completed without bubbling an exception.
                     mark_session_processed(conn, session_id)
 
                     sessions_since_periodic += 1
@@ -755,8 +751,19 @@ def run(once: bool = False) -> None:
                     )
                     _daemon_log(f"error processing session {session_id}: {exc}")
 
-            # Facts-first runtime disables non-fact maintenance as well.
             if sessions_since_periodic >= PERIODIC_EVERY_N:
+                try:
+                    _close_stale_working_memory(conn)
+                except Exception as exc:
+                    error_log("daemon", "close stale working memory failed", exc=exc)
+                try:
+                    _merge_near_duplicate_compacted(conn)
+                except Exception as exc:
+                    error_log("daemon", "merge compacted sessions failed", exc=exc)
+                try:
+                    populate_missing_embeddings(conn, batch_size=100)
+                except Exception as exc:
+                    error_log("daemon", "populate missing embeddings failed", exc=exc)
                 sessions_since_periodic = 0
 
             # Remove old processed sessions.

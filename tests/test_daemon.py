@@ -370,7 +370,8 @@ class TestDaemonOnceMode(unittest.TestCase):
 
     def test_daemon_once_mode_marks_session_processed(self):
         """
-        run(once=True) with facts extraction mocked processes a session and marks it done.
+        run(once=True) with the per-session memory pipeline mocked processes a
+        session and marks it done.
 
         We use a real temp file so the daemon can open and close connections
         normally without invalidating our verification query.
@@ -388,7 +389,14 @@ class TestDaemonOnceMode(unittest.TestCase):
             setup_conn.close()
 
             with patch.object(daemon_module, "_start_ollama_if_needed", return_value=None), \
+                 patch.object(daemon_module, "_create_episodic_entry", return_value=("Auth fix", "Resolved the middleware bug.")) as create_episodic, \
+                 patch.object(daemon_module, "_assign_cluster", return_value="cluster-1") as assign_cluster, \
+                 patch.object(daemon_module, "upsert_working_memory", return_value="wm-1") as upsert_working_memory, \
+                 patch.object(daemon_module, "_compact_cluster_if_ready", return_value=None) as compact_cluster, \
                  patch.object(daemon_module, "_extract_facts", return_value=None) as extract_facts, \
+                 patch.object(daemon_module, "_extract_procedural_patterns", return_value=None) as extract_procedural, \
+                 patch.object(daemon_module, "_extract_insight_patterns", return_value=None) as extract_insight, \
+                 patch.object(daemon_module, "populate_missing_embeddings", return_value={}) as populate_embeddings, \
                  patch("memory.daemon.DB_PATH", tmp_path), \
                  patch("memory.daemon._DAEMON_LOG_PATH", log_path), \
                  patch("psutil.cpu_percent", return_value=10):
@@ -403,7 +411,14 @@ class TestDaemonOnceMode(unittest.TestCase):
 
             self.assertIsNotNone(row)
             self.assertIsNotNone(row["daemon_processed_at"])
+            create_episodic.assert_called_once()
+            assign_cluster.assert_called_once()
+            upsert_working_memory.assert_called_once()
+            compact_cluster.assert_called_once()
             extract_facts.assert_called_once()
+            extract_procedural.assert_called_once()
+            extract_insight.assert_called_once()
+            populate_embeddings.assert_called_once()
         finally:
             os.unlink(tmp_path)
             if os.path.exists(log_path):
@@ -427,7 +442,14 @@ class TestDaemonOnceMode(unittest.TestCase):
             setup_conn.close()
 
             with patch.object(daemon_module, "_start_ollama_if_needed", return_value=None), \
+                 patch.object(daemon_module, "_create_episodic_entry", return_value=("Auth fix", "Resolved the middleware bug.")), \
+                 patch.object(daemon_module, "_assign_cluster", return_value="cluster-1"), \
+                 patch.object(daemon_module, "upsert_working_memory", return_value="wm-1"), \
+                 patch.object(daemon_module, "_compact_cluster_if_ready", return_value=None), \
                  patch.object(daemon_module, "_extract_facts", side_effect=RuntimeError("boom")), \
+                 patch.object(daemon_module, "_extract_procedural_patterns", return_value=None), \
+                 patch.object(daemon_module, "_extract_insight_patterns", return_value=None), \
+                 patch.object(daemon_module, "populate_missing_embeddings", return_value={}), \
                  patch("memory.daemon.DB_PATH", tmp_path), \
                  patch("memory.daemon._DAEMON_LOG_PATH", log_path), \
                  patch("psutil.cpu_percent", return_value=10):
@@ -442,6 +464,44 @@ class TestDaemonOnceMode(unittest.TestCase):
 
             self.assertIsNotNone(row)
             self.assertIsNone(row["daemon_processed_at"])
+        finally:
+            os.unlink(tmp_path)
+            if os.path.exists(log_path):
+                os.unlink(log_path)
+
+    def test_daemon_runs_periodic_maintenance_when_threshold_is_hit(self):
+        import memory.daemon as daemon_module
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+            tmp_path = tmp.name
+        log_path = tmp_path + ".log"
+
+        try:
+            setup_conn = init_db(tmp_path)
+            _make_session(setup_conn, "session-periodic")
+            setup_conn.close()
+
+            with patch.object(daemon_module, "PERIODIC_EVERY_N", 1), \
+                 patch.object(daemon_module, "_start_ollama_if_needed", return_value=None), \
+                 patch.object(daemon_module, "_create_episodic_entry", return_value=("Auth fix", "Resolved the middleware bug.")), \
+                 patch.object(daemon_module, "_assign_cluster", return_value="cluster-1"), \
+                 patch.object(daemon_module, "upsert_working_memory", return_value="wm-1"), \
+                 patch.object(daemon_module, "_compact_cluster_if_ready", return_value=None), \
+                 patch.object(daemon_module, "_extract_facts", return_value=None), \
+                 patch.object(daemon_module, "_extract_procedural_patterns", return_value=None), \
+                 patch.object(daemon_module, "_extract_insight_patterns", return_value=None), \
+                 patch.object(daemon_module, "populate_missing_embeddings", return_value={}) as populate_embeddings, \
+                 patch.object(daemon_module, "_close_stale_working_memory", return_value=None) as close_working_memory, \
+                 patch.object(daemon_module, "_merge_near_duplicate_compacted", return_value=None) as merge_compacted, \
+                 patch("memory.daemon.DB_PATH", tmp_path), \
+                 patch("memory.daemon._DAEMON_LOG_PATH", log_path), \
+                 patch("psutil.cpu_percent", return_value=10):
+                daemon_module.run(once=True)
+
+            close_working_memory.assert_called_once()
+            merge_compacted.assert_called_once()
+            self.assertEqual(populate_embeddings.call_count, 2)
         finally:
             os.unlink(tmp_path)
             if os.path.exists(log_path):

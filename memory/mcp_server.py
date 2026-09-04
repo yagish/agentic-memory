@@ -532,7 +532,7 @@ def memory_recall(prompt: str, session_id: str = "mcp") -> dict:
     Returns a dict with:
         injection  — ready-to-use "[Memory context: ...]" string, or "" if
                      nothing relevant was found
-        cache_hit  — a previously saved answer to this exact question, if any
+        cache_hit  — the highest-confidence compacted session summary, if any
     """
     from memory.retrieval import build_wake_up_injection, retrieve_wake_up_context
 
@@ -544,9 +544,9 @@ def memory_recall(prompt: str, session_id: str = "mcp") -> dict:
         conn, prompt, include_working_memory=include_working_memory
     )
     injection = build_wake_up_injection(context)
-    saved_response = context.cache_hit.get("response", "").strip() if context.cache_hit else ""
+    cached_summary = context.cache_hit.get("content", "").strip() if context.cache_hit else ""
 
-    result = {"injection": injection, "cache_hit": saved_response}
+    result = {"injection": injection, "cache_hit": cached_summary}
     log_retrieval(conn, "memory_recall", prompt, len(str(result)))
     activity_log("mcp", "memory_recall", session=session_id, has_injection=bool(injection))
     conn.close()
