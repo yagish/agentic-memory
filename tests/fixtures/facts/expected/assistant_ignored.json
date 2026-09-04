@@ -1,0 +1,4 @@
+[
+  {"entity": "user", "attribute": "name", "value": "Yash"},
+  {"entity": "user", "attribute": "shell", "value": "zsh"}
+]

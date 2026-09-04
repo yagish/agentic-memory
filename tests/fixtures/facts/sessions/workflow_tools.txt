@@ -1,0 +1,2 @@
+User: My package manager is uv.
+User: My terminal is iTerm2.

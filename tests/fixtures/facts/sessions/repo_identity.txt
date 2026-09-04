@@ -1,0 +1,2 @@
+User: The repo name is agentic-memory.
+User: The default branch is main.

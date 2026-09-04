@@ -1,0 +1,2 @@
+User: My timezone is PST.
+User: I live in Seattle.

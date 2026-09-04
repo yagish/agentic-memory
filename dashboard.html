@@ -309,6 +309,14 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
     </div>
   </div>
 
+  <div class="svc-item" id="svc-facts_debug" onclick="selectService('facts_debug')">
+    <span class="svc-dot" id="dot-facts_debug"></span>
+    <div class="svc-body">
+      <div class="svc-name">Facts Debug</div>
+      <div class="svc-desc">Prompt/session/raw-output fact extraction log</div>
+    </div>
+  </div>
+
   <div class="sidebar-footer">
     <button class="restart-all-btn" id="restart-all-btn" onclick="restartAll()">Restart All Services</button>
     <div class="sidebar-note" id="sidebar-note">Refreshing every 30s</div>
@@ -1225,6 +1233,7 @@ function svcLabel(s) {
     wake_up:'Wake Up Hook',
     save_hook:'Save Hook',
     debug:'Debug Log',
+    facts_debug:'Facts Debug',
   }[s] || s;
 }
 </script>

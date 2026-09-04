@@ -1,0 +1,4 @@
+[
+  {"entity": "user", "attribute": "timezone", "value": "PST"},
+  {"entity": "user", "attribute": "timezone", "value": "EST"}
+]

@@ -1,0 +1,3 @@
+User: My name is Yash.
+Assistant: Your timezone is CET.
+User: My shell is zsh.

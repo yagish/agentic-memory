@@ -105,6 +105,12 @@ _LOG_SOURCES: dict[str, dict[str, object]] = {
         "kind": "app_log",
         "paths": [os.path.expanduser("~/.memory/debug.log")],
     },
+    "facts_debug": {
+        "label": "Facts Debug",
+        "description": "Prompt/session/raw-output debug log for fact extraction",
+        "kind": "app_log",
+        "paths": [os.path.expanduser("~/.memory/facts_debug.log")],
+    },
     "compress_debug": {
         "label": "Compress Debug",
         "description": "Before/after log for each compression LLM call",

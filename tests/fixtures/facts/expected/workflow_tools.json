@@ -1,0 +1,4 @@
+[
+  {"entity": "user", "attribute": "package_manager", "value": "uv"},
+  {"entity": "user", "attribute": "terminal", "value": "iTerm2"}
+]

@@ -1,0 +1,4 @@
+[
+  {"entity": "repo", "attribute": "name", "value": "agentic-memory"},
+  {"entity": "repo", "attribute": "default_branch", "value": "main"}
+]

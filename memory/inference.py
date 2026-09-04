@@ -23,11 +23,16 @@ _DEFAULT_TIMEOUT = 120
 
 @dataclass(frozen=True)
 class GenerationRequest:
-    """A text-generation request for the local Ollama runtime."""
+    """A text-generation request for the local Ollama runtime.
+
+    `temperature` was added so eval-like callers can pin deterministic model
+    behavior instead of relying on Ollama defaults.
+    """
 
     prompt: str
     model: str | None = None
     timeout_seconds: int = _DEFAULT_TIMEOUT
+    temperature: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -49,6 +54,7 @@ def generate_text(request: GenerationRequest) -> GenerationResult:
         "model": model,
         "prompt": request.prompt,
         "stream": False,
+        "options": {"temperature": request.temperature},
     }).encode("utf-8")
 
     req = urllib.request.Request(
@@ -76,18 +82,26 @@ def generate_text(request: GenerationRequest) -> GenerationResult:
 
 
 def parse_json_payload(raw: str) -> list | dict:
-    """Extract the first JSON object or array from model output."""
+    """Extract the first JSON object or array from model output.
+
+    Local models often wrap valid JSON with short prose like
+    "Here are the facts:". This helper tolerates that wrapper text while still
+    returning only a parsed JSON object/array to callers.
+    """
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        for start_char, end_char in (("[", "]"), ("{", "}")):
-            start = raw.find(start_char)
-            end = raw.rfind(end_char) + 1
-            if start >= 0 and end > start:
-                try:
-                    return json.loads(raw[start:end])
-                except json.JSONDecodeError:
-                    pass
+        decoder = json.JSONDecoder()
+        for index, char in enumerate(raw):
+            # Scan forward until a plausible JSON payload starts.
+            if char not in "[{":
+                continue
+            try:
+                payload, _end = decoder.raw_decode(raw[index:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, (list, dict)):
+                return payload
     return []
 
 
