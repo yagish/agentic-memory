@@ -9,7 +9,7 @@ import json
 import sys
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 # Add the project root to sys.path so we can import memory.* packages.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -370,7 +370,7 @@ class TestDaemonOnceMode(unittest.TestCase):
 
     def test_daemon_once_mode_marks_session_processed(self):
         """
-        run(once=True) with a mocked ollama processes a session and marks it done.
+        run(once=True) with facts extraction mocked processes a session and marks it done.
 
         We use a real temp file so the daemon can open and close connections
         normally without invalidating our verification query.
@@ -387,10 +387,8 @@ class TestDaemonOnceMode(unittest.TestCase):
             _make_session(setup_conn, "session-once")
             setup_conn.close()
 
-            mock_response = json.dumps([])
-
-            with patch.object(daemon_module, "_call_ollama", return_value=mock_response), \
-                 patch.object(daemon_module, "_start_ollama_if_needed", return_value=None), \
+            with patch.object(daemon_module, "_start_ollama_if_needed", return_value=None), \
+                 patch.object(daemon_module, "_extract_facts", return_value=None) as extract_facts, \
                  patch("memory.daemon.DB_PATH", tmp_path), \
                  patch("memory.daemon._DAEMON_LOG_PATH", log_path), \
                  patch("psutil.cpu_percent", return_value=10):
@@ -405,6 +403,7 @@ class TestDaemonOnceMode(unittest.TestCase):
 
             self.assertIsNotNone(row)
             self.assertIsNotNone(row["daemon_processed_at"])
+            extract_facts.assert_called_once()
         finally:
             os.unlink(tmp_path)
             if os.path.exists(log_path):
@@ -428,10 +427,7 @@ class TestDaemonOnceMode(unittest.TestCase):
             setup_conn.close()
 
             with patch.object(daemon_module, "_start_ollama_if_needed", return_value=None), \
-                 patch.object(daemon_module, "_create_episodic_entry", return_value=("Title", "Abstract")), \
-                 patch.object(daemon_module, "_assign_cluster", return_value="cluster-1"), \
-                 patch.object(daemon_module, "_compact_cluster_if_ready", return_value=None), \
-                 patch.object(daemon_module, "_extract_procedural_patterns", side_effect=RuntimeError("boom")), \
+                 patch.object(daemon_module, "_extract_facts", side_effect=RuntimeError("boom")), \
                  patch("memory.daemon.DB_PATH", tmp_path), \
                  patch("memory.daemon._DAEMON_LOG_PATH", log_path), \
                  patch("psutil.cpu_percent", return_value=10):
@@ -450,6 +446,40 @@ class TestDaemonOnceMode(unittest.TestCase):
             os.unlink(tmp_path)
             if os.path.exists(log_path):
                 os.unlink(log_path)
+
+
+class TestStructuredFactExtraction(unittest.TestCase):
+    """Tests for the daemon's facts-first extraction path."""
+
+    def setUp(self):
+        self.conn = init_db(":memory:")
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_extract_facts_uses_shared_extractor_and_repository(self):
+        import memory.daemon as daemon_module
+
+        session = {
+            "session_id": "session-facts",
+            "transcript": json.dumps([
+                {"role": "user", "content": "My name is Yash."},
+            ]),
+        }
+
+        fake_fact = MagicMock()
+
+        with patch.object(daemon_module, "extract_facts_from_session_text", return_value=[fake_fact]) as extract_facts, \
+             patch.object(daemon_module, "save_extracted_facts", return_value=["fact-1"]) as save_facts:
+            daemon_module._extract_facts(self.conn, session)
+
+        extract_facts.assert_called_once()
+        save_facts.assert_called_once_with(
+            self.conn,
+            [fake_fact],
+            session_id="session-facts",
+            source="daemon_fact_extractor",
+        )
 
 
 if __name__ == "__main__":

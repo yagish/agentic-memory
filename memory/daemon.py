@@ -2,16 +2,14 @@
 #
 # Runs as a long-lived process. Every POLL_INTERVAL seconds:
 #   Pass 1 — per new session:
-#     1. Creates an episodic memory entry (title + abstract)
-#     2. Assigns session to a topic cluster
-#     3. Updates working memory for that cluster
-#     4. Compacts the cluster into a vector-indexed summary (when ≥ COMPACT_MIN_SESSIONS ready)
-#     5. Extracts reusable procedural patterns
-#     6. Extracts durable cross-session insights
-#     7. Extracts durable facts about the user (identity, preferences, decisions)
-#   Pass 2 — periodic maintenance (every PERIODIC_EVERY_N sessions):
-#     8. Closes working memory entries inactive > 14 days
-#     9. Merges near-duplicate compacted session entries (≥ 92% similarity)
+#     1. Saves the session transcript as usual
+#     2. Extracts durable facts about the user (identity, preferences, decisions)
+#     3. Persists those facts into the existing facts table
+#
+# Facts-first runtime note:
+# Older integrations for episodic, working, compacted, procedural, and insight
+# memory are intentionally left in this file but disabled in the active run loop
+# while the new facts architecture is validated end-to-end with Claude.
 #
 # Run:
 #   python3 memory/daemon.py            # runs forever
@@ -48,11 +46,12 @@ from memory.db import (
     merge_compacted_sessions,
     upsert_procedural,
     upsert_insight,
-    insert_fact,
     prune_transcript,
     delete_sessions,
     embed,
 )
+from memory.fact_repository import save_extracted_facts
+from memory.facts import extract_facts_from_session_text
 from memory.logger import activity_log, error_log
 from memory.debug import enable_debug
 from memory.ollama import (
@@ -512,10 +511,11 @@ def _extract_facts(
     session: dict,
     text_sample: str | None = None,
 ) -> None:
-    """
-    Identify durable facts about the user (identity, preferences, decisions) from
-    a session and store them in facts. Only clearly-stated, generalizable facts
-    are kept — skips anything only relevant to this single session.
+    """Extract structured facts from a session and persist them.
+
+    Facts-first mode intentionally replaces the older daemon-local JSON prompt
+    that stored free-form fact strings. The new path uses the shared extractor
+    contract and the repository bridge into the existing facts table.
     """
     session_id = session["session_id"]
     if text_sample is None:
@@ -523,38 +523,22 @@ def _extract_facts(
     if not text_sample:
         return
 
-    prompt = (
-        "Identify any durable facts about the user worth remembering permanently — "
-        "their name, role, background, preferences, or key decisions they made. "
-        "Skip anything only relevant to this single session.\n\n"
-        'Return ONLY a JSON array: [{"content": "...", "tags": ["tag1"], "confidence": 0.0-1.0}]\n'
-        "Return [] if no durable facts exist.\n\n"
-        f"Conversation:\n{text_sample}"
-    )
-
     try:
-        data = _call_ollama_json(prompt, list)
-        if not data:
+        facts = extract_facts_from_session_text(text_sample)
+        if not facts:
             return
 
-        count = 0
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            content = item.get("content", "").strip()[:500]
-            tags = item.get("tags") or []
-            if not isinstance(tags, list):
-                tags = []
-            confidence = item.get("confidence")
-            if not isinstance(confidence, (int, float)):
-                confidence = None
-            if content and (confidence is None or confidence >= FACT_MIN_CONFIDENCE):
-                insert_fact(conn, content, tags=tags, source="daemon", session_id=session_id)
-                count += 1
-
-        if count:
-            activity_log("daemon", "fact", session=session_id, facts=count)
-            _daemon_log(f"extracted {count} facts from {session_id}")
+        saved_ids = save_extracted_facts(
+            conn,
+            facts,
+            session_id=session_id,
+            source="daemon_fact_extractor",
+        )
+        if saved_ids:
+            activity_log("daemon", "fact", session=session_id, facts=len(saved_ids))
+            _daemon_log(
+                f"extracted {len(saved_ids)} structured facts from {session_id}"
+            )
     except Exception as exc:
         error_log("daemon", f"fact extraction failed for {session_id}: {exc}", exc=exc)
 
@@ -739,40 +723,26 @@ def run(once: bool = False) -> None:
                     # Reuse one bounded transcript sample across per-session LLM prompts.
                     text_sample = _session_text_sample(session)
 
-                    # Step 1: Episodic entry (title + abstract).
-                    title, abstract = _create_episodic_entry(
-                        conn, session, text_sample=text_sample
-                    )
+                    # Facts-first runtime: only structured fact extraction stays active.
+                    # The older per-session integrations remain in the file for later
+                    # reintroduction, but are intentionally disabled here for a clean
+                    # Claude-facing facts-only vertical slice.
+                    #
+                    # Disabled for now:
+                    # title, abstract = _create_episodic_entry(conn, session, text_sample=text_sample)
+                    # cluster_id = _assign_cluster(conn, session)
+                    # if cluster_id and title:
+                    #     summary_addition = f"**{title}**\n{abstract}"
+                    #     upsert_working_memory(conn, cluster_id, session_id, summary_addition)
+                    # if cluster_id:
+                    #     _compact_cluster_if_ready(conn, cluster_id)
+                    # _extract_procedural_patterns(conn, session, text_sample=text_sample)
+                    # _extract_insight_patterns(conn, session, text_sample=text_sample)
 
-                    # Step 2: Assign to topic cluster.
-                    cluster_id = _assign_cluster(conn, session)
+                    _extract_facts(conn, session, text_sample=text_sample)
 
-                    # Step 3: Update working memory for this cluster.
-                    if cluster_id and title:
-                        summary_addition = f"**{title}**\n{abstract}"
-                        upsert_working_memory(conn, cluster_id, session_id, summary_addition)
-
-                    # Step 4: Compact the cluster if enough sessions are ready.
-                    if cluster_id:
-                        _compact_cluster_if_ready(conn, cluster_id)
-
-                    # Step 5: Extract procedural patterns.
-                    _extract_procedural_patterns(
-                        conn, session, text_sample=text_sample
-                    )
-
-                    # Step 6: Extract durable cross-session insights.
-                    _extract_insight_patterns(
-                        conn, session, text_sample=text_sample
-                    )
-
-                    # Step 7: Extract durable facts about the user.
-                    _extract_facts(
-                        conn, session, text_sample=text_sample
-                    )
-
-                    # Step 8: Only mark the session processed after all required
-                    # per-session steps completed without bubbling an exception.
+                    # Only mark the session processed after the active facts step
+                    # completed without bubbling an exception.
                     mark_session_processed(conn, session_id)
 
                     sessions_since_periodic += 1
@@ -785,15 +755,9 @@ def run(once: bool = False) -> None:
                     )
                     _daemon_log(f"error processing session {session_id}: {exc}")
 
-            # Pass 2: periodic maintenance (close stale WM, merge near-duplicates).
+            # Facts-first runtime disables non-fact maintenance as well.
             if sessions_since_periodic >= PERIODIC_EVERY_N:
-                try:
-                    _close_stale_working_memory(conn)
-                    _merge_near_duplicate_compacted(conn)
-                    sessions_since_periodic = 0
-                except Exception as exc:
-                    error_log("daemon", "periodic maintenance failed", exc=exc)
-                    _daemon_log(f"maintenance error: {exc}")
+                sessions_since_periodic = 0
 
             # Remove old processed sessions.
             try:

@@ -168,10 +168,11 @@ def _log_context_warnings(context) -> None:
         _log_error(f"{warning.stage} failed: {warning.message}")
 
 
-def _get_saved_response(context) -> str:
-    if not context.cache_hit:
+def _get_fact_response(context) -> str:
+    """Return the top retrieved fact as the direct hook response."""
+    if not context.facts:
         return ""
-    return context.cache_hit.get("response", "").strip()
+    return str(context.facts[0].get("content", "")).strip()
 
 
 def _log_retrieval_metrics(
@@ -241,39 +242,30 @@ def main() -> None:
 
         _log_context_warnings(context)
 
-        saved_response = _get_saved_response(context)
-        if saved_response:
-            similarity = context.cache_hit.get("similarity", 0) if context.cache_hit else 0
-            _log_info(
-                f"high-similarity saved response found ({similarity:.0%} match); "
-                "returning cached answer and skipping LLM"
-            )
+        fact_response = _get_fact_response(context)
+        if fact_response:
+            _log_info("fact lookup hit; returning retrieved fact directly")
             _log_retrieval_metrics(
                 conn,
-                tool_name="wake_up_cache_hit",
-                action="cache_hit_short_circuit",
+                tool_name="wake_up_fact_hit",
+                action="fact_hit_short_circuit",
                 request=request,
                 context=context,
-                payload_text=saved_response,
+                payload_text=fact_response,
             )
-            _respond_with_saved_response(saved_response)
+            _respond_with_saved_response(fact_response)
 
-        injection = _build_injection(context)
-        if not injection:
-            _log_info("semantic search complete, no injection produced")
-            _allow()
-
-        updated_prompt = _build_updated_prompt(request.prompt, injection)
-        _log_info(f"semantic search complete, updated prompt={updated_prompt!r}")
+        miss_response = "No fact found."
+        _log_info("fact lookup miss; returning no fact found")
         _log_retrieval_metrics(
             conn,
-            tool_name="wake_up_injection",
-            action="injected",
+            tool_name="wake_up_fact_miss",
+            action="fact_miss_short_circuit",
             request=request,
             context=context,
-            payload_text=injection,
+            payload_text=miss_response,
         )
-        _respond_with_prompt(updated_prompt)
+        _respond_with_saved_response(miss_response)
     finally:
         try:
             conn.close()

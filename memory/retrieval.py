@@ -2,6 +2,10 @@
 
 Adapters should call these functions instead of assembling retrieval layers
 and ranking policy directly.
+
+Current runtime mode is intentionally facts-only. Wake-up retrieval now ignores
+response cache and every non-fact memory layer, and searches only the facts
+store.
 """
 
 from __future__ import annotations
@@ -9,29 +13,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from memory.db import (
-    find_cached_response,
-    search_compacted_sessions,
-    search_facts_semantic,
-    search_procedural_semantic,
-    search_working_memory_semantic,
-)
+from memory.db import search_facts_semantic
 from memory.inference import embed_text
-
-# Semantic thresholds for context retrieval.
-ENRICHMENT_THRESHOLD = 0.70
-WORKING_MEM_THRESHOLD = 0.50
-
-# How-to markers — enable procedural memory injection when present.
-HOW_TO_MARKERS = {
-    "how", "steps", "step by", "best way", "should i",
-    "approach", "workflow", "procedure", "guide", "tutorial",
-}
 
 # 500-token hard budget (estimated as chars / 4).
 TOKEN_BUDGET = 500
 CHARS_BUDGET = TOKEN_BUDGET * 4
-
 
 @dataclass(frozen=True)
 class RetrievalWarning:
@@ -51,11 +38,6 @@ class WakeUpContext:
     facts: list[dict]
     procedural: list[dict]
     warnings: list[RetrievalWarning] = field(default_factory=list)
-
-
-def is_how_to(prompt: str) -> bool:
-    lowered = prompt.lower()
-    return any(marker in lowered for marker in HOW_TO_MARKERS)
 
 
 def build_fact_query(prompt: str) -> str:
@@ -86,10 +68,12 @@ def build_wake_up_injection(context: WakeUpContext) -> str:
         return content if content.endswith((".", "!", "?")) else f"{content}."
 
     def _naturalize_fact(content: str) -> str:
-        content = _sentence(content)
-        if content.startswith("User's "):
-            return "The user's " + content[len("User's "):]
-        return content
+        content = _normalize(content)
+        match = re.fullmatch(r"([a-z0-9_]+)\.([a-z0-9_]+)\s*=\s*(.+)", content, re.IGNORECASE)
+        if match:
+            entity, attribute, value = match.groups()
+            return _sentence(f"Remembered fact: {entity}.{attribute} = {value}")
+        return _sentence(content)
 
     def _add(block: str) -> bool:
         nonlocal chars_used
@@ -109,30 +93,14 @@ def build_wake_up_injection(context: WakeUpContext) -> str:
             f"You answered this question before ({sim:.0%} match). Previous answer: {_sentence(content)}"
         )
 
-    if context.working_mem:
-        _add(
-            f"Current task context: {context.working_mem['summary']}"
-        )
-
-    if context.enrichment:
-        lines = []
-        for compacted in context.enrichment:
-            sim = compacted.get("similarity", 0)
-            lines.append(f"Relevant prior conversation ({sim:.0%} match): {_sentence(compacted.get('content', ''))}")
-        _add(" ".join(lines))
-
     if context.facts:
-        top_fact = _normalize(context.facts[0].get("content", ""))
-        if top_fact:
-            _add(_naturalize_fact(top_fact))
-
-    if context.procedural:
         lines = []
-        for procedural in context.procedural:
-            title = procedural.get("title", "")
-            steps = procedural.get("steps", "")
-            lines.append(f"Relevant how-to pattern: {_sentence(f'{title}: {steps}')}")
-        _add(" ".join(lines))
+        for fact in context.facts[:3]:
+            content = _normalize(fact.get("content", ""))
+            if content:
+                lines.append(_naturalize_fact(content))
+        if lines:
+            _add(" ".join(lines))
 
     if not sections:
         return ""
@@ -147,68 +115,29 @@ def retrieve_wake_up_context(
     include_working_memory: bool,
     embed_fn=embed_text,
 ) -> WakeUpContext:
-    """Retrieve wake-up context across compacted, working, fact, and procedural layers."""
+    """Retrieve wake-up context.
+
+    Facts-only mode searches only the structured facts store. If no fact is
+    found, callers can decide how to surface that miss.
+    """
     warnings: list[RetrievalWarning] = []
 
-    cache_hit: dict | None = None
-    enrichment: list[dict] = []
-
-    try:
-        cache_hit = find_cached_response(conn, prompt)
-    except Exception as exc:
-        warnings.append(RetrievalWarning("response_cache", str(exc)))
-
-    if cache_hit:
-        return WakeUpContext(
-            cache_hit=cache_hit,
-            working_mem=None,
-            enrichment=[],
-            facts=[],
-            procedural=[],
-            warnings=warnings,
-        )
-
-    prompt_vec = embed_fn(prompt)
-
-    try:
-        results = search_compacted_sessions(conn, prompt_vec, limit=5)
-        for compacted in results:
-            sim = compacted.get("similarity", 0)
-            if sim >= ENRICHMENT_THRESHOLD:
-                enrichment.append(compacted)
-    except Exception as exc:
-        warnings.append(RetrievalWarning("compacted_search", str(exc)))
-
-    working_mem: dict | None = None
-    if include_working_memory:
-        try:
-            matches = search_working_memory_semantic(conn, prompt_vec, limit=1)
-            if matches and matches[0].get("similarity", 0) >= WORKING_MEM_THRESHOLD:
-                working_mem = matches[0]
-        except Exception as exc:
-            warnings.append(RetrievalWarning("working_memory", str(exc)))
+    # Kept in the function signature for adapter compatibility while non-fact
+    # wake-up integrations are intentionally disabled in facts-only mode.
+    _ = include_working_memory
 
     facts: list[dict] = []
     try:
-        # Use semantic search to find facts similar to the prompt.
-        # This handles queries like "what everyone calls me" → "User's name is Yagish"
+        prompt_vec = embed_fn(prompt)
         facts = search_facts_semantic(conn, prompt_vec, limit=5)
     except Exception as exc:
         warnings.append(RetrievalWarning("facts", str(exc)))
 
-    procedural: list[dict] = []
-    if is_how_to(prompt):
-        try:
-            # Use semantic search for procedural patterns.
-            procedural = search_procedural_semantic(conn, prompt_vec, min_confidence=0.6, limit=3)
-        except Exception as exc:
-            warnings.append(RetrievalWarning("procedural", str(exc)))
-
     return WakeUpContext(
-        cache_hit=cache_hit,
-        working_mem=working_mem,
-        enrichment=enrichment,
+        cache_hit=None,
+        working_mem=None,
+        enrichment=[],
         facts=facts,
-        procedural=procedural,
+        procedural=[],
         warnings=warnings,
     )

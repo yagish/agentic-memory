@@ -45,23 +45,21 @@ class TestBuildInjection(unittest.TestCase):
         self.assertIn("The authentication bug is fixed.", result)
         self.assertNotIn("Return", result)
 
-    def test_includes_working_memory_facts_and_procedural_sections(self):
+    def test_includes_only_facts_in_facts_only_mode(self):
         result = _build_injection(
             WakeUpContext(
                 None,
                 {"summary": "Current task context"},
                 [{"similarity": 0.82, "content": "Past summary"}],
-                [{"content": "User prefers dark mode"}],
+                [{"content": "user.name = Yash"}],
                 [{"title": "Deploy workflow", "steps": "1. Build\n2. Ship"}],
             )
         )
         self.assertTrue(result.startswith("[Memory context: "))
-        self.assertIn("Current task context", result)
-        self.assertIn("Relevant prior conversation (82% match)", result)
-        self.assertIn("User prefers dark mode.", result)
-        self.assertIn("Relevant how-to pattern", result)
-        self.assertIn("Deploy workflow", result)
-        self.assertNotIn("verbatim", result)
+        self.assertIn("Remembered fact: user.name = Yash.", result)
+        self.assertNotIn("Current task context", result)
+        self.assertNotIn("Relevant prior conversation", result)
+        self.assertNotIn("Relevant how-to pattern", result)
 
 
 class TestMainIntegration(unittest.TestCase):
@@ -104,74 +102,41 @@ class TestMainIntegration(unittest.TestCase):
             "log_retrieval": log_retrieval,
         }
 
-    def test_outputs_empty_object_when_nothing_matches(self):
+    def test_no_fact_found_short_circuits_with_error(self):
         result = self._run_main(prompt="hello", first_message=False)
-        self.assertEqual(json.loads(result["stdout"]), {})
-        self.assertEqual(result["stderr"], "")
-        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(result["stdout"], "")
+        error_payload = json.loads(result["stderr"])
+        self.assertEqual(error_payload["error"]["message"], "No fact found.")
+        self.assertEqual(result["exit_code"], 2)
         result["conn"].close.assert_called_once()
 
-    def test_cache_hit_short_circuits_with_saved_response(self):
+    def test_fact_hit_short_circuits_with_fact_response(self):
         result = self._run_main(
-            prompt="fix auth bug",
+            prompt="what is my name?",
             context=WakeUpContext(
-                {"id": "cache-1", "response": "The authentication bug is fixed.", "similarity": 1.0},
+                None,
                 None,
                 [],
-                [],
+                [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.99}],
                 [],
             ),
             first_message=False,
         )
         self.assertEqual(result["stdout"], "")
         error_payload = json.loads(result["stderr"])
-        self.assertEqual(error_payload["error"]["message"], "The authentication bug is fixed.")
+        self.assertEqual(error_payload["error"]["message"], "user.name = Yash")
         self.assertEqual(result["exit_code"], 2)
         result["retrieve_context"].assert_called_once_with(
             result["conn"],
-            "fix auth bug",
+            "what is my name?",
             include_working_memory=False,
         )
         result["log_retrieval"].assert_called_once_with(
             result["conn"],
-            "wake_up_cache_hit",
-            "fix auth bug",
-            len("The authentication bug is fixed.") // 4,
+            "wake_up_fact_hit",
+            "what is my name?",
+            len("user.name = Yash") // 4,
         )
-        result["conn"].close.assert_called_once()
-
-    def test_working_memory_only_on_first_message(self):
-        first = self._run_main(
-            prompt="continue the task",
-            context=WakeUpContext(
-                None,
-                {"summary": "Current task context"},
-                [{"id": "cs-2", "cluster_id": "cluster-2", "content": "Task: prior work", "similarity": 0.82}],
-                [],
-                [],
-            ),
-            first_message=True,
-        )
-        first_output = json.loads(first["stdout"])
-        first_prompt = first_output["hookSpecificOutput"]["userPrompt"]
-        self.assertIn("Current task context", first_prompt)
-        self.assertTrue(first_prompt.endswith("User: continue the task"))
-        self.assertEqual(first["exit_code"], 0)
-
-        later = self._run_main(
-            prompt="continue the task",
-            context=WakeUpContext(
-                None,
-                None,
-                [{"id": "cs-2", "cluster_id": "cluster-2", "content": "Task: prior work", "similarity": 0.82}],
-                [],
-                [],
-            ),
-            first_message=False,
-        )
-        later_output = json.loads(later["stdout"])
-        later_prompt = later_output["hookSpecificOutput"]["userPrompt"]
-        self.assertNotIn("Current task context", later_prompt)
 
     def test_retrieval_is_called_with_first_message_flag(self):
         first = self._run_main(prompt="hello there", first_message=True)
