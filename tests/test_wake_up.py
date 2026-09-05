@@ -29,7 +29,7 @@ class TestBuildInjection(unittest.TestCase):
         result = _build_injection(WakeUpContext(None, None, [], [], [], []))
         self.assertEqual(result, "")
 
-    def test_includes_all_memory_sections(self):
+    def test_includes_only_episodic_and_fact_sections(self):
         result = _build_injection(
             WakeUpContext(
                 {"id": "cs-1", "similarity": 0.98, "content": "Task: Fix auth middleware"},
@@ -41,12 +41,12 @@ class TestBuildInjection(unittest.TestCase):
             )
         )
         self.assertTrue(result.startswith("[Memory context: "))
-        self.assertIn("Relevant prior session (98% match): Task: Fix auth middleware.", result)
-        self.assertIn("Current task context: Current task is cleaning up auth middleware.", result)
-        self.assertIn("Related prior session (83% match): Task: Add JWT refresh flow.", result)
         self.assertIn("Recent related episode: Resolved auth bug. Fixed the login loop.", result)
         self.assertIn("Remembered fact: user.name = Yash.", result)
-        self.assertIn("Relevant how-to pattern: Deploy workflow. 1. Build 2. Ship.", result)
+        self.assertNotIn("Relevant prior session", result)
+        self.assertNotIn("Current task context", result)
+        self.assertNotIn("Related prior session", result)
+        self.assertNotIn("Relevant how-to pattern", result)
 
 
 class TestMainIntegration(unittest.TestCase):
@@ -134,15 +134,15 @@ class TestMainIntegration(unittest.TestCase):
             len("Your name is Yash.") // 4,
         )
 
-    def test_fact_hit_with_other_memory_layers_allows_prompt(self):
+    def test_fact_hit_with_episodic_context_allows_prompt(self):
         with patch.object(_wu, "render_fact_answer") as render_fact_answer:
             result = self._run_main(
                 prompt="continue fixing auth",
                 context=WakeUpContext(
-                    {"id": "cs-1", "similarity": 0.98, "content": "Task: Fix auth middleware"},
+                    None,
                     None,
                     [],
-                    [],
+                    [{"id": "ep-1", "title": "Resolved auth bug", "abstract": "Fixed the login loop.", "similarity": 0.79}],
                     [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.99}],
                     [],
                 ),

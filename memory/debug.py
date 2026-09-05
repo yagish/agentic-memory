@@ -3,22 +3,12 @@ import sys
 from datetime import datetime, timezone
 
 
-_DEBUG_LOG_PATH = os.path.expanduser("~/.memory/debug.log")
-
-
 def _truthy(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _debug_log(message: str) -> None:
     line = f"{datetime.now(timezone.utc).isoformat()} [debug] {message}\n"
-    try:
-        os.makedirs(os.path.dirname(_DEBUG_LOG_PATH), exist_ok=True)
-        with open(_DEBUG_LOG_PATH, "a") as f:
-            f.write(line)
-    except Exception:
-        pass
-
     try:
         sys.stderr.write(line)
         sys.stderr.flush()

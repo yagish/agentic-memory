@@ -1,355 +1,109 @@
-# db.py — the storage layer for the memory system.
-# Everything that touches the SQLite database lives here.
-# Other modules call these functions; they never write SQL themselves.
+"""Minimal SQLite storage layer for sessions, facts, and episodes.
 
-import json       # used to convert Python dicts ↔ text for storage
+The retained persistent tables are:
+- sessions
+- facts
+- episodic_memory
+
+Older storage concerns (chunks, retrievals, working memory, compaction,
+procedural memory, compression, clustering, response cache) were removed.
+A few compatibility helpers remain where lightweight support is still useful.
+"""
+
+from __future__ import annotations
+
+import json
 import os
-import re
-import sqlite3    # Python's built-in SQLite driver — no install needed
-import struct     # used to unpack float32 arrays from SQLite blob storage
-from difflib import SequenceMatcher
-from datetime import datetime, timezone, timedelta
+import sqlite3
 import uuid
+from datetime import datetime, timezone
 
-from memory.vectors import embed, pack_vector, cosine_distance, _ST_AVAILABLE
+from memory.vectors import cosine_distance, embed, pack_vector
 
 
-# _SCHEMA defines the base tables. The IF NOT EXISTS guards make it safe to
-# re-run every startup — it won't wipe existing data.
 _SCHEMA = """
--- Main table: one row per conversation session.
--- transcript is stored as raw JSON text (verbatim — never summarised).
 CREATE TABLE IF NOT EXISTS sessions (
-  session_id   TEXT PRIMARY KEY,   -- unique ID Claude gives each conversation
-  agent        TEXT NOT NULL DEFAULT 'claude',
-  started_at   TEXT,               -- ISO timestamp of first turn
-  updated_at   TEXT,               -- ISO timestamp of most recent save
-  turn_count   INTEGER,            -- total number of turns (user + assistant)
-  transcript   TEXT                -- full conversation as a JSON string
+  session_id           TEXT PRIMARY KEY,
+  agent                TEXT NOT NULL DEFAULT 'claude',
+  started_at           TEXT,
+  updated_at           TEXT,
+  turn_count           INTEGER,
+  transcript           TEXT,
+  metadata             TEXT,
+  daemon_processed_at  TEXT
 );
 
-"""
-
-# _VEC_SCHEMA creates the vector storage table.
-# It's a plain SQLite table — no extensions needed.
-# We store embeddings as BLOB (binary data) and compute similarity in Python.
-_VEC_SCHEMA = """
--- session_vecs: one 384-dimensional embedding vector per session.
--- The embedding column holds packed float32 bytes (384 floats × 4 bytes = 1536 bytes).
--- We read all blobs back into Python and compute cosine similarity there.
-CREATE TABLE IF NOT EXISTS session_vecs (
-    session_id  TEXT PRIMARY KEY,   -- matches sessions.session_id
-    embedding   BLOB NOT NULL       -- packed little-endian float32 array
-);
-"""
-
-
-# _RETRIEVAL_SCHEMA tracks every time Claude calls an MCP memory tool.
-# This lets us report "how often is memory actually being used?" in the dashboard.
-_RETRIEVAL_SCHEMA = """
-CREATE TABLE IF NOT EXISTS retrievals (
-    id          TEXT PRIMARY KEY,   -- unique ID (UUID) for each retrieval event
-    tool        TEXT NOT NULL,      -- which MCP tool was called, e.g. 'memory_search'
-    query       TEXT,               -- the search query (NULL for memory_status)
-    result_size INTEGER,            -- how many bytes were returned to Claude
-    called_at   TEXT NOT NULL       -- ISO timestamp of the call
-);
-"""
-
-# _CHUNK_SCHEMA stores sub-session chunks for finer-grained semantic search.
-# Instead of one vector per whole session, we split the transcript into
-# overlapping windows and store one vector per window (chunk).
-# This lets semantic search find the right session even when the matching
-# content is buried deep in a long conversation.
-_CHUNK_SCHEMA = """
-CREATE TABLE IF NOT EXISTS chunks (
-  id          TEXT PRIMARY KEY,   -- "{session_id}:{chunk_index}" — unique per chunk
-  session_id  TEXT NOT NULL REFERENCES sessions(session_id),
-  chunk_index INTEGER NOT NULL,   -- 0-based position of this chunk in the session
-  text        TEXT NOT NULL,      -- concatenated turn text for this window
-  embedding   BLOB,               -- packed float32 embedding, or NULL if not yet embedded
-  created_at  TEXT                -- ISO UTC timestamp when this chunk was stored
-);
-"""
-
-# _FACTS_SCHEMA stores structured facts that Claude saves proactively mid-conversation.
-# Unlike sessions (which are full transcripts saved passively), facts are small,
-# targeted pieces of information the agent deliberately records — e.g. a user preference,
-# a key decision, or a domain fact worth remembering across sessions.
-# The FTS5 virtual table + triggers keep the full-text search index in sync automatically.
-_FACTS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
-  id         TEXT PRIMARY KEY,   -- UUID, generated at insert time
-  content    TEXT NOT NULL,      -- the fact text (e.g. "User prefers dark mode")
-  tags       TEXT,               -- JSON array of tag strings, e.g. '["python","preferences"]'
-  source     TEXT,               -- who created the fact: "agent" (MCP tool) or "manual"
-  session_id TEXT,               -- optional: which session this fact came from
-  created_at TEXT,               -- ISO UTC timestamp when the fact was first saved
-  updated_at TEXT                -- ISO UTC timestamp of the most recent edit
+  id         TEXT PRIMARY KEY,
+  content    TEXT NOT NULL,
+  tags       TEXT,
+  source     TEXT,
+  session_id TEXT,
+  created_at TEXT,
+  updated_at TEXT,
+  embedding  BLOB
 );
 
-"""
-
-
-# _INSIGHTS_SCHEMA stores cross-session patterns discovered by the daemon (Phase 13).
-# Insights accumulate over time — each call to upsert_insight adds a new row.
-_INSIGHTS_SCHEMA = """
-CREATE TABLE IF NOT EXISTS insights (
-  id           TEXT PRIMARY KEY,   -- UUID generated at insert time
-  insight_type TEXT NOT NULL,      -- "pattern", "preference", or "skill"
-  content      TEXT NOT NULL,      -- the insight text
-  evidence     TEXT,               -- JSON array of session_ids that support this insight
-  confidence   REAL,               -- 0.0–1.0 confidence score from the LLM
-  created_at   TEXT,               -- ISO UTC timestamp when first recorded
-  updated_at   TEXT                -- ISO UTC timestamp of last update
-);
-"""
-
-# _TOPIC_CLUSTERS_SCHEMA stores the centroid and metadata for each topic cluster.
-# Each cluster groups sessions whose transcript embeddings are nearby in vector space.
-_TOPIC_CLUSTERS_SCHEMA = """
-CREATE TABLE IF NOT EXISTS topic_clusters (
-  id           TEXT PRIMARY KEY,   -- UUID generated at cluster-creation time
-  label        TEXT NOT NULL,      -- short human-readable label (first 40 chars of first session)
-  centroid     BLOB,               -- packed float32 centroid embedding (rolling average of members)
-  member_count INTEGER DEFAULT 0,  -- number of sessions assigned to this cluster
-  updated_at   TEXT                -- ISO UTC timestamp of the last member update
-);
-"""
-
-# _CLUSTER_MEMBERSHIPS_SCHEMA records which sessions belong to which cluster.
-# A session can only appear once per cluster (PRIMARY KEY constraint).
-_CLUSTER_MEMBERSHIPS_SCHEMA = """
-CREATE TABLE IF NOT EXISTS cluster_memberships (
-  session_id  TEXT NOT NULL REFERENCES sessions(session_id),
-  cluster_id  TEXT NOT NULL REFERENCES topic_clusters(id),
-  distance    REAL,               -- cosine distance from the session embedding to the centroid
-  PRIMARY KEY (session_id, cluster_id)
-);
-"""
-
-# _SUMMARIES_SCHEMA stores LLM-generated summaries of old sessions (Phase 12).
-# Once a summary exists, the raw transcript can safely be pruned to save space.
-_SUMMARIES_SCHEMA = """
-CREATE TABLE IF NOT EXISTS summaries (
-    session_id  TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
-    summary     TEXT NOT NULL,
-    model       TEXT NOT NULL DEFAULT 'llama3.2:3b',
-    created_at  TEXT NOT NULL
-);
-"""
-
-# _COMPRESSED_MEMORY_SCHEMA stores the result of a full compression run.
-# Each compression appends one row; the latest row is the current compressed memory.
-# Sessions included in the run are deleted after a successful save.
-_COMPRESSED_MEMORY_SCHEMA = """
-CREATE TABLE IF NOT EXISTS compressed_memory (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    content             TEXT NOT NULL,
-    sessions_compressed INTEGER NOT NULL DEFAULT 0,
-    model               TEXT NOT NULL DEFAULT 'llama3.2:3b',
-    created_at          TEXT NOT NULL
-);
-"""
-
-_WORKING_MEMORY_SCHEMA = """
-CREATE TABLE IF NOT EXISTS working_memory (
-    id          TEXT PRIMARY KEY,
-    cluster_id  TEXT NOT NULL,
-    summary     TEXT NOT NULL,
-    session_ids TEXT NOT NULL DEFAULT '[]',
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL,
-    closed_at   TEXT
-);
-"""
-
-_EPISODIC_MEMORY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS episodic_memory (
-    id          TEXT PRIMARY KEY,
-    session_id  TEXT NOT NULL,
-    title       TEXT NOT NULL,
-    abstract    TEXT NOT NULL,
-    happened_at TEXT NOT NULL
-);
-"""
-
-_COMPACTED_SESSIONS_SCHEMA = """
-CREATE TABLE IF NOT EXISTS compacted_sessions (
-    id                 TEXT PRIMARY KEY,
-    cluster_id         TEXT NOT NULL,
-    content            TEXT NOT NULL,
-    embedding          BLOB,
-    source_session_ids TEXT NOT NULL DEFAULT '[]',
-    created_at         TEXT NOT NULL,
-    updated_at         TEXT NOT NULL,
-    hit_count          INTEGER NOT NULL DEFAULT 0
-);
-"""
-
-_RESPONSE_CACHE_SCHEMA = """
-CREATE TABLE IF NOT EXISTS response_cache (
-    id                TEXT PRIMARY KEY,
-    prompt_normalized TEXT NOT NULL UNIQUE,
-    prompt            TEXT NOT NULL,
-    response          TEXT NOT NULL,
-    source_session_id TEXT NOT NULL,
-    created_at        TEXT NOT NULL,
-    updated_at        TEXT NOT NULL,
-    hit_count         INTEGER NOT NULL DEFAULT 0,
-    last_hit_at       TEXT
-);
-"""
-
-_PROCEDURAL_MEMORY_SCHEMA = """
-CREATE TABLE IF NOT EXISTS procedural_memory (
-    id                TEXT PRIMARY KEY,
-    title             TEXT NOT NULL,
-    steps             TEXT NOT NULL,
-    confidence        REAL NOT NULL DEFAULT 0.5,
-    observation_count INTEGER NOT NULL DEFAULT 1,
-    created_at        TEXT NOT NULL,
-    updated_at        TEXT NOT NULL
+  id          TEXT PRIMARY KEY,
+  session_id  TEXT NOT NULL,
+  title       TEXT NOT NULL,
+  abstract    TEXT NOT NULL,
+  happened_at TEXT NOT NULL,
+  details     TEXT,
+  embedding   BLOB
 );
 """
 
 
-def log_retrieval(conn: sqlite3.Connection, tool: str, query: str, result_size: int) -> None:
-    """
-    Record one MCP tool call in the retrievals table.
-
-    Called by mcp_server.py after every tool invocation so we have a real
-    count of how often memory is used — not an estimate.
-
-    Args:
-        conn        — open connection from init_db()
-        tool        — name of the MCP tool (e.g. 'memory_search')
-        query       — the search string, or None if not applicable
-        result_size — size of the returned result in bytes
-    """
-    import uuid                  # uuid generates a unique ID for each row
-    from datetime import datetime, timezone
-
-    # datetime.now(timezone.utc) gives the current time in UTC as an aware datetime.
-    # .isoformat() converts it to a string like "2026-08-16T10:00:00+00:00".
-    conn.execute(
-        """
-        INSERT INTO retrievals (id, tool, query, result_size, called_at)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (str(uuid.uuid4()), tool, query, result_size, datetime.now(timezone.utc).isoformat()),
-    )
-    conn.commit()
 
 
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
+
+def _json_loads(value: str | None, fallback):
+    if not value:
+        return fallback
+    try:
+        return json.loads(value)
+    except Exception:
+        return fallback
+
+
+def _session_text_from_turns(turns: list[dict]) -> str:
+    parts: list[str] = []
+    for turn in turns:
+        role = turn.get("role", "")
+        content = turn.get("content", "")
+        if isinstance(content, str) and content.strip():
+            parts.append(f"{role}: {content}")
+    return "\n".join(parts)
 
 
 def open_db(path: str) -> sqlite3.Connection:
-    """
-    Open a SQLite connection without running schema creation or migrations.
-
-    This is the hot-path helper for hooks and request handlers that only need
-    an already-bootstrapped database. It still applies connection-level PRAGMAs
-    and row_factory so callers get the same runtime behaviour as before.
-    """
     conn = sqlite3.connect(path)
-
-    # Tune SQLite for a small multi-process local service:
-    # - busy_timeout reduces spurious "database is locked" failures
-    # - WAL improves concurrent read/write behaviour on file-backed DBs
-    # - NORMAL sync is a good durability/latency trade-off for this local cache
+    conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("PRAGMA synchronous = NORMAL")
     if path != ":memory:":
         try:
             conn.execute("PRAGMA journal_mode = WAL")
         except sqlite3.OperationalError:
-            # Some environments/filesystems may refuse WAL; keep the DB usable.
             pass
-
-    # row_factory makes each result row behave like a dict (row["column_name"])
-    # instead of a plain tuple (row[0]). Much easier to work with.
-    conn.row_factory = sqlite3.Row
     return conn
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
-    """
-    Apply the full schema and lightweight migrations to an open connection.
-
-    This is intended for bootstrap/install time, not the per-request or per-hook
-    hot path. It is safe to run multiple times because the schema uses IF NOT
-    EXISTS guards and the migrations check current columns before altering.
-    """
-    for script in [
-        _SCHEMA,
-        _VEC_SCHEMA,
-        _RETRIEVAL_SCHEMA,
-        _CHUNK_SCHEMA,
-        _FACTS_SCHEMA,
-        _SUMMARIES_SCHEMA,
-        _INSIGHTS_SCHEMA,
-        _TOPIC_CLUSTERS_SCHEMA,
-        _CLUSTER_MEMBERSHIPS_SCHEMA,
-        _COMPRESSED_MEMORY_SCHEMA,
-        _WORKING_MEMORY_SCHEMA,
-        _EPISODIC_MEMORY_SCHEMA,
-        _COMPACTED_SESSIONS_SCHEMA,
-        _RESPONSE_CACHE_SCHEMA,
-        _PROCEDURAL_MEMORY_SCHEMA,
-    ]:
-        conn.executescript(script)
-
-    # Add daemon_processed_at column to sessions if not already present.
-    # SQLite's ALTER TABLE does not support IF NOT EXISTS, so we check
-    # the pragma first to avoid errors on an existing database.
-    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
-    if "daemon_processed_at" not in existing_cols:
-        # This column is stamped by mark_session_processed() once the daemon
-        # has fully processed a session (extracted facts, assigned cluster).
-        conn.execute("ALTER TABLE sessions ADD COLUMN daemon_processed_at TEXT")
-
-    # Add metadata column to sessions if not already present.
-    # metadata stores arbitrary agent-supplied key-value pairs as a JSON string.
-    # We re-read the column set because the previous block may have just added a column.
-    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
-    if "metadata" not in existing_cols:
-        conn.execute("ALTER TABLE sessions ADD COLUMN metadata TEXT")
-
-    # Add embedding columns to tables that need semantic search.
-    # This enables embedding-based similarity search for these memory types.
-    tables_needing_embeddings = [
-        "facts",
-        "procedural_memory",
-        "insights",
-        "episodic_memory",
-        "working_memory",
-    ]
-    for table_name in tables_needing_embeddings:
-        existing_cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table_name})")}
-        if "embedding" not in existing_cols:
-            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN embedding BLOB")
-
-    backfill_response_cache(conn)
+    conn.executescript(_SCHEMA)
     conn.commit()
 
 
-
 def bootstrap_db(path: str) -> sqlite3.Connection:
-    """
-    Open (or create) the SQLite database at `path` and ensure the schema exists.
-
-    Pass ":memory:" for path to create a temporary in-memory database — useful
-    for tests because nothing is written to disk.
-
-    Returns a connection object you pass to the other functions.
-    """
     if path != ":memory:":
-        dir_path = os.path.dirname(path)
-        if dir_path:
-            os.makedirs(dir_path, exist_ok=True)
-
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
     conn = open_db(path)
     try:
         ensure_schema(conn)
@@ -359,88 +113,53 @@ def bootstrap_db(path: str) -> sqlite3.Connection:
     return conn
 
 
-
 def init_db(path: str) -> sqlite3.Connection:
-    """
-    Backward-compatible alias for bootstrap_db().
-
-    Older call sites and tests still import init_db(); new hot-path code should
-    prefer open_db() after an explicit bootstrap step has already happened.
-    """
     return bootstrap_db(path)
+
+
+def log_retrieval(conn: sqlite3.Connection, tool: str, query: str | None, result_size: int) -> None:
+    """Backward-compatible no-op after retrieval logging removal."""
+    del conn, tool, query, result_size
 
 
 def upsert_session(
     conn: sqlite3.Connection,
     session_id: str,
     agent: str,
-    transcript: list[dict],   # list of {"role": "user"/"assistant", "content": "..."}
-    started_at: str,          # ISO 8601 timestamp, e.g. "2026-08-16T10:00:00Z"
+    transcript: list[dict],
+    started_at: str,
     updated_at: str,
-    metadata: dict | None = None,  # optional key-value pairs from the agent (Phase 16)
+    metadata: dict | None = None,
 ) -> None:
-    """
-    Save (or update) a conversation session in the database.
-
-    If session_id already exists, the transcript and metadata are overwritten
-    with the new values. This is called an "upsert" (update + insert).
-
-    The full transcript list is serialised to a JSON string for storage —
-    SQLite stores it as text and we decode it back to a list when reading.
-
-    Args:
-        conn       — open connection from init_db()
-        session_id — unique identifier for the conversation
-        agent      — name of the agent (e.g. "claude", "cursor", "unknown")
-        transcript — list of turn dicts with "role" and "content" keys
-        started_at — ISO 8601 timestamp of the first turn
-        updated_at — ISO 8601 timestamp of the most recent turn
-        metadata   — optional dict of extra key-value pairs; stored as JSON string
-    """
-    # json.dumps converts the Python list of dicts into a JSON string for storage.
-    transcript_json = json.dumps(transcript)
-
-    # Each element in the transcript list is one turn, so len() gives total turns.
-    turn_count = len(transcript)
-
-    # Serialise metadata dict to JSON, or NULL if no metadata was provided.
-    # json.dumps(None) would produce "null", so we handle None explicitly.
-    metadata_json = json.dumps(metadata) if metadata is not None else None
-
     conn.execute(
         """
         INSERT INTO sessions (session_id, agent, started_at, updated_at, turn_count, transcript, metadata)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id) DO UPDATE SET
-          agent      = excluded.agent,
+          agent = excluded.agent,
+          started_at = excluded.started_at,
           updated_at = excluded.updated_at,
           turn_count = excluded.turn_count,
           transcript = excluded.transcript,
-          metadata   = excluded.metadata
+          metadata = excluded.metadata
         """,
-        # The ?s above are placeholders; SQLite fills them in from this tuple.
-        # Using placeholders (not string formatting) prevents SQL injection.
-        (session_id, agent, started_at, updated_at, turn_count, transcript_json, metadata_json),
+        (
+            session_id,
+            agent,
+            started_at,
+            updated_at,
+            len(transcript),
+            json.dumps(transcript),
+            json.dumps(metadata) if metadata is not None else None,
+        ),
     )
-    conn.commit()  # flush the write to disk
+    conn.commit()
 
 
 def search(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict]:
-    """
-    Full-text search across all saved transcripts.
-
-    Returns up to `limit` sessions that contain the query terms, ranked by
-    relevance (best match first). Each result includes a short excerpt
-    (snippet) showing where the match was found.
-
-    Example:
-        results = search(conn, "quantum entanglement")
-        # → [{"session_id": "abc", "agent": "claude", "updated_at": "...", "snippet": "..."}]
-    """
     rows = conn.execute(
         """
-        SELECT session_id, agent, updated_at,
-               substr(transcript, 1, 120) AS snippet
+        SELECT session_id, agent, updated_at, substr(transcript, 1, 120) AS snippet
         FROM sessions
         WHERE transcript LIKE ?
         ORDER BY updated_at DESC
@@ -448,319 +167,39 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict]:
         """,
         (f"%{query}%", limit),
     ).fetchall()
-
-    # Convert each sqlite3.Row object into a plain dict for easier use by callers.
-    return [dict(r) for r in rows]
-
-
-def store_embedding(conn: sqlite3.Connection, session_id: str, vector: list[float]) -> None:
-    """
-    Save (or replace) the vector embedding for a session.
-
-    Called by the save hook after upsert_session(), so the stored vector
-    always reflects the latest transcript content.
-
-    Does nothing if the session_vecs table doesn't exist (i.e., sqlite-vec
-    failed to load) — so FTS5-only deployments aren't affected.
-
-    Args:
-        conn       — open connection from init_db()
-        session_id — must match an existing row in sessions
-        vector     — 384-float list from embed()
-    """
-    # Check whether the vector table was created (requires sqlite-vec).
-    # If not, silently skip — don't break the calling code.
-    table_check = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='session_vecs'"
-    ).fetchone()
-    if not table_check:
-        return
-
-    # Pack the float list into the binary format sqlite-vec understands.
-    blob = pack_vector(vector)
-
-    # INSERT OR REPLACE: if a vector for this session already exists, overwrite it.
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO session_vecs (session_id, embedding)
-        VALUES (?, ?)
-        """,
-        (session_id, blob),
-    )
-    conn.commit()
+    return [dict(row) for row in rows]
 
 
 def semantic_search(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict]:
-    """
-    Find sessions whose content is semantically similar to the query.
-
-    Unlike FTS5 keyword search, semantic search understands meaning —
-    it can match "machine learning" to sessions about "neural networks",
-    or "broken authentication" to sessions about "login bug".
-
-    Results are ordered by cosine distance (lower = more similar).
-    A distance of 0.0 means identical; 2.0 means maximally different.
-
-    Cosine similarity is computed in Python (not via a SQLite extension)
-    so this works on any platform, including macOS with system Python.
-
-    Args:
-        conn  — open connection from init_db()
-        query — natural-language search string
-        limit — max results to return (default 10)
-
-    Returns:
-        List of dicts with keys: session_id, agent, updated_at, distance
-    """
-    # Embed the query text into a 384-dimensional vector.
     query_vector = embed(query)
-
-    # Fetch all stored embeddings plus their session metadata in one query.
-    # For a personal memory system (hundreds of sessions), this is fast.
-    # Each row: session_id, agent, updated_at, embedding blob.
     rows = conn.execute(
-        """
-        SELECT sv.session_id, s.agent, s.updated_at, sv.embedding
-        FROM session_vecs sv
-        JOIN sessions s ON s.session_id = sv.session_id
-        """
+        "SELECT session_id, agent, updated_at, transcript FROM sessions"
     ).fetchall()
-
-    if not rows:
-        return []
-
-    # Compute cosine distance for every stored session.
-    scored = []
+    scored: list[dict] = []
     for row in rows:
-        dist = cosine_distance(query_vector, bytes(row["embedding"]))
-        scored.append({
-            "session_id": row["session_id"],
-            "agent":      row["agent"],
-            "updated_at": row["updated_at"],
-            "distance":   dist,
-        })
-
-    # Sort by distance (closest first) and return up to `limit` results.
-    scored.sort(key=lambda r: r["distance"])
-    return scored[:limit]
-
-
-# ---------------------------------------------------------------------------
-# Phase 7 additions: sub-session chunking + chunk-level semantic search
-# ---------------------------------------------------------------------------
-
-def chunk_transcript(turns: list[dict], window: int = 6, overlap: int = 1) -> list[str]:
-    """
-    Split a transcript into overlapping text windows (chunks).
-
-    Instead of embedding the whole session as one blob, we slide a window
-    of `window` turns across the transcript, advancing by (window - overlap)
-    turns each step. Each window becomes one chunk string. This gives
-    semantic search a finer-grained target — a query about topic X can match
-    the specific chunk where X was discussed, not just the overall session.
-
-    Args:
-        turns   — list of {"role": "user"/"assistant", "content": "..."}
-        window  — how many turns to include in each chunk (default 6)
-        overlap — how many turns to repeat between consecutive chunks (default 1)
-
-    Returns:
-        List of strings, one per chunk. Always returns at least [""] so that
-        callers never have to handle an empty list.
-    """
-    # Filter out turns whose content is not a plain string.
-    # Tool call turns can have list/dict content — we skip those silently
-    # because they add noise and aren't human-readable text.
-    text_turns = [t for t in turns if isinstance(t.get("content"), str)]
-
-    # If there are no usable turns, return a single empty string.
-    # Callers should still store this chunk so the session is represented.
-    if not text_turns:
-        return [""]
-
-    # step = how far we advance the window start between chunks.
-    # overlap=1 means the last 1 turn of chunk N is the first turn of chunk N+1.
-    step = window - overlap
-
-    # Build each chunk by concatenating turn text with role prefixes.
-    chunks = []
-    start = 0
-    while start < len(text_turns):
-        # Slice the window — may be smaller than `window` at the end of the transcript.
-        window_turns = text_turns[start : start + window]
-
-        # Build the chunk string: "user: ...\nassistant: ...\n" for each turn.
-        lines = [f"{t['role']}: {t['content']}" for t in window_turns]
-        chunk_text = "\n".join(lines)
-        chunks.append(chunk_text)
-
-        # If the current window already reaches the end of the transcript,
-        # there are no new turns for the next chunk — stop.
-        # Without this guard a 6-turn transcript with window=6 would produce
-        # a second chunk containing only the overlap turn, which adds no value.
-        if start + window >= len(text_turns):
-            break
-
-        # Advance by step. If step <= 0 the caller passed bad args; clamp to 1
-        # to avoid an infinite loop.
-        start += max(step, 1)
-
-    return chunks
-
-
-def store_chunk(
-    conn: sqlite3.Connection,
-    session_id: str,
-    chunk_index: int,
-    text: str,
-    embedding: list[float] | None,
-) -> None:
-    """
-    Insert or replace one chunk row in the chunks table.
-
-    The chunk's primary key is "{session_id}:{chunk_index}" so that
-    re-running the hook for the same session replaces old chunks
-    rather than accumulating duplicates.
-
-    Args:
-        conn        — open connection from init_db()
-        session_id  — the session this chunk belongs to
-        chunk_index — 0-based position of this chunk in the session
-        text        — the concatenated turn text for this window
-        embedding   — 384-float list, or None if embedding was skipped
-    """
-    from datetime import datetime, timezone
-
-    # Build the composite primary key — unique per (session, chunk position).
-    chunk_id = f"{session_id}:{chunk_index}"
-
-    # Convert the float list to a binary blob, or use None if no embedding.
-    blob = pack_vector(embedding) if embedding is not None else None
-
-    # created_at records when this chunk was stored — useful for debugging.
-    created_at = datetime.now(timezone.utc).isoformat()
-
-    # INSERT OR REPLACE: if the row already exists (same id), overwrite it.
-    # This is the upsert pattern used throughout db.py.
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO chunks (id, session_id, chunk_index, text, embedding, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (chunk_id, session_id, chunk_index, text, blob, created_at),
-    )
-    conn.commit()
-
-
-def get_chunks_for_session(conn: sqlite3.Connection, session_id: str) -> list[dict]:
-    """
-    Return all chunks for a session, ordered by chunk_index ascending.
-
-    Used by tests and by semantic_search_chunks() to inspect stored chunks.
-
-    Args:
-        conn       — open connection from init_db()
-        session_id — the session to fetch chunks for
-
-    Returns:
-        List of dicts with keys: id, session_id, chunk_index, text, embedding, created_at.
-        Returns [] if no chunks exist for this session.
-    """
-    rows = conn.execute(
-        """
-        SELECT id, session_id, chunk_index, text, embedding, created_at
-        FROM chunks
-        WHERE session_id = ?
-        ORDER BY chunk_index ASC
-        """,
-        (session_id,),
-    ).fetchall()
-
-    # Convert each sqlite3.Row to a plain dict so callers can use dict syntax.
-    return [dict(r) for r in rows]
-
-
-def delete_chunks_for_session(conn: sqlite3.Connection, session_id: str) -> None:
-    """
-    Delete all chunks belonging to a session.
-
-    Called before re-chunking a session so stale chunks from the previous
-    save don't accumulate. Silently does nothing if no chunks exist yet.
-
-    Args:
-        conn       — open connection from init_db()
-        session_id — whose chunks to remove
-    """
-    conn.execute("DELETE FROM chunks WHERE session_id = ?", (session_id,))
-    conn.commit()
-
-
-def semantic_search_chunks(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict]:
-    """
-    Find sessions whose content is semantically similar to the query,
-    searching at chunk granularity rather than whole-session granularity.
-
-    This produces more precise results than session-level search because a
-    50-turn conversation is split into overlapping 6-turn windows. A query
-    about topic X matches the window where X was actually discussed, not a
-    blended average of the whole session.
-
-    Results are one entry per chunk (not per session). Use the session_id
-    field to group them. Returns top `limit` chunks by cosine distance.
-
-    Args:
-        conn  — open connection from init_db()
-        query — natural-language search string
-        limit — max results to return (default 10)
-
-    Returns:
-        List of dicts with keys: session_id, chunk_index, distance, text, snippet
-        Raises ImportError if sentence-transformers is not installed.
-    """
-    if not _ST_AVAILABLE:
-        raise ImportError(
-            "sentence-transformers is not installed. "
-            "Run: pip3 install sentence-transformers"
+        turns = _json_loads(row["transcript"], [])
+        text = _session_text_from_turns(turns)
+        if not text.strip():
+            continue
+        distance = cosine_distance(query_vector, pack_vector(embed(text)))
+        scored.append(
+            {
+                "session_id": row["session_id"],
+                "agent": row["agent"],
+                "updated_at": row["updated_at"],
+                "distance": distance,
+            }
         )
-
-    # Embed the query into a vector so we can compare it against chunk vectors.
-    query_vector = embed(query)
-
-    # Fetch all chunk rows that have an embedding stored.
-    # Chunks without embeddings (embedding IS NULL) are skipped — they can't
-    # participate in cosine distance computation.
-    rows = conn.execute(
-        """
-        SELECT session_id, chunk_index, text, embedding
-        FROM chunks
-        WHERE embedding IS NOT NULL
-        """
-    ).fetchall()
-
-    if not rows:
-        return []
-
-    # Compute cosine distance between the query vector and each chunk embedding.
-    scored = []
-    for row in rows:
-        dist = cosine_distance(query_vector, bytes(row["embedding"]))
-        scored.append({
-            "session_id":  row["session_id"],
-            "chunk_index": row["chunk_index"],
-            "distance":    dist,
-            "text":        row["text"],
-            # snippet is a preview of the chunk — first 200 characters.
-            "snippet":     row["text"][:200],
-        })
-
-    # Sort by distance ascending (closest match first), then slice to limit.
-    scored.sort(key=lambda r: r["distance"])
+    scored.sort(key=lambda item: item["distance"])
     return scored[:limit]
 
 
-# ---------------------------------------------------------------------------
-# Phase 8 additions: structured fact storage (CRUD + FTS5 search)
-# ---------------------------------------------------------------------------
+def hybrid_search(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict]:
+    keyword_rows = search(conn, query, limit=limit)
+    seen = {row["session_id"] for row in keyword_rows}
+    semantic_rows = [row for row in semantic_search(conn, query, limit=limit) if row["session_id"] not in seen]
+    return (keyword_rows + semantic_rows)[:limit]
+
 
 def insert_fact(
     conn: sqlite3.Connection,
@@ -769,56 +208,21 @@ def insert_fact(
     source: str = "manual",
     session_id: str | None = None,
 ) -> str:
-    """
-    Save a new structured fact to the database and return its generated ID.
-
-    Facts are small, deliberately saved pieces of information — a user preference,
-    a key decision, or a domain fact worth recalling across sessions.
-
-    Args:
-        conn       — open connection from init_db()
-        content    — the fact text (e.g. "User prefers dark mode")
-        tags       — optional list of tag strings for categorisation
-        source     — "manual" (default) or "agent" (saved via MCP tool)
-        session_id — optional: the session this fact was observed in
-
-    Returns:
-        The UUID string assigned to the new fact row.
-    """
-    import uuid                  # uuid generates a unique, collision-safe ID
-    from datetime import datetime, timezone
-
-    # Generate a new UUID to serve as the primary key for this fact.
     fact_id = str(uuid.uuid4())
-
-    # Tags are stored as a JSON array string so SQLite can hold them in one column.
-    # json.dumps([]) produces '[]' for an empty list — never NULL.
-    tags_json = json.dumps(tags or [])
-
-    # Both created_at and updated_at start at the same timestamp — the moment of creation.
-    now = datetime.now(timezone.utc).isoformat()
-
-    # Generate embedding for semantic search.
-    # If embedding fails, we still store the fact but without embedding — it won't be
-    # searchable by semantic_search_facts_semantic(), but will still work with FTS5.
+    now = _utc_now()
     embedding_blob = None
     try:
-        from memory.inference import embed_text
-        embedding_vec = embed_text(content)
-        embedding_blob = pack_vector(embedding_vec)
+        embedding_blob = pack_vector(embed(content))
     except Exception:
-        # Silent fail — fact is still usable, just not semantically searchable
         pass
-
     conn.execute(
         """
         INSERT INTO facts (id, content, tags, source, session_id, created_at, updated_at, embedding)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (fact_id, content, tags_json, source, session_id, now, now, embedding_blob),
+        (fact_id, content, json.dumps(tags or []), source, session_id, now, now, embedding_blob),
     )
-    conn.commit()  # flush the write to disk
-
+    conn.commit()
     return fact_id
 
 
@@ -828,102 +232,55 @@ def update_fact(
     content: str | None = None,
     tags: list[str] | None = None,
 ) -> bool:
-    """
-    Update one or more fields of an existing fact.
-
-    Only the fields passed as non-None are changed. updated_at is always
-    refreshed to the current UTC time so callers can see when an edit occurred.
-
-    Args:
-        conn     — open connection from init_db()
-        fact_id  — the UUID of the fact to update
-        content  — new text for the fact, or None to leave it unchanged
-        tags     — new tag list, or None to leave tags unchanged
-
-    Returns:
-        True if the fact was found and updated, False if fact_id does not exist.
-    """
-    from datetime import datetime, timezone
-
-    # Always stamp the current time on update regardless of what else changed.
-    now = datetime.now(timezone.utc).isoformat()
-
-    # Build the SET clause dynamically — only include fields that were supplied.
-    # Starting with updated_at means we always have at least one field to set.
-    set_clauses = ["updated_at = ?"]
-    values: list = [now]
-
-    if content is not None:
-        # Caller wants to change the fact text.
-        set_clauses.append("content = ?")
-        values.append(content)
-        # Re-embed the updated content for semantic search
-        try:
-            from memory.inference import embed_text
-            embedding_vec = embed_text(content)
-            set_clauses.append("embedding = ?")
-            values.append(pack_vector(embedding_vec))
-        except Exception:
-            # Silent fail — still update content, just lose semantic searchability
-            pass
-
-    if tags is not None:
-        # Caller wants to change the tags — re-encode to JSON for storage.
-        set_clauses.append("tags = ?")
-        values.append(json.dumps(tags))
-
-    # Append fact_id last — it goes into the WHERE clause.
-    values.append(fact_id)
-
-    cursor = conn.execute(
-        f"UPDATE facts SET {', '.join(set_clauses)} WHERE id = ?",
-        values,
+    now = _utc_now()
+    existing = conn.execute("SELECT content, tags FROM facts WHERE id = ?", (fact_id,)).fetchone()
+    if existing is None:
+        return False
+    new_content = existing["content"] if content is None else content
+    new_tags = _json_loads(existing["tags"], []) if tags is None else tags
+    embedding_blob = None
+    try:
+        embedding_blob = pack_vector(embed(new_content))
+    except Exception:
+        pass
+    conn.execute(
+        """
+        UPDATE facts
+        SET content = ?, tags = ?, updated_at = ?, embedding = ?
+        WHERE id = ?
+        """,
+        (new_content, json.dumps(new_tags), now, embedding_blob, fact_id),
     )
     conn.commit()
-
-    # rowcount is the number of rows the UPDATE touched.
-    # 0 means no row with this id existed; anything > 0 means success.
-    return cursor.rowcount > 0
+    return True
 
 
 def delete_fact(conn: sqlite3.Connection, fact_id: str) -> bool:
-    """
-    Delete one fact from the database.
-
-    The FTS5 trigger (facts_ad) automatically removes the corresponding
-    entry from the search index when the row is deleted.
-
-    Args:
-        conn    — open connection from init_db()
-        fact_id — the UUID of the fact to remove
-
-    Returns:
-        True if the fact was found and deleted, False if fact_id does not exist.
-    """
     cursor = conn.execute("DELETE FROM facts WHERE id = ?", (fact_id,))
     conn.commit()
-
-    # rowcount = 0 → no row with this id existed; > 0 → deleted successfully.
     return cursor.rowcount > 0
 
 
+def list_facts(conn: sqlite3.Connection, limit: int = 100) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT id, content, tags, source, session_id, created_at, updated_at
+        FROM facts
+        ORDER BY updated_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [
+        {
+            **dict(row),
+            "tags": _json_loads(row["tags"], []),
+        }
+        for row in rows
+    ]
+
+
 def search_facts(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict]:
-    """
-    Full-text search across all stored facts.
-
-    Searches the content and tags columns using FTS5 (same engine as session search).
-    Results are ranked by relevance and include a highlighted snippet showing
-    where the match was found.
-
-    Args:
-        conn  — open connection from init_db()
-        query — the words or phrase to search for
-        limit — maximum results to return (default 10)
-
-    Returns:
-        List of dicts with keys: id, content, tags (as list), source, session_id,
-        created_at, updated_at, snippet.
-    """
     rows = conn.execute(
         """
         SELECT id, content, tags, source, session_id, created_at, updated_at,
@@ -935,1399 +292,71 @@ def search_facts(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[
         """,
         (f"%{query}%", limit),
     ).fetchall()
-
-    result = []
-    for row in rows:
-        d = dict(row)
-        # Convert the stored JSON string back to a Python list for callers.
-        # "[]" is the default for facts with no tags, so this is always safe.
-        d["tags"] = json.loads(d["tags"] or "[]")
-        result.append(d)
-    return result
+    return [
+        {
+            **dict(row),
+            "tags": _json_loads(row["tags"], []),
+        }
+        for row in rows
+    ]
 
 
-def search_facts_semantic(
-    conn: sqlite3.Connection,
-    query_vector: list[float],
-    limit: int = 5,
-) -> list[dict]:
-    """
-    Find facts semantically similar to a query vector.
-
-    Uses embedding-based cosine similarity (no keyword matching).
-    Only searches facts that have been embedded (embedding IS NOT NULL).
-
-    Returns similarity score (0.0-1.0, where 1.0 = perfect match).
-    Results sorted by similarity descending.
-
-    Args:
-        conn         — open connection from init_db()
-        query_vector — 384-dimensional embedding vector
-        limit        — maximum results to return (default 5)
-
-    Returns:
-        List of dicts with keys: id, content, tags (as list), similarity.
-    """
+def search_facts_semantic(conn: sqlite3.Connection, query_vector: list[float], limit: int = 5) -> list[dict]:
     rows = conn.execute(
-        "SELECT id, content, tags, embedding FROM facts WHERE embedding IS NOT NULL"
+        "SELECT id, content, tags, source, session_id, created_at, updated_at, embedding FROM facts WHERE embedding IS NOT NULL"
     ).fetchall()
-
-    if not rows:
-        return []
-
-    scored = []
+    scored: list[dict] = []
     for row in rows:
-        dist = cosine_distance(query_vector, bytes(row["embedding"]))
-        scored.append({
-            "id": row["id"],
-            "content": row["content"],
-            "tags": json.loads(row["tags"] or "[]"),
-            "similarity": round(1.0 - dist, 4),
-        })
-
-    scored.sort(key=lambda r: r["similarity"], reverse=True)
-    return scored[:limit]
-
-
-def search_procedural_semantic(
-    conn: sqlite3.Connection,
-    query_vector: list[float],
-    min_confidence: float = 0.6,
-    limit: int = 3,
-) -> list[dict]:
-    """
-    Find procedural memory entries semantically similar to query vector.
-
-    Only returns entries with confidence >= min_confidence.
-    Results sorted by similarity (confidence as secondary sort).
-
-    Args:
-        conn         — open connection from init_db()
-        query_vector — 384-dimensional embedding vector
-        min_confidence — minimum confidence threshold (default 0.6)
-        limit        — maximum results to return (default 3)
-
-    Returns:
-        List of dicts with keys: id, title, steps, similarity, confidence.
-    """
-    rows = conn.execute(
-        """
-        SELECT id, title, steps, embedding, confidence
-        FROM procedural_memory
-        WHERE embedding IS NOT NULL AND confidence >= ?
-        """,
-        (min_confidence,)
-    ).fetchall()
-
-    if not rows:
-        return []
-
-    scored = []
-    for row in rows:
-        dist = cosine_distance(query_vector, bytes(row["embedding"]))
-        scored.append({
-            "id": row["id"],
-            "title": row["title"],
-            "steps": row["steps"],
-            "similarity": round(1.0 - dist, 4),
-            "confidence": row["confidence"],
-        })
-
-    scored.sort(key=lambda r: (r["similarity"], r["confidence"]), reverse=True)
-    return scored[:limit]
-
-
-def search_insights_semantic(
-    conn: sqlite3.Connection,
-    query_vector: list[float],
-    limit: int = 5,
-) -> list[dict]:
-    """
-    Find insights semantically similar to a query vector.
-
-    Results sorted by similarity descending.
-
-    Args:
-        conn         — open connection from init_db()
-        query_vector — 384-dimensional embedding vector
-        limit        — maximum results to return (default 5)
-
-    Returns:
-        List of dicts with keys: id, insight_type, content, similarity, confidence.
-    """
-    rows = conn.execute(
-        "SELECT id, insight_type, content, embedding, confidence FROM insights WHERE embedding IS NOT NULL"
-    ).fetchall()
-
-    if not rows:
-        return []
-
-    scored = []
-    for row in rows:
-        dist = cosine_distance(query_vector, bytes(row["embedding"]))
-        scored.append({
-            "id": row["id"],
-            "insight_type": row["insight_type"],
-            "content": row["content"],
-            "similarity": round(1.0 - dist, 4),
-            "confidence": row["confidence"],
-        })
-
-    scored.sort(key=lambda r: r["similarity"], reverse=True)
-    return scored[:limit]
-
-
-def search_episodic_semantic(
-    conn: sqlite3.Connection,
-    query_vector: list[float],
-    limit: int = 3,
-) -> list[dict]:
-    """
-    Find episodic memory entries semantically similar to query vector.
-
-    Results sorted by similarity descending.
-
-    Args:
-        conn         — open connection from init_db()
-        query_vector — 384-dimensional embedding vector
-        limit        — maximum results to return (default 3)
-
-    Returns:
-        List of dicts with keys: id, title, abstract, similarity.
-    """
-    rows = conn.execute(
-        "SELECT id, title, abstract, embedding FROM episodic_memory WHERE embedding IS NOT NULL"
-    ).fetchall()
-
-    if not rows:
-        return []
-
-    scored = []
-    for row in rows:
-        dist = cosine_distance(query_vector, bytes(row["embedding"]))
-        scored.append({
-            "id": row["id"],
-            "title": row["title"],
-            "abstract": row["abstract"],
-            "similarity": round(1.0 - dist, 4),
-        })
-
-    scored.sort(key=lambda r: r["similarity"], reverse=True)
-    return scored[:limit]
-
-
-def search_working_memory_semantic(
-    conn: sqlite3.Connection,
-    query_vector: list[float],
-    limit: int = 3,
-) -> list[dict]:
-    """
-    Find active working memory entries semantically similar to query vector.
-
-    Only searches unclosed working memory (closed_at IS NULL).
-    Results sorted by similarity descending.
-
-    Args:
-        conn         — open connection from init_db()
-        query_vector — 384-dimensional embedding vector
-        limit        — maximum results to return (default 3)
-
-    Returns:
-        List of dicts with keys: id, cluster_id, summary, similarity.
-    """
-    rows = conn.execute(
-        """
-        SELECT id, cluster_id, summary, embedding
-        FROM working_memory
-        WHERE embedding IS NOT NULL AND closed_at IS NULL
-        """
-    ).fetchall()
-
-    if not rows:
-        return []
-
-    scored = []
-    for row in rows:
-        dist = cosine_distance(query_vector, bytes(row["embedding"]))
-        scored.append({
-            "id": row["id"],
-            "cluster_id": row["cluster_id"],
-            "summary": row["summary"],
-            "similarity": round(1.0 - dist, 4),
-        })
-
-    scored.sort(key=lambda r: r["similarity"], reverse=True)
-    return scored[:limit]
-
-
-def populate_missing_embeddings(conn: sqlite3.Connection, batch_size: int = 10) -> dict:
-    """
-    Populate NULL embeddings for existing records in all tables.
-
-    Runs incrementally in batches to avoid timeout. Silently skips on embedding errors.
-    Safe to call multiple times — skips records that already have embeddings.
-
-    Args:
-        conn       — open connection from init_db()
-        batch_size — number of records to process per table per call (default 10)
-
-    Returns:
-        Dict with counts: {"facts": N, "procedural": N, "insights": N, "episodic": N, "working": N}
-    """
-    from memory.inference import embed_text
-
-    counts = {"facts": 0, "procedural": 0, "insights": 0, "episodic": 0, "working": 0}
-
-    # Process facts table
-    rows = conn.execute(
-        "SELECT id, content FROM facts WHERE embedding IS NULL LIMIT ?",
-        (batch_size,)
-    ).fetchall()
-    for row in rows:
-        try:
-            embedding = embed_text(row["content"])
-            embedding_blob = pack_vector(embedding)
-            conn.execute("UPDATE facts SET embedding = ? WHERE id = ?", (embedding_blob, row["id"]))
-            counts["facts"] += 1
-        except Exception:
-            pass  # Silent fail — fact still exists, just not searchable
-    if rows:
-        conn.commit()
-
-    # Process procedural_memory table
-    rows = conn.execute(
-        "SELECT id, title, steps FROM procedural_memory WHERE embedding IS NULL LIMIT ?",
-        (batch_size,)
-    ).fetchall()
-    for row in rows:
-        try:
-            # Embed title + steps concatenated
-            text_to_embed = f"{row['title']}\n{row['steps']}"
-            embedding = embed_text(text_to_embed)
-            embedding_blob = pack_vector(embedding)
-            conn.execute("UPDATE procedural_memory SET embedding = ? WHERE id = ?", (embedding_blob, row["id"]))
-            counts["procedural"] += 1
-        except Exception:
-            pass
-    if rows:
-        conn.commit()
-
-    # Process insights table
-    rows = conn.execute(
-        "SELECT id, content FROM insights WHERE embedding IS NULL LIMIT ?",
-        (batch_size,)
-    ).fetchall()
-    for row in rows:
-        try:
-            embedding = embed_text(row["content"])
-            embedding_blob = pack_vector(embedding)
-            conn.execute("UPDATE insights SET embedding = ? WHERE id = ?", (embedding_blob, row["id"]))
-            counts["insights"] += 1
-        except Exception:
-            pass
-    if rows:
-        conn.commit()
-
-    # Process episodic_memory table
-    rows = conn.execute(
-        "SELECT id, abstract FROM episodic_memory WHERE embedding IS NULL LIMIT ?",
-        (batch_size,)
-    ).fetchall()
-    for row in rows:
-        try:
-            embedding = embed_text(row["abstract"])
-            embedding_blob = pack_vector(embedding)
-            conn.execute("UPDATE episodic_memory SET embedding = ? WHERE id = ?", (embedding_blob, row["id"]))
-            counts["episodic"] += 1
-        except Exception:
-            pass
-    if rows:
-        conn.commit()
-
-    # Process working_memory table
-    rows = conn.execute(
-        "SELECT id, summary FROM working_memory WHERE embedding IS NULL LIMIT ?",
-        (batch_size,)
-    ).fetchall()
-    for row in rows:
-        try:
-            embedding = embed_text(row["summary"])
-            embedding_blob = pack_vector(embedding)
-            conn.execute("UPDATE working_memory SET embedding = ? WHERE id = ?", (embedding_blob, row["id"]))
-            counts["working"] += 1
-        except Exception:
-            pass
-    if rows:
-        conn.commit()
-
-    return counts
-
-
-def list_facts(
-    conn: sqlite3.Connection,
-    tag: str | None = None,
-    limit: int = 50,
-) -> list[dict]:
-    """
-    List stored facts, optionally filtered to a specific tag.
-
-    Unlike search_facts() (which does keyword matching), this is a
-    structured filter — it returns all facts that carry the exact tag string,
-    ordered by most recently updated first.
-
-    Args:
-        conn  — open connection from init_db()
-        tag   — if given, only return facts whose tags list contains this string
-        limit — maximum results to return (default 50)
-
-    Returns:
-        List of dicts with keys: id, content, tags (as list), source, session_id,
-        created_at, updated_at. (No snippet — this is a listing, not a search.)
-    """
-    if tag is not None:
-        # json_each() expands the JSON array in the tags column into individual rows.
-        # We filter to only the rows where one of those values equals our tag.
-        # This is more reliable than a LIKE query, which could partially match
-        # a tag that contains another tag as a substring.
-        rows = conn.execute(
-            """
-            SELECT f.id, f.content, f.tags, f.source, f.session_id, f.created_at, f.updated_at
-            FROM facts f, json_each(f.tags) je
-            WHERE je.value = ?
-            ORDER BY f.updated_at DESC
-            LIMIT ?
-            """,
-            (tag, limit),
-        ).fetchall()
-    else:
-        # No tag filter — return all facts, newest first.
-        rows = conn.execute(
-            """
-            SELECT id, content, tags, source, session_id, created_at, updated_at
-            FROM facts
-            ORDER BY updated_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-
-    result = []
-    for row in rows:
-        d = dict(row)
-        # Parse the JSON tag array back into a Python list for callers.
-        d["tags"] = json.loads(d["tags"] or "[]")
-        result.append(d)
-    return result
-
-
-def upsert_insight(
-    conn: sqlite3.Connection,
-    insight_type: str,
-    content: str,
-    evidence: list[str] | None,
-    confidence: float | None,
-) -> str:
-    """
-    Insert a newly discovered cross-session insight.
-
-    Insights accumulate over time; this helper always appends a new row and
-    returns its UUID.
-    """
-    insight_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        """
-        INSERT INTO insights (id, insight_type, content, evidence, confidence, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            insight_id,
-            insight_type,
-            content,
-            json.dumps(evidence or []),
-            confidence,
-            now,
-            now,
-        ),
-    )
-    conn.commit()
-    return insight_id
-
-
-def list_insights(
-    conn: sqlite3.Connection,
-    insight_type: str | None = None,
-    limit: int = 20,
-) -> list[dict]:
-    """List stored insights, newest first, optionally filtered by type."""
-    if insight_type:
-        rows = conn.execute(
-            """
-            SELECT id, insight_type, content, evidence, confidence, created_at, updated_at
-            FROM insights
-            WHERE insight_type = ?
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (insight_type, limit),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """
-            SELECT id, insight_type, content, evidence, confidence, created_at, updated_at
-            FROM insights
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-
-    result = []
-    for row in rows:
-        d = dict(row)
-        d["evidence"] = json.loads(d["evidence"] or "[]")
-        result.append(d)
-    return result
-
-
-def _normalize_question(text: str) -> str:
-    """Lowercase and strip punctuation so repeated prompts compare reliably."""
-    return " ".join(re.findall(r"[a-z0-9]+", (text or "").lower()))
-
-
-def upsert_response_cache(
-    conn: sqlite3.Connection,
-    prompt: str,
-    response: str,
-    source_session_id: str,
-) -> str | None:
-    """Store the latest assistant response for a normalized user prompt."""
-    prompt_normalized = _normalize_question(prompt)
-    if not prompt_normalized or not response.strip():
-        return None
-
-    now = datetime.now(timezone.utc).isoformat()
-    existing = conn.execute(
-        "SELECT id FROM response_cache WHERE prompt_normalized = ?",
-        (prompt_normalized,),
-    ).fetchone()
-
-    if existing:
-        cache_id = existing["id"]
-        conn.execute(
-            """
-            UPDATE response_cache
-            SET prompt = ?, response = ?, source_session_id = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (prompt, response, source_session_id, now, cache_id),
+        distance = cosine_distance(query_vector, bytes(row["embedding"]))
+        scored.append(
+            {
+                "id": row["id"],
+                "content": row["content"],
+                "tags": _json_loads(row["tags"], []),
+                "source": row["source"],
+                "session_id": row["session_id"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "similarity": round(1.0 - distance, 4),
+            }
         )
-    else:
-        cache_id = str(uuid.uuid4())
-        conn.execute(
-            """
-            INSERT INTO response_cache
-                (id, prompt_normalized, prompt, response, source_session_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (cache_id, prompt_normalized, prompt, response, source_session_id, now, now),
-        )
+    scored.sort(key=lambda item: item["similarity"], reverse=True)
+    return scored[:limit]
 
-    conn.commit()
-    return cache_id
-
-
-def cache_session_responses(
-    conn: sqlite3.Connection,
-    session_id: str,
-    transcript: list[dict],
-) -> int:
-    """Cache each adjacent user-to-assistant exchange in an ingested transcript."""
-    count = 0
-    for index in range(len(transcript) - 1):
-        prompt_turn = transcript[index] or {}
-        response_turn = transcript[index + 1] or {}
-        if prompt_turn.get("role") != "user" or response_turn.get("role") != "assistant":
-            continue
-        if upsert_response_cache(
-            conn,
-            prompt_turn.get("content") or "",
-            response_turn.get("content") or "",
-            session_id,
-        ):
-            count += 1
-    return count
-
-
-def find_cached_response(conn: sqlite3.Connection, query: str) -> dict | None:
-    """Return a response only for an exact normalized prompt match."""
-    prompt_normalized = _normalize_question(query)
-    if not prompt_normalized:
-        return None
-
-    row = conn.execute(
-        """
-        SELECT id, prompt, response, source_session_id, hit_count
-        FROM response_cache
-        WHERE prompt_normalized = ?
-        """,
-        (prompt_normalized,),
-    ).fetchone()
-    if not row:
-        return None
-
-    now = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        "UPDATE response_cache SET hit_count = hit_count + 1, last_hit_at = ? WHERE id = ?",
-        (now, row["id"]),
-    )
-    conn.commit()
-    return {**dict(row), "similarity": 1.0}
-
-
-def backfill_response_cache(conn: sqlite3.Connection) -> int:
-    """Populate missing cache entries from already persisted transcripts."""
-    cached_prompts = {
-        row["prompt_normalized"]
-        for row in conn.execute("SELECT prompt_normalized FROM response_cache")
-    }
-    rows = conn.execute(
-        "SELECT session_id, transcript FROM sessions ORDER BY updated_at DESC"
-    ).fetchall()
-    now = datetime.now(timezone.utc).isoformat()
-    count = 0
-
-    for row in rows:
-        try:
-            transcript = json.loads(row["transcript"] or "[]")
-        except Exception:
-            continue
-
-        for index in range(len(transcript) - 1):
-            prompt_turn = transcript[index] or {}
-            response_turn = transcript[index + 1] or {}
-            if prompt_turn.get("role") != "user" or response_turn.get("role") != "assistant":
-                continue
-
-            prompt = prompt_turn.get("content") or ""
-            response = response_turn.get("content") or ""
-            prompt_normalized = _normalize_question(prompt)
-            if not prompt_normalized or not response.strip() or prompt_normalized in cached_prompts:
-                continue
-
-            conn.execute(
-                """
-                INSERT INTO response_cache
-                    (id, prompt_normalized, prompt, response, source_session_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (str(uuid.uuid4()), prompt_normalized, prompt, response, row["session_id"], now, now),
-            )
-            cached_prompts.add(prompt_normalized)
-            count += 1
-
-    return count
-
-
-def find_direct_answer(
-    conn: sqlite3.Connection,
-    query: str,
-    min_score: float = 0.93,
-    exclude_session_id: str | None = None,
-) -> dict | None:
-    """
-    Return a previously given assistant answer for a near-identical user prompt.
-
-    Scans stored transcripts for adjacent user→assistant turns, normalizes the
-    user prompts, and returns the best match whose similarity passes min_score.
-    """
-    query_norm = _normalize_question(query)
-    if not query_norm:
-        return None
-
-    if exclude_session_id:
-        rows = conn.execute(
-            "SELECT session_id, transcript FROM sessions WHERE session_id != ? ORDER BY updated_at DESC",
-            (exclude_session_id,),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT session_id, transcript FROM sessions ORDER BY updated_at DESC"
-        ).fetchall()
-
-    best: dict | None = None
-    best_score = 0.0
-
-    for row in rows:
-        try:
-            turns = json.loads(row["transcript"] or "[]")
-        except Exception:
-            continue
-
-        for i in range(len(turns) - 1):
-            cur = turns[i] or {}
-            nxt = turns[i + 1] or {}
-            if cur.get("role") != "user" or nxt.get("role") != "assistant":
-                continue
-
-            question = cur.get("content") or ""
-            answer = nxt.get("content") or ""
-            question_norm = _normalize_question(question)
-            if not question_norm or not answer:
-                continue
-
-            score = SequenceMatcher(None, query_norm, question_norm).ratio()
-            if query_norm == question_norm:
-                score = 1.0
-
-            if score >= min_score and score > best_score:
-                best_score = score
-                best = {
-                    "session_id": row["session_id"],
-                    "question": question,
-                    "answer": answer,
-                    "similarity": round(score, 4),
-                }
-
-    return best
-
-
-# ---------------------------------------------------------------------------
-# Phase 11: Hybrid search — Reciprocal Rank Fusion of FTS5 + semantic results
-# ---------------------------------------------------------------------------
-
-def hybrid_search(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict]:
-    """
-    Combine full-text (FTS5) and semantic (chunk-level) search using
-    Reciprocal Rank Fusion (RRF) to produce a single ranked result list.
-
-    RRF scores each session based on its rank in each individual result list.
-    A session that ranks highly in BOTH lists gets a higher combined score than
-    one that only appears in one list, making the results more robust.
-
-    This is the recommended default retrieval tool — it almost always
-    outperforms keyword-only or semantic-only search on its own.
-
-    Args:
-        conn  — open connection from init_db()
-        query — natural-language search string
-        limit — maximum results to return (default 10)
-
-    Returns:
-        List of dicts with keys: session_id, agent, updated_at, snippet, rrf_score
-        Same shape as search() so callers do not need to branch on result type.
-    """
-    # ------------------------------------------------------------------ #
-    # Step 1: Gather FTS5 keyword results (fetch more than limit so RRF   #
-    # has a broad pool to fuse from).                                      #
-    # ------------------------------------------------------------------ #
-    fts_results = search(conn, query, limit=limit * 3)
-
-    # ------------------------------------------------------------------ #
-    # Step 2: Gather semantic chunk results.                               #
-    # If sentence-transformers is not installed, treat as empty list so   #
-    # hybrid_search degrades gracefully to FTS5-only.                    #
-    # ------------------------------------------------------------------ #
-    try:
-        # Fetch extra chunks so deduplication still leaves plenty of sessions.
-        chunk_results = semantic_search_chunks(conn, query, limit=limit * 3)
-    except ImportError:
-        # sentence-transformers not installed — skip semantic leg entirely.
-        chunk_results = []
-
-    # ------------------------------------------------------------------ #
-    # Step 3: Deduplicate semantic results by session_id.                 #
-    # Keep only the best-scoring chunk (lowest distance) per session.     #
-    # ------------------------------------------------------------------ #
-    # best_chunk maps session_id → the chunk dict with the lowest distance.
-    best_chunk: dict[str, dict] = {}
-    for chunk in chunk_results:
-        sid = chunk["session_id"]
-        # If we haven't seen this session yet, or this chunk is closer, keep it.
-        if sid not in best_chunk or chunk["distance"] < best_chunk[sid]["distance"]:
-            best_chunk[sid] = chunk
-
-    # Convert the dedup map to an ordered list (already sorted by distance
-    # because semantic_search_chunks returns them sorted).
-    sem_results = sorted(best_chunk.values(), key=lambda r: r["distance"])
-
-    # ------------------------------------------------------------------ #
-    # Step 4: Build rank lookup tables for RRF computation.               #
-    # fts_rank[session_id]  = 0-based position in fts_results             #
-    # sem_rank[session_id]  = 0-based position in sem_results             #
-    # ------------------------------------------------------------------ #
-    # enumerate() yields (index, item) pairs starting at 0.
-    fts_rank = {r["session_id"]: i for i, r in enumerate(fts_results)}
-    sem_rank  = {r["session_id"]: i for i, r in enumerate(sem_results)}
-
-    # ------------------------------------------------------------------ #
-    # Step 5: Compute RRF score for every session that appeared in        #
-    # at least one result list.                                           #
-    # RRF formula: score += 1 / (60 + rank + 1)                          #
-    # The constant 60 dampens the effect of low ranks (standard value).  #
-    # ------------------------------------------------------------------ #
-    # Collect the union of all session IDs seen in either result list.
-    all_session_ids = set(fts_rank.keys()) | set(sem_rank.keys())
-
-    # rrf_scores maps session_id → accumulated RRF score.
-    rrf_scores: dict[str, float] = {}
-    for sid in all_session_ids:
-        score = 0.0
-        # Add FTS5 contribution if this session appeared in keyword results.
-        if sid in fts_rank:
-            score += 1.0 / (60 + fts_rank[sid] + 1)
-        # Add semantic contribution if this session appeared in chunk results.
-        if sid in sem_rank:
-            score += 1.0 / (60 + sem_rank[sid] + 1)
-        rrf_scores[sid] = score
-
-    # ------------------------------------------------------------------ #
-    # Step 6: Sort sessions by RRF score (highest first), take top limit. #
-    # ------------------------------------------------------------------ #
-    # sorted() returns a new list; reverse=True puts the highest score first.
-    ranked_ids = sorted(rrf_scores.keys(), key=lambda sid: rrf_scores[sid], reverse=True)
-    top_ids = ranked_ids[:limit]
-
-    # ------------------------------------------------------------------ #
-    # Step 7: Build index structures for fast metadata + snippet lookup.  #
-    # ------------------------------------------------------------------ #
-    # FTS5 results already carry agent, updated_at, and snippet.
-    fts_by_id   = {r["session_id"]: r for r in fts_results}
-    # Semantic results carry the chunk snippet (first 200 chars of the chunk).
-    sem_by_id   = {r["session_id"]: r for r in sem_results}
-
-    # For sessions that only appeared semantically (not in FTS5), we need to
-    # fetch agent and updated_at from the sessions table directly.
-    sem_only_ids = [sid for sid in top_ids if sid not in fts_by_id]
-    sessions_meta: dict[str, dict] = {}
-    if sem_only_ids:
-        # Build a comma-separated placeholder string: "?,?,?" for len ids.
-        placeholders = ",".join("?" * len(sem_only_ids))
-        meta_rows = conn.execute(
-            f"SELECT session_id, agent, updated_at FROM sessions WHERE session_id IN ({placeholders})",
-            sem_only_ids,
-        ).fetchall()
-        # Store as dict for O(1) lookup below.
-        for row in meta_rows:
-            sessions_meta[row["session_id"]] = dict(row)
-
-    # ------------------------------------------------------------------ #
-    # Step 8: Assemble final result list.                                 #
-    # ------------------------------------------------------------------ #
-    output = []
-    for sid in top_ids:
-        # Prefer FTS5 snippet because it has highlighted keywords ([word]).
-        # Fall back to the semantic chunk snippet if this session was not in FTS5.
-        if sid in fts_by_id:
-            fts_row = fts_by_id[sid]
-            agent      = fts_row["agent"]
-            updated_at = fts_row["updated_at"]
-            snippet    = fts_row["snippet"]
-        else:
-            # Session came only from semantic search — look up metadata.
-            meta = sessions_meta.get(sid, {})
-            agent      = meta.get("agent", "")
-            updated_at = meta.get("updated_at", "")
-            snippet    = sem_by_id[sid]["snippet"]
-
-        output.append({
-            "session_id": sid,
-            "agent":      agent,
-            "updated_at": updated_at,
-            "snippet":    snippet,
-            "rrf_score":  rrf_scores[sid],   # useful for debugging / ranking transparency
-        })
-
-    return output
-
-
-# ---------------------------------------------------------------------------
-# Phase 12 additions: summaries table helpers for consolidation and decay
-# ---------------------------------------------------------------------------
-
-def insert_summary(conn: sqlite3.Connection, session_id: str, summary: str, model: str) -> None:
-    """
-    Store a generated summary for a session in the summaries table.
-
-    Uses INSERT OR REPLACE so that if a summary already exists for this
-    session_id (e.g. from a previous run), it is overwritten with the new one.
-
-    Args:
-        conn       — open connection from init_db()
-        session_id — the session whose transcript was summarised
-        summary    — the generated summary text (2-3 sentences)
-        model      — the ollama model that generated the summary, e.g. "llama3.2:3b"
-    """
-    # datetime.now(timezone.utc).isoformat() gives an ISO 8601 UTC timestamp.
-    conn.execute(
-        "INSERT OR REPLACE INTO summaries (session_id, summary, model, created_at) VALUES (?, ?, ?, ?)",
-        (session_id, summary, model, datetime.now(timezone.utc).isoformat()),
-    )
-    conn.commit()
-
-
-def get_summary(conn: sqlite3.Connection, session_id: str) -> str | None:
-    """
-    Return the summary text for a session, or None if not yet summarised.
-
-    Args:
-        conn       — open connection from init_db()
-        session_id — the session to look up
-
-    Returns:
-        The summary string if one exists, or None if no summary has been stored.
-    """
-    row = conn.execute(
-        "SELECT summary FROM summaries WHERE session_id = ?", (session_id,)
-    ).fetchone()
-    # row is None if no summary exists; row["summary"] is the text if it does.
-    return row["summary"] if row else None
-
-
-def sessions_needing_summary(conn: sqlite3.Connection, days_threshold: int) -> list[dict]:
-    """
-    Return sessions older than days_threshold that have no summary yet.
-
-    A session qualifies if:
-      - Its updated_at is before the cutoff date (older than days_threshold)
-      - It has no row in the summaries table yet (LEFT JOIN + NULL check)
-      - Its transcript is non-null and non-empty (not '[]')
-
-    Results are ordered oldest-first so the most urgent sessions are processed first.
-
-    Args:
-        conn           — open connection from init_db()
-        days_threshold — sessions older than this many days are returned
-
-    Returns:
-        List of dicts with keys: session_id, updated_at, turn_count, transcript.
-    """
-    # timedelta(days=days_threshold) subtracts that many days from the current time.
-    # .isoformat() converts to a string like "2026-07-17T10:00:00+00:00" for SQL comparison.
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days_threshold)).isoformat()
-
-    rows = conn.execute(
-        """
-        SELECT s.session_id, s.updated_at, s.turn_count, s.transcript
-        FROM sessions s
-        LEFT JOIN summaries su ON su.session_id = s.session_id
-        WHERE s.updated_at < ? AND su.session_id IS NULL
-          AND s.transcript IS NOT NULL AND s.transcript != '[]'
-        ORDER BY s.updated_at ASC
-        """,
-        (cutoff,),
-    ).fetchall()
-
-    # Convert each sqlite3.Row to a plain dict for easy access by callers.
-    return [dict(r) for r in rows]
-
-
-def sessions_needing_prune(conn: sqlite3.Connection, days_threshold: int) -> list[dict]:
-    """
-    Return sessions older than days_threshold that have a summary and a non-null transcript.
-
-    A session is ready for pruning if:
-      - Its updated_at is before the cutoff date (older than days_threshold)
-      - It has a row in the summaries table (INNER JOIN — summary must exist first)
-      - Its transcript is non-null and non-empty (there is still data to prune)
-
-    Args:
-        conn           — open connection from init_db()
-        days_threshold — sessions older than this many days are returned
-
-    Returns:
-        List of dicts with keys: session_id, updated_at, turn_count.
-    """
-    # Build the cutoff timestamp the same way as sessions_needing_summary.
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days_threshold)).isoformat()
-
-    rows = conn.execute(
-        """
-        SELECT s.session_id, s.updated_at, s.turn_count
-        FROM sessions s
-        INNER JOIN summaries su ON su.session_id = s.session_id
-        WHERE s.updated_at < ?
-          AND s.transcript IS NOT NULL AND s.transcript != '[]'
-        ORDER BY s.updated_at ASC
-        """,
-        (cutoff,),
-    ).fetchall()
-
-    return [dict(r) for r in rows]
-
-
-# ---------------------------------------------------------------------------
-# Phase 13 additions: daemon processing, insights, and topic clustering
-# ---------------------------------------------------------------------------
 
 def get_unprocessed_sessions(conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
-    """
-    Return up to `limit` sessions that the daemon has not yet processed.
-
-    A session is considered unprocessed when daemon_processed_at IS NULL,
-    which is its initial state after being saved by the hook.
-
-    Args:
-        conn  — open connection from init_db()
-        limit — maximum number of sessions to return (default 10)
-
-    Returns:
-        List of dicts with at least session_id, transcript, updated_at.
-    """
-    # ORDER BY updated_at ASC processes oldest sessions first so nothing ages out.
     rows = conn.execute(
         """
-        SELECT session_id, transcript, updated_at, turn_count
+        SELECT session_id, agent, started_at, updated_at, turn_count, transcript, metadata, daemon_processed_at
         FROM sessions
         WHERE daemon_processed_at IS NULL
-          AND transcript IS NOT NULL AND transcript != '[]'
         ORDER BY updated_at ASC
         LIMIT ?
         """,
         (limit,),
     ).fetchall()
-    # Convert sqlite3.Row objects to plain dicts so callers can use dict syntax.
-    return [dict(r) for r in rows]
+    return [dict(row) for row in rows]
 
 
-def mark_session_processed(conn: sqlite3.Connection, session_id: str) -> None:
-    """
-    Stamp daemon_processed_at with the current UTC time for a session.
-
-    Called by the daemon after it has extracted facts and assigned the session
-    to a topic cluster, so the session is not re-processed on the next run.
-
-    Args:
-        conn       — open connection from init_db()
-        session_id — the session to stamp
-    """
-    # datetime.now(timezone.utc).isoformat() gives a standard UTC timestamp string.
-    now = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        "UPDATE sessions SET daemon_processed_at = ? WHERE session_id = ?",
-        (now, session_id),
-    )
-    conn.commit()
-
-
-def assign_to_cluster(
-    conn: sqlite3.Connection,
-    session_id: str,
-    embedding: list[float],
-    label: str = "",
-) -> str:
-    """
-    Assign a session to the nearest topic cluster, or create a new one.
-
-    Steps:
-      1. Load all existing clusters (id, centroid, member_count).
-      2. Compute cosine distance from embedding to each centroid.
-      3. If best distance < 0.3, assign to that cluster; else create a new cluster.
-      4. Update centroid as a rolling average: (old * old_count + new) / (old_count + 1).
-      5. Upsert a row in cluster_memberships.
-      6. Update topic_clusters.member_count and centroid.
-
-    Args:
-        conn       — open connection from init_db()
-        session_id — the session being clustered
-        embedding  — 384-float embedding of the session transcript
-        label      — optional label for a newly-created cluster
-
-    Returns:
-        The cluster_id (UUID) that the session was assigned to.
-    """
-    # ------------------------------------------------------------------ #
-    # Step 1: Load all existing clusters.                                 #
-    # ------------------------------------------------------------------ #
-    cluster_rows = conn.execute(
-        "SELECT id, centroid, member_count, label FROM topic_clusters"
-    ).fetchall()
-
-    # ------------------------------------------------------------------ #
-    # Step 2: Find the nearest cluster by cosine distance.                #
-    # ------------------------------------------------------------------ #
-    # COSINE_THRESHOLD defines the maximum distance for two embeddings to
-    # be considered "the same topic".  0.3 is a sensible default.
-    COSINE_THRESHOLD = 0.3
-
-    best_cluster_id = None
-    best_distance = float("inf")
-
-    for row in cluster_rows:
-        centroid_blob = bytes(row["centroid"])
-        dist = cosine_distance(embedding, centroid_blob)
-        if dist < best_distance:
-            best_distance = dist
-            best_cluster_id = row["id"]
-
-    # ------------------------------------------------------------------ #
-    # Step 3: Assign to existing cluster or create a new one.             #
-    # ------------------------------------------------------------------ #
-    now = datetime.now(timezone.utc).isoformat()
-
-    if best_cluster_id is not None and best_distance < COSINE_THRESHOLD:
-        # The session is close enough to an existing cluster — join it.
-        cluster_id = best_cluster_id
-    else:
-        # No close cluster found — create a new one with this embedding as centroid.
-        cluster_id = str(uuid.uuid4())
-        # Use the supplied label (fallback to first 40 chars of session_id).
-        cluster_label = label[:40] if label else session_id[:40]
-        initial_centroid = pack_vector(embedding)
-        conn.execute(
-            """
-            INSERT INTO topic_clusters (id, label, centroid, member_count, updated_at)
-            VALUES (?, ?, ?, 0, ?)
-            """,
-            (cluster_id, cluster_label, initial_centroid, now),
-        )
-
-    # ------------------------------------------------------------------ #
-    # Step 4: Update centroid as a rolling average.                       #
-    # ------------------------------------------------------------------ #
+def get_session_by_id(conn: sqlite3.Connection, session_id: str) -> dict | None:
     row = conn.execute(
-        "SELECT centroid, member_count FROM topic_clusters WHERE id = ?",
-        (cluster_id,),
-    ).fetchone()
-
-    old_count = row["member_count"]
-    old_centroid_blob = bytes(row["centroid"])
-
-    # Unpack the old centroid from its binary blob.
-    n = len(old_centroid_blob) // 4         # 4 bytes per float32
-    old_centroid = list(struct.unpack(f"<{n}f", old_centroid_blob))
-
-    # Rolling average: new_centroid[i] = (old[i] * old_count + new[i]) / (old_count + 1)
-    new_count = old_count + 1
-    new_centroid = [
-        (old_centroid[i] * old_count + embedding[i]) / new_count
-        for i in range(len(embedding))
-    ]
-    new_centroid_blob = pack_vector(new_centroid)
-
-    # ------------------------------------------------------------------ #
-    # Step 5: Upsert the cluster_memberships row.                         #
-    # ------------------------------------------------------------------ #
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO cluster_memberships (session_id, cluster_id, distance)
-        VALUES (?, ?, ?)
-        """,
-        (session_id, cluster_id, best_distance if best_cluster_id == cluster_id else 0.0),
-    )
-
-    # ------------------------------------------------------------------ #
-    # Step 6: Update the cluster's centroid and member_count.             #
-    # ------------------------------------------------------------------ #
-    conn.execute(
-        """
-        UPDATE topic_clusters
-        SET centroid = ?, member_count = ?, updated_at = ?
-        WHERE id = ?
-        """,
-        (new_centroid_blob, new_count, now, cluster_id),
-    )
-    conn.commit()
-
-    return cluster_id
-
-
-def get_cluster_sessions(conn: sqlite3.Connection, cluster_id: str) -> list[str]:
-    """
-    Return all session_ids assigned to a given cluster.
-
-    Args:
-        conn       — open connection from init_db()
-        cluster_id — UUID of the cluster to query
-
-    Returns:
-        List of session_id strings. Empty list if the cluster has no members.
-    """
-    rows = conn.execute(
-        "SELECT session_id FROM cluster_memberships WHERE cluster_id = ?",
-        (cluster_id,),
-    ).fetchall()
-    # Extract the session_id string from each Row object.
-    return [row["session_id"] for row in rows]
-
-
-def get_clusters(conn: sqlite3.Connection) -> list[dict]:
-    """
-    Return all topic clusters.
-
-    Args:
-        conn — open connection from init_db()
-
-    Returns:
-        List of dicts with keys: id, label, member_count, updated_at.
-        The centroid blob is excluded — use assign_to_cluster for centroid access.
-    """
-    rows = conn.execute(
-        """
-        SELECT id, label, member_count, updated_at
-        FROM topic_clusters
-        ORDER BY member_count DESC
-        """
-    ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def save_compressed_memory(
-    conn: sqlite3.Connection,
-    content: str,
-    sessions_compressed: int,
-    model: str,
-) -> None:
-    """
-    Append one compressed-memory row to the compressed_memory table.
-
-    Each call represents a full compression run. The latest row (highest id)
-    is the current compressed memory; older rows are kept for audit purposes.
-
-    Args:
-        conn                — open connection from init_db()
-        content             — the full structured markdown document
-        sessions_compressed — how many sessions were folded into this document
-        model               — which ollama model generated the content
-    """
-    conn.execute(
-        """
-        INSERT INTO compressed_memory (content, sessions_compressed, model, created_at)
-        VALUES (?, ?, ?, ?)
-        """,
-        (content, sessions_compressed, model, datetime.now(timezone.utc).isoformat()),
-    )
-    conn.commit()
-
-
-def get_compressed_memory(conn: sqlite3.Connection) -> dict | None:
-    """
-    Return the most recent compressed memory row, or None if none exists yet.
-
-    Args:
-        conn — open connection from init_db()
-
-    Returns:
-        Dict with keys: content, sessions_compressed, model, created_at.
-        Returns None if the table is empty.
-    """
-    row = conn.execute(
-        """
-        SELECT content, sessions_compressed, model, created_at
-        FROM compressed_memory
-        ORDER BY id DESC
-        LIMIT 1
-        """
+        "SELECT session_id, agent, started_at, updated_at, turn_count, transcript, metadata, daemon_processed_at FROM sessions WHERE session_id = ?",
+        (session_id,),
     ).fetchone()
     return dict(row) if row else None
 
 
-def get_all_sessions_for_compression(conn: sqlite3.Connection) -> list[dict]:
-    """
-    Return all sessions eligible for compression, joined with their summaries.
-
-    A session is included if its transcript is non-null and non-empty. The
-    summary column will be None for sessions that the daemon has not yet
-    summarised — compress.py uses the raw transcript in that case.
-
-    Results are ordered oldest-first so the compressed document reflects
-    chronological order of events.
-
-    Args:
-        conn — open connection from init_db()
-
-    Returns:
-        List of dicts with keys: session_id, updated_at, turn_count, transcript, summary.
-    """
-    rows = conn.execute(
-        """
-        SELECT s.session_id, s.updated_at, s.turn_count, s.transcript,
-               su.summary
-        FROM sessions s
-        LEFT JOIN summaries su ON su.session_id = s.session_id
-        WHERE s.transcript IS NOT NULL AND s.transcript != '[]'
-        ORDER BY s.updated_at ASC
-        """
-    ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def delete_sessions(conn: sqlite3.Connection, session_ids: list[str]) -> int:
-    """
-    Delete sessions and ALL associated data, including the FTS5 index entries.
-
-    Handles cleanup in the correct order:
-      1. FTS5 index (no auto-delete trigger exists — must be done manually)
-      2. cluster_memberships, session_vecs, chunks, summaries
-      3. sessions rows themselves
-
-    SQLite foreign key enforcement is off by default, so cascades do not fire;
-    we delete related rows explicitly.
-
-    Args:
-        conn        — open connection from init_db()
-        session_ids — list of session_id strings to delete
-
-    Returns:
-        The number of session rows actually deleted.
-    """
-    if not session_ids:
-        return 0
-
-    placeholders = ",".join("?" * len(session_ids))
-
-    # Delete associated rows (no CASCADE because PRAGMA foreign_keys is off).
-    conn.execute(f"DELETE FROM cluster_memberships WHERE session_id IN ({placeholders})", session_ids)
-    conn.execute(f"DELETE FROM session_vecs WHERE session_id IN ({placeholders})", session_ids)
-    conn.execute(f"DELETE FROM chunks WHERE session_id IN ({placeholders})", session_ids)
-    conn.execute(f"DELETE FROM summaries WHERE session_id IN ({placeholders})", session_ids)
-
-    # Step 3: Delete the session rows themselves.
-    cursor = conn.execute(
-        f"DELETE FROM sessions WHERE session_id IN ({placeholders})", session_ids
-    )
-    conn.commit()
-
-    return cursor.rowcount
-
-
-def prune_transcript(conn: sqlite3.Connection, session_id: str) -> int:
-    """
-    Null out the transcript for a session by setting it to '[]'.
-
-    Called after a summary has been generated and stored. The session row
-    itself is preserved (metadata like updated_at and turn_count stay intact)
-    but the raw transcript text is discarded to save space.
-
-    Args:
-        conn       — open connection from init_db()
-        session_id — the session whose transcript should be cleared
-
-    Returns:
-        The old turn_count value (before pruning) so callers can log it.
-    """
+def get_latest_session(conn: sqlite3.Connection) -> dict | None:
     row = conn.execute(
-        "SELECT turn_count FROM sessions WHERE session_id = ?", (session_id,)
+        "SELECT session_id, agent, started_at, updated_at, turn_count, transcript, metadata, daemon_processed_at FROM sessions ORDER BY updated_at DESC LIMIT 1"
     ).fetchone()
+    return dict(row) if row else None
 
-    turn_count = row["turn_count"] if row else 0
 
+def mark_session_processed(conn: sqlite3.Connection, session_id: str) -> None:
     conn.execute(
-        "UPDATE sessions SET transcript = '[]' WHERE session_id = ?", (session_id,)
-    )
-    conn.commit()
-
-    return turn_count
-
-
-# ---------------------------------------------------------------------------
-# New memory architecture: working, episodic, compacted, procedural
-# ---------------------------------------------------------------------------
-
-def upsert_working_memory(
-    conn: sqlite3.Connection,
-    cluster_id: str,
-    session_id: str,
-    summary_addition: str,
-) -> str:
-    """
-    Create or update the working memory entry for a topic cluster.
-
-    On first call for a cluster: creates a new working_memory row.
-    On subsequent calls: appends the session to session_ids and appends to summary.
-
-    Returns the working_memory id.
-    """
-    now = datetime.now(timezone.utc).isoformat()
-
-    existing = conn.execute(
-        "SELECT id, summary, session_ids FROM working_memory WHERE cluster_id = ? AND closed_at IS NULL",
-        (cluster_id,),
-    ).fetchone()
-
-    if existing:
-        wm_id = existing["id"]
-        session_ids = json.loads(existing["session_ids"] or "[]")
-        if session_id not in session_ids:
-            session_ids.append(session_id)
-        new_summary = existing["summary"] + "\n\n---\n" + summary_addition
-        conn.execute(
-            "UPDATE working_memory SET summary = ?, session_ids = ?, updated_at = ? WHERE id = ?",
-            (new_summary, json.dumps(session_ids), now, wm_id),
-        )
-    else:
-        wm_id = str(uuid.uuid4())
-        conn.execute(
-            """
-            INSERT INTO working_memory (id, cluster_id, summary, session_ids, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (wm_id, cluster_id, summary_addition, json.dumps([session_id]), now, now),
-        )
-
-    conn.commit()
-    return wm_id
-
-
-def get_active_working_memory(
-    conn: sqlite3.Connection,
-    cluster_id: str,
-) -> dict | None:
-    """
-    Return the active (not closed) working memory entry for a cluster, or None.
-
-    Returns dict with keys: id, cluster_id, summary, session_ids (list), created_at, updated_at.
-    """
-    row = conn.execute(
-        """
-        SELECT id, cluster_id, summary, session_ids, created_at, updated_at
-        FROM working_memory
-        WHERE cluster_id = ? AND closed_at IS NULL
-        """,
-        (cluster_id,),
-    ).fetchone()
-
-    if not row:
-        return None
-
-    d = dict(row)
-    d["session_ids"] = json.loads(d["session_ids"] or "[]")
-    return d
-
-
-def get_stale_working_memory(
-    conn: sqlite3.Connection,
-    days: int = 14,
-) -> list[dict]:
-    """
-    Return working memory entries with no activity for more than `days` days.
-
-    Returns list of dicts with keys: id, cluster_id, summary, session_ids, updated_at.
-    """
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    rows = conn.execute(
-        """
-        SELECT id, cluster_id, summary, session_ids, updated_at
-        FROM working_memory
-        WHERE closed_at IS NULL AND updated_at < ?
-        ORDER BY updated_at ASC
-        """,
-        (cutoff,),
-    ).fetchall()
-    result = []
-    for row in rows:
-        d = dict(row)
-        d["session_ids"] = json.loads(d["session_ids"] or "[]")
-        result.append(d)
-    return result
-
-
-def close_working_memory(conn: sqlite3.Connection, wm_id: str) -> None:
-    """Stamp closed_at on a working memory entry to mark it inactive."""
-    now = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        "UPDATE working_memory SET closed_at = ? WHERE id = ?",
-        (now, wm_id),
+        "UPDATE sessions SET daemon_processed_at = ? WHERE session_id = ?",
+        (_utc_now(), session_id),
     )
     conn.commit()
 
@@ -2338,288 +367,54 @@ def insert_episodic(
     title: str,
     abstract: str,
     happened_at: str | None = None,
+    *,
+    details: dict | None = None,
+    embedding: list[float] | None = None,
 ) -> str:
-    """
-    Create an episodic memory entry for a session.
-
-    Args:
-        session_id  — the session this episode describes
-        title       — short one-line title (LLM-generated)
-        abstract    — 2-sentence description of what happened
-        happened_at — ISO timestamp; defaults to now
-
-    Returns the UUID of the new episodic entry.
-    """
     ep_id = str(uuid.uuid4())
-    if not happened_at:
-        happened_at = datetime.now(timezone.utc).isoformat()
     conn.execute(
         """
-        INSERT OR IGNORE INTO episodic_memory (id, session_id, title, abstract, happened_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO episodic_memory (id, session_id, title, abstract, happened_at, details, embedding)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (ep_id, session_id, title, abstract, happened_at),
+        (
+            ep_id,
+            session_id,
+            title,
+            abstract,
+            happened_at or _utc_now(),
+            json.dumps(details or {}),
+            pack_vector(embedding) if embedding is not None else None,
+        ),
     )
     conn.commit()
     return ep_id
 
 
-def upsert_compacted_session(
-    conn: sqlite3.Connection,
-    cluster_id: str,
-    content: str,
-    embedding: list[float] | None,
-    source_session_ids: list[str],
-) -> str:
-    """
-    Create or update the compacted session entry for a cluster.
-
-    If an entry already exists for this cluster the content and vector are
-    updated. Otherwise a new row is created.
-
-    Returns the compacted_sessions id.
-    """
-    now = datetime.now(timezone.utc).isoformat()
-    blob = pack_vector(embedding) if embedding is not None else None
-
-    existing = conn.execute(
-        "SELECT id, source_session_ids FROM compacted_sessions WHERE cluster_id = ?",
-        (cluster_id,),
-    ).fetchone()
-
-    if existing:
-        cs_id = existing["id"]
-        old_ids = json.loads(existing["source_session_ids"] or "[]")
-        merged_ids = list(set(old_ids + source_session_ids))
-        conn.execute(
-            """
-            UPDATE compacted_sessions
-            SET content = ?, embedding = ?, source_session_ids = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (content, blob, json.dumps(merged_ids), now, cs_id),
-        )
-    else:
-        cs_id = str(uuid.uuid4())
-        conn.execute(
-            """
-            INSERT INTO compacted_sessions
-                (id, cluster_id, content, embedding, source_session_ids, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (cs_id, cluster_id, content, blob, json.dumps(source_session_ids), now, now),
-        )
-
-    conn.commit()
-    return cs_id
-
-
-def search_compacted_sessions(
-    conn: sqlite3.Connection,
-    query_vector: list[float],
-    limit: int = 5,
-) -> list[dict]:
-    """
-    Find compacted sessions semantically similar to a query vector.
-
-    Returns similarity (not distance) so callers apply intuitive thresholds:
-    0.96 = cache hit, 0.70 = enrichment context.
-
-    Returns list of dicts with keys: id, cluster_id, content, similarity, hit_count.
-    Sorted by similarity descending.
-    """
+def search_episodic_semantic(conn: sqlite3.Connection, query_vector: list[float], limit: int = 3) -> list[dict]:
     rows = conn.execute(
-        "SELECT id, cluster_id, content, embedding, hit_count FROM compacted_sessions WHERE embedding IS NOT NULL"
+        "SELECT id, session_id, title, abstract, happened_at, details, embedding FROM episodic_memory WHERE embedding IS NOT NULL"
     ).fetchall()
-
-    if not rows:
-        return []
-
-    scored = []
+    scored: list[dict] = []
     for row in rows:
-        dist = cosine_distance(query_vector, bytes(row["embedding"]))
-        scored.append({
-            "id":         row["id"],
-            "cluster_id": row["cluster_id"],
-            "content":    row["content"],
-            "similarity": round(1.0 - dist, 4),
-            "hit_count":  row["hit_count"],
-        })
-
-    scored.sort(key=lambda r: r["similarity"], reverse=True)
+        distance = cosine_distance(query_vector, bytes(row["embedding"]))
+        details = _json_loads(row["details"], {})
+        scored.append(
+            {
+                "id": row["id"],
+                "session_id": row["session_id"],
+                "title": row["title"],
+                "abstract": row["abstract"],
+                "happened_at": row["happened_at"],
+                "participants": details.get("participants", []),
+                "decisions": details.get("decisions", []),
+                "outcomes": details.get("outcomes", []),
+                "follow_ups": details.get("follow_ups", []),
+                "confidence": details.get("confidence"),
+                "source_quote": details.get("source_quote"),
+                "source": details.get("source"),
+                "similarity": round(1.0 - distance, 4),
+            }
+        )
+    scored.sort(key=lambda item: item["similarity"], reverse=True)
     return scored[:limit]
-
-
-def increment_compacted_hit(conn: sqlite3.Connection, cs_id: str) -> None:
-    """Increment hit_count for a compacted session when a cache hit occurs."""
-    conn.execute(
-        "UPDATE compacted_sessions SET hit_count = hit_count + 1 WHERE id = ?",
-        (cs_id,),
-    )
-    conn.commit()
-
-
-def get_near_duplicate_compacted(
-    conn: sqlite3.Connection,
-    similarity_threshold: float = 0.92,
-) -> list[tuple[str, str]]:
-    """
-    Find pairs of compacted_sessions entries that are near-duplicates.
-
-    Returns list of (id_a, id_b) pairs where cosine similarity >= threshold.
-    """
-    rows = conn.execute(
-        "SELECT id, embedding FROM compacted_sessions WHERE embedding IS NOT NULL"
-    ).fetchall()
-
-    if len(rows) < 2:
-        return []
-
-    pairs = []
-    for i in range(len(rows)):
-        for j in range(i + 1, len(rows)):
-            n = len(bytes(rows[i]["embedding"])) // 4
-            a_vec = list(struct.unpack(f"<{n}f", bytes(rows[i]["embedding"])))
-            dist = cosine_distance(a_vec, bytes(rows[j]["embedding"]))
-            if 1.0 - dist >= similarity_threshold:
-                pairs.append((rows[i]["id"], rows[j]["id"]))
-
-    return pairs
-
-
-def merge_compacted_sessions(
-    conn: sqlite3.Connection,
-    keep_id: str,
-    drop_id: str,
-    merged_content: str,
-    merged_embedding: list[float] | None,
-) -> None:
-    """
-    Merge two compacted session entries into one, deleting the other.
-
-    Args:
-        keep_id          — the id to keep and update
-        drop_id          — the id to delete after merging
-        merged_content   — LLM-merged summary text
-        merged_embedding — embedding of the merged content
-    """
-    now = datetime.now(timezone.utc).isoformat()
-    blob = pack_vector(merged_embedding) if merged_embedding is not None else None
-
-    drop_row = conn.execute(
-        "SELECT source_session_ids, hit_count FROM compacted_sessions WHERE id = ?",
-        (drop_id,),
-    ).fetchone()
-    keep_row = conn.execute(
-        "SELECT source_session_ids, hit_count FROM compacted_sessions WHERE id = ?",
-        (keep_id,),
-    ).fetchone()
-
-    if not drop_row or not keep_row:
-        return
-
-    merged_ids = list(set(
-        json.loads(keep_row["source_session_ids"] or "[]") +
-        json.loads(drop_row["source_session_ids"] or "[]")
-    ))
-    total_hits = (keep_row["hit_count"] or 0) + (drop_row["hit_count"] or 0)
-
-    conn.execute(
-        """
-        UPDATE compacted_sessions
-        SET content = ?, embedding = ?, source_session_ids = ?,
-            hit_count = ?, updated_at = ?
-        WHERE id = ?
-        """,
-        (merged_content, blob, json.dumps(merged_ids), total_hits, now, keep_id),
-    )
-    conn.execute("DELETE FROM compacted_sessions WHERE id = ?", (drop_id,))
-    conn.commit()
-
-
-def upsert_procedural(
-    conn: sqlite3.Connection,
-    title: str,
-    steps: str,
-    confidence_delta: float = 0.1,
-) -> str:
-    """
-    Create or update a procedural memory entry.
-
-    If an entry with the same title already exists, confidence is incremented
-    by confidence_delta (clamped to 1.0) and observation_count is increased.
-    Otherwise a new entry is created with confidence 0.5.
-
-    Returns the UUID of the created or updated entry.
-    """
-    now = datetime.now(timezone.utc).isoformat()
-
-    existing = conn.execute(
-        "SELECT id, confidence, observation_count FROM procedural_memory WHERE title = ?",
-        (title,),
-    ).fetchone()
-
-    if existing:
-        proc_id = existing["id"]
-        new_confidence = min(1.0, (existing["confidence"] or 0.5) + confidence_delta)
-        new_count = (existing["observation_count"] or 1) + 1
-        conn.execute(
-            """
-            UPDATE procedural_memory
-            SET steps = ?, confidence = ?, observation_count = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (steps, new_confidence, new_count, now, proc_id),
-        )
-    else:
-        proc_id = str(uuid.uuid4())
-        conn.execute(
-            """
-            INSERT INTO procedural_memory (id, title, steps, confidence, observation_count, created_at, updated_at)
-            VALUES (?, ?, ?, 0.5, 1, ?, ?)
-            """,
-            (proc_id, title, steps, now, now),
-        )
-
-    conn.commit()
-    return proc_id
-
-
-def search_procedural(
-    conn: sqlite3.Connection,
-    query: str,
-    min_confidence: float = 0.6,
-    limit: int = 3,
-) -> list[dict]:
-    """
-    Find procedural memory entries relevant to a query.
-
-    Uses LIKE search on title and steps columns. Only returns entries with
-    confidence >= min_confidence so low-quality patterns are filtered out.
-
-    Returns list of dicts with keys: id, title, steps, confidence, observation_count.
-    """
-    tokens = [t for t in query.lower().split() if len(t) > 2]
-    if not tokens:
-        return []
-
-    conditions = " OR ".join(
-        "lower(title) LIKE ? OR lower(steps) LIKE ?" for _ in tokens
-    )
-    params: list = []
-    for t in tokens:
-        params.extend([f"%{t}%", f"%{t}%"])
-    params.extend([min_confidence, limit])
-
-    rows = conn.execute(
-        f"""
-        SELECT id, title, steps, confidence, observation_count
-        FROM procedural_memory
-        WHERE ({conditions}) AND confidence >= ?
-        ORDER BY confidence DESC, observation_count DESC
-        LIMIT ?
-        """,
-        params,
-    ).fetchall()
-
-    return [dict(r) for r in rows]

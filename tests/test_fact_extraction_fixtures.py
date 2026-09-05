@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 from pathlib import Path
 
@@ -13,7 +14,10 @@ from memory.ollama import is_ollama_running
 _FIXTURES_ROOT = Path(__file__).parent / "fixtures" / "facts"
 
 
-@unittest.skipUnless(is_ollama_running(), "Ollama must be running for fact extraction fixtures")
+@unittest.skipUnless(
+    os.environ.get("MEMORY_RUN_OLLAMA_TESTS") == "1" and is_ollama_running(),
+    "Set MEMORY_RUN_OLLAMA_TESTS=1 and ensure Ollama is running for fact extraction fixtures",
+)
 class TestFactExtractionFixtures(unittest.TestCase):
     # This is the real acceptance test for fact extraction:
     # session fixture text -> real Qwen call -> extracted facts -> expected JSON.

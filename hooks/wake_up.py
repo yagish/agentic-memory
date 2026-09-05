@@ -3,13 +3,9 @@
 # Runs before every user prompt. Injects memory context from relevant layers,
 # within a hard 500-token budget.
 #
-# Retrieval layers (priority order):
-#   1. Cache hit      — compacted session ≥ 96% similar to this prompt
-#   2. Working memory — rolling task context (first message of session only)
-#   3. Enrichment     — compacted sessions 70–95% similar
-#   4. Episodic       — semantically related session summaries
-#   5. Facts          — semantic search over facts table (identity surfaces here)
-#   6. Procedural     — how-to patterns (only when prompt has how-to markers)
+# Retrieval layers:
+#   1. Episodic — semantically related session summaries
+#   2. Facts    — semantic search over facts table (identity surfaces here)
 #
 # Gates that skip ALL injection:
 #   - DB not found
@@ -45,7 +41,6 @@ from memory.retrieval import (
 )
 
 DB_PATH = os.path.expanduser("~/.memory/memory.db")
-LOG_PATH = os.path.expanduser("~/.memory/wake_up.log")
 
 
 @dataclass(frozen=True)
@@ -54,22 +49,23 @@ class HookRequest:
     prompt: str
 
 
+def _should_write_log_file() -> bool:
+    if os.environ.get("MEMORY_DISABLE_FILE_LOGS") == "1":
+        return False
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    if "pytest" in sys.modules:
+        return False
+    return True
+
+
 def _log_error(msg: str) -> None:
-    ts = datetime.now(timezone.utc).isoformat()
-    try:
-        with open(LOG_PATH, "a") as f:
-            f.write(f"{ts} ERROR {msg}\n")
-    except Exception:
-        pass
+    del msg
+
 
 
 def _log_info(msg: str) -> None:
-    ts = datetime.now(timezone.utc).isoformat()
-    try:
-        with open(LOG_PATH, "a") as f:
-            f.write(f"{ts} INFO {msg}\n")
-    except Exception:
-        pass
+    del msg
 
 
 def _allow() -> None:
@@ -142,7 +138,8 @@ def _open_connection():
 
 
 def _retrieve_context(conn, request: HookRequest):
-    # Inject working memory once per session; other memory layers run on every prompt.
+    # The retrieval API still accepts this flag for compatibility, but the
+    # current retriever ignores it.
     include_working_memory = _is_first_message(request.session_id)
     _log_info(
         f"running semantic search for prompt={request.prompt!r}, "
@@ -177,56 +174,19 @@ def _log_fact_lookup_details(request: HookRequest, context) -> None:
 
 
 def _log_context_details(context) -> None:
-    """Log the other retrieved memory layers for wake-up debugging."""
-    if context.cache_hit:
-        _log_info(
-            "cache hit=" + json.dumps(
-                {
-                    "id": context.cache_hit.get("id"),
-                    "similarity": context.cache_hit.get("similarity"),
-                    "content": str(context.cache_hit.get("content", "")).strip(),
-                },
-                ensure_ascii=False,
-            )
-        )
-
-    if context.working_mem:
-        _log_info(
-            "working memory=" + json.dumps(
-                {
-                    "id": context.working_mem.get("id"),
-                    "similarity": context.working_mem.get("similarity"),
-                    "summary": str(context.working_mem.get("summary", "")).strip(),
-                },
-                ensure_ascii=False,
-            )
-        )
-
-    if context.enrichment:
-        _log_info("enrichment=" + json.dumps(context.enrichment, ensure_ascii=False))
-
+    """Log retrieved episodic context for wake-up debugging."""
     if context.episodic:
         _log_info("episodic=" + json.dumps(context.episodic, ensure_ascii=False))
-
-    if context.procedural:
-        _log_info("procedural=" + json.dumps(context.procedural, ensure_ascii=False))
 
 
 
 def _should_block_with_fact_answer(request: HookRequest, context) -> bool:
-    """Only block when wake-up found facts and no richer context layers compete.
+    """Block only for fact-only hits.
 
-    Claude Code's UserPromptSubmit hook cannot inject context into the prompt, so
-    direct blocking is reserved for fact-only recall. When other memory layers are
-    relevant we log them and allow the prompt through unchanged.
+    When episodic memory is relevant we allow the prompt through unchanged.
     """
-    return bool(context.facts) and not any([
-        context.cache_hit,
-        context.working_mem,
-        context.enrichment,
-        context.episodic,
-        context.procedural,
-    ])
+    del request
+    return bool(context.facts) and not context.episodic
 
 
 
@@ -246,12 +206,8 @@ def _log_retrieval_metrics(
             "wake_up",
             action,
             session=request.session_id,
-            has_cache_hit=bool(context.cache_hit),
-            has_working_mem=bool(context.working_mem),
-            enrichment_count=len(context.enrichment),
             episodic_count=len(context.episodic),
             facts_count=len(context.facts),
-            procedural_count=len(context.procedural),
             est_tokens=est_tokens,
         )
     except Exception:

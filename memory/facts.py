@@ -6,6 +6,7 @@ import json
 import os
 import sys
 from collections.abc import Callable, Iterable
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -21,57 +22,59 @@ from memory.inference import (
 
 
 # Keep prompt version explicit so future prompt changes can be tracked in tests.
-_FACT_PROMPT_VERSION = "facts-v2"
+_FACT_PROMPT_VERSION = "facts-v4"
 
 
 # Seam so tests can inject a fake model call while production uses Ollama.
 GenerationFn = Callable[[GenerationRequest], GenerationResult]
 
 
-_FACTS_DEBUG_LOG_PATH = os.path.expanduser("~/.memory/facts_debug.log")
+_FACTS_LOG_PATH = os.path.expanduser("~/.memory/facts.log")
 
 
-def _facts_debug_enabled() -> bool:
-    return str(os.environ.get("MEMORY_DEBUG_FACTS", "")).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
+def _should_write_log_file() -> bool:
+    if os.environ.get("MEMORY_DISABLE_FILE_LOGS") == "1":
+        return False
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    if "pytest" in sys.modules:
+        return False
+    return True
+
+
+
+def log_fact_event(event: str, **payload) -> None:
+    """Append one JSON line to the retained facts log."""
+    if not _should_write_log_file():
+        return
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "event": event,
+        **payload,
     }
+    try:
+        os.makedirs(os.path.dirname(_FACTS_LOG_PATH), exist_ok=True)
+        with open(_FACTS_LOG_PATH, "a") as f:
+            f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        pass
+
 
 
 def _facts_debug_log(label: str, value: str) -> None:
-    """Emit opt-in debug output for fact extraction investigations.
-
-    When MEMORY_DEBUG_FACTS=1, logs are written to both stderr and a dedicated
-    file so developers can inspect extraction runs from the console or dashboard.
-    """
-    if not _facts_debug_enabled():
-        return
-
-    message = f"\n=== FACT DEBUG: {label} ===\n{value}\n"
-
-    try:
-        os.makedirs(os.path.dirname(_FACTS_DEBUG_LOG_PATH), exist_ok=True)
-        with open(_FACTS_DEBUG_LOG_PATH, "a") as f:
-            f.write(message)
-    except Exception:
-        pass
-
-    try:
-        sys.stderr.write(message)
-        sys.stderr.flush()
-    except Exception:
-        pass
+    log_fact_event(label, value=value)
 
 
 def _with_strict_json_retry(prompt: str) -> str:
     """Append a stricter reminder for one retry after a bad/ambiguous response."""
     return (
         f"{prompt}\n"
-        "Reminder: output only a JSON array. Do not emit request/action facts. "
-        "For personal profile facts, prefer entity=\"user\" with attributes like "
-        "name, location, timezone, role, company, editor, shell, package_manager, terminal."
+        "Reminder: output only a JSON array. Extract only stable user profile facts, "
+        "stable user preferences, and clearly stated durable project metadata. "
+        "Do not emit request/action facts. Never convert code-edit instructions, "
+        "file names, function names, CLI flags, bug reports, or current-session tasks into facts. "
+        "Do not emit facts about memory extraction policy, prompts, schema, logging, dashboard layout, "
+        "or daemon behavior. If unsure, return []."
     )
 
 
@@ -99,9 +102,9 @@ def _extract_user_lines(session_text: str) -> list[str]:
 def build_fact_extraction_prompt(session_text: str) -> str:
     """Build the pinned extraction prompt for durable facts.
 
-    The prompt is the main place where we steer the LLM toward stable,
-    fixture-friendly output: JSON array only, user-only facts, no action items,
-    and normalized entity/attribute naming.
+    Facts should be conservative: mostly stable user profile facts and stable
+    user preferences, with occasional explicit durable project metadata.
+    Session-specific work requests belong in episodic memory, not here.
     """
     user_lines = _extract_user_lines(session_text)
     # Rebuild a clean user-only transcript so assistant turns never reach the model.
@@ -111,21 +114,33 @@ def build_fact_extraction_prompt(session_text: str) -> str:
 
 Prompt version: {_FACT_PROMPT_VERSION}
 
+Definition of a valid fact:
+- A fact is stable, reusable knowledge that will likely still be useful in future unrelated sessions.
+- Most valid facts are about the user: identity, role, company, timezone, location, editor, shell, package manager, terminal, and stable preferences.
+- A stable preference includes recurring user preferences such as response style, tooling preference, or collaboration/workflow preference when the user states them explicitly.
+- Preferences about how this memory system should extract/store/log facts or episodes are not valid user facts.
+- Only extract non-user facts when the user explicitly states durable project metadata such as repo name or default branch.
+
 Rules:
 - Extract facts from USER messages only.
 - Ignore all assistant statements, guesses, and corrections.
 - Output a raw JSON array only. No prose. No markdown fences.
-- Every fact must include: entity, attribute, value.
-- Optional fields allowed: confidence, evidence, source_quote.
+- Every fact must include: entity, attribute, value, source_quote.
+- Optional fields allowed: confidence, evidence.
 - Use concise, normalized, stable entity names.
 - Use snake_case for attributes.
-- For personal profile facts, prefer entity "user".
+- For personal profile facts and user preferences, prefer entity "user".
 - Preserve the order of first appearance.
 - Deduplicate exact duplicates with the same entity, attribute, and value.
 - Keep conflicting facts when the entity and attribute are the same but the value differs.
-- Extract durable user-stated facts, not requests, questions, tasks, or temporary chatter.
-- One sentence can contain multiple facts; extract all durable facts it states.
-- Never turn a request like "Can you debug this?" into a fact.
+- Extract only explicit user-stated facts. Never infer missing facts.
+- Never copy values from examples into the output.
+- Do not extract requests, questions, tasks, TODOs, commands, implementation instructions, bug reports, or temporary plans.
+- Do not turn file names, function names, flags, or one-off code-change requests into facts.
+- Do not extract preferences about prompt wording, memory extraction policy, schema cleanup, logging, dashboard layout, or daemon behavior.
+- Facts should help in future unrelated conversations, not just improve this memory system itself.
+- If the transcript is mostly current-session work instructions, return [].
+- If unsure whether something is a durable fact, return [].
 - If the user says they work at a company as a role/title, extract both company and role.
 
 Examples:
@@ -141,17 +156,8 @@ User: My timezone is PST.
 User: Actually my timezone is EST.
 Output:
 [
-  {{"entity": "user", "attribute": "timezone", "value": "PST"}},
-  {{"entity": "user", "attribute": "timezone", "value": "EST"}}
-]
-
-Input:
-User: The repo name is agentic-memory.
-User: The default branch is main.
-Output:
-[
-  {{"entity": "repo", "attribute": "name", "value": "agentic-memory"}},
-  {{"entity": "repo", "attribute": "default_branch", "value": "main"}}
+  {{"entity": "user", "attribute": "timezone", "value": "PST", "source_quote": "My timezone is PST."}},
+  {{"entity": "user", "attribute": "timezone", "value": "EST", "source_quote": "Actually my timezone is EST."}}
 ]
 
 Input:
@@ -159,41 +165,63 @@ User: My editor is Neovim.
 User: My shell is zsh.
 Output:
 [
-  {{"entity": "user", "attribute": "editor", "value": "Neovim"}},
-  {{"entity": "user", "attribute": "shell", "value": "zsh"}}
+  {{"entity": "user", "attribute": "editor", "value": "Neovim", "source_quote": "My editor is Neovim."}},
+  {{"entity": "user", "attribute": "shell", "value": "zsh", "source_quote": "My shell is zsh."}}
 ]
 
 Input:
-User: My role is backend engineer.
-User: My company is Acme.
+User: I prefer concise answers.
 Output:
 [
-  {{"entity": "user", "attribute": "role", "value": "backend engineer"}},
-  {{"entity": "user", "attribute": "company", "value": "Acme"}}
+  {{"entity": "user", "attribute": "response_style", "value": "concise", "source_quote": "I prefer concise answers."}}
 ]
 
 Input:
 User: I work at Kroger as a Tech lead.
 Output:
 [
-  {{"entity": "user", "attribute": "company", "value": "Kroger"}},
-  {{"entity": "user", "attribute": "role", "value": "Tech lead"}}
+  {{"entity": "user", "attribute": "company", "value": "Kroger", "source_quote": "I work at Kroger as a Tech lead."}},
+  {{"entity": "user", "attribute": "role", "value": "Tech lead", "source_quote": "I work at Kroger as a Tech lead."}}
 ]
 
 Input:
-User: I'm a Tech lead at Kroger.
+User: The repo name is agentic-memory.
+User: The default branch is main.
 Output:
 [
-  {{"entity": "user", "attribute": "role", "value": "Tech lead"}},
-  {{"entity": "user", "attribute": "company", "value": "Kroger"}}
+  {{"entity": "repo", "attribute": "name", "value": "agentic-memory", "source_quote": "The repo name is agentic-memory."}},
+  {{"entity": "repo", "attribute": "default_branch", "value": "main", "source_quote": "The default branch is main."}}
 ]
 
 Input:
-User: I'm based in Seattle.
+User: Remove ObsoleteTables from db.py.
 Output:
-[
-  {{"entity": "user", "attribute": "location", "value": "Seattle"}}
-]
+[]
+
+Input:
+User: Make daemon run facts first, then episodic.
+Output:
+[]
+
+Input:
+User: Use --once as a force flag.
+Output:
+[]
+
+Input:
+User: Let's clean up the DB tables and run extraction.
+Output:
+[]
+
+Input:
+User: Facts should mostly be about the user and their preferences.
+Output:
+[]
+
+Input:
+User: Please do not store schema cleanup instructions as facts.
+Output:
+[]
 
 Input:
 User: Thanks for the help.

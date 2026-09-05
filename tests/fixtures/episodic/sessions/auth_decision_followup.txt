@@ -1,0 +1,3 @@
+User: We decided to move token validation into shared auth middleware instead of keeping it inside the login handler.
+Assistant: I updated the middleware and reran the login flow.
+User: Great, the login loop is gone now. Next session add regression tests for this path.

@@ -1,0 +1,4 @@
+User: We rolled back the API deploy after the service started returning 500s.
+Assistant: The root cause was a missing STRIPE_WEBHOOK_SECRET environment variable.
+User: We added a startup guard so production will fail fast next time.
+Assistant: Tomorrow verify the new guard in staging before redeploying.

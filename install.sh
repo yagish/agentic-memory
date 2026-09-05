@@ -5,8 +5,8 @@ set -euo pipefail
 INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON3_EXEC="$(python3 -c 'import sys; print(sys.executable)' 2>/dev/null || command -v python3)"
 
-# --uninstall: remove hooks, MCP entry, and launchd plists that point to this
-# INSTALL_DIR.  Data in ~/.memory/ is always preserved.
+# --uninstall: remove hooks and launchd plists that point to this
+# INSTALL_DIR. Data in ~/.memory/ is always preserved.
 if [ "${1:-}" = "--uninstall" ]; then
     echo "Uninstalling agentic-memory..."
 
@@ -44,24 +44,6 @@ if os.path.exists(SETTINGS_PATH):
     print(f"  - Removed UserPromptSubmit hook: {r2} entr{'y' if r2==1 else 'ies'}")
 PYEOF
 
-    # Remove MCP entry
-    python3 << PYEOF
-import json, os
-INSTALL_DIR = os.environ["INSTALL_DIR"]
-MCP_PATH = os.path.expanduser("~/.claude/mcp.json")
-if os.path.exists(MCP_PATH):
-    with open(MCP_PATH) as f:
-        mcp = json.load(f)
-    servers = mcp.get("mcpServers", {})
-    if "memory" in servers and INSTALL_DIR in str(servers["memory"].get("args", [])):
-        del servers["memory"]
-        with open(MCP_PATH, "w") as f:
-            json.dump(mcp, f, indent=2)
-        print("  - Removed MCP server 'memory'")
-    else:
-        print("  = MCP server 'memory' not found or points elsewhere (no change)")
-PYEOF
-
     # Unload and remove launchd plists
     for LABEL in com.memory.daemon com.memory.ingest com.memory.query; do
         PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
@@ -97,15 +79,13 @@ echo "Python 3 executable: $PYTHON3_EXEC"
 # ── Step 2: Python dependencies ─────────────────────────────────────────────
 echo ""
 echo "Installing Python dependencies into the same interpreter used by hooks/services..."
-"$PYTHON3_EXEC" -m pip install --quiet --user mcp fastmcp sentence-transformers fastapi uvicorn pydantic psutil setproctitle debugpy
+"$PYTHON3_EXEC" -m pip install --quiet --user sentence-transformers fastapi uvicorn pydantic psutil setproctitle debugpy
 "$PYTHON3_EXEC" - << 'PYEOF'
 import importlib
 mods = [
     "sentence_transformers",
     "fastapi",
     "uvicorn",
-    "mcp",
-    "fastmcp",
     "pydantic",
     "psutil",
     "setproctitle",
@@ -261,34 +241,9 @@ else:
     print(f"  = UserPromptSubmit hook already present (no change)")
 PYEOF
 
-# ── Step 7: MCP server ───────────────────────────────────────────────────────
+# ── Step 7: launchd — background daemon ─────────────────────────────────────
 echo ""
-echo "Configuring ~/.claude/mcp.json..."
-export INSTALL_DIR PYTHON3_EXEC
-python3 << PYEOF
-import json, os
-MCP_PATH = os.path.expanduser("~/.claude/mcp.json")
-INSTALL_DIR = os.environ["INSTALL_DIR"]
-PYTHON3_EXEC = os.environ["PYTHON3_EXEC"]
-if os.path.exists(MCP_PATH):
-    with open(MCP_PATH) as f:
-        mcp = json.load(f)
-else:
-    mcp = {}
-servers = mcp.setdefault("mcpServers", {})
-server_path = f"{INSTALL_DIR}/memory/mcp_server.py"
-if "memory" in servers and servers["memory"].get("command") == PYTHON3_EXEC and servers["memory"].get("args") == [server_path]:
-    print("  = MCP server 'memory' already registered (no change)")
-else:
-    servers["memory"] = {"command": PYTHON3_EXEC, "args": [server_path]}
-    with open(MCP_PATH, "w") as f:
-        json.dump(mcp, f, indent=2)
-    print(f"  + Registered MCP server 'memory': {server_path}")
-PYEOF
-
-# ── Step 8: launchd — background daemon ─────────────────────────────────────
-echo ""
-echo "Installing background daemon (auto-extracts facts, builds insights)..."
+echo "Installing background daemon (auto-extracts facts and episodes)..."
 
 # Capture the user site-packages path so we can inject it into launchd's env.
 # launchd runs with a minimal environment and doesn't add --user site-packages
@@ -429,7 +384,7 @@ echo "  Query server:     port 7748 — dashboard at http://localhost:7748"
 echo "================================================================"
 echo ""
 echo "One step remaining:"
-echo "  Restart your AI coding assistant for hooks and MCP server to take effect."
+echo "  Restart your AI coding assistant for hooks to take effect."
 echo ""
 echo "  After that — every session is saved automatically."
 echo "  Dashboard: http://localhost:7748"

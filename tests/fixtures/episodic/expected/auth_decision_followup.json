@@ -1,0 +1,7 @@
+{
+  "title_contains": ["auth", "middleware"],
+  "abstract_contains": ["login loop", "fixed"],
+  "decisions_contains": ["shared auth middleware"],
+  "outcomes_contains": ["login loop"],
+  "follow_ups_contains": ["regression tests"]
+}

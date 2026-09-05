@@ -31,22 +31,15 @@ from memory.debug import enable_debug
 # Where the memory database lives on disk.
 DB_PATH = os.path.expanduser("~/.memory/memory.db")
 
-# Log file — INFO on success, ERROR on failure.
-LOG_PATH = os.path.expanduser("~/.memory/save_hook.log")
-
-
 def _setup_logging() -> None:
-    """
-    Configure the logging module to write to LOG_PATH.
+    """Configure stderr-only logging.
 
-    Creates the ~/.memory directory if it doesn't exist yet.
-    Each log line looks like: 2026-08-16T10:00:00 INFO saved session abc (12 turns)
+    Save-hook file logging was removed so only facts, episodic, and daemon
+    logs remain on disk.
     """
-    os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
     logging.basicConfig(
-        filename=LOG_PATH,
+        stream=sys.stderr,
         level=logging.INFO,
-        # %(asctime)s = timestamp, %(levelname)s = INFO/ERROR, %(message)s = our text
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
@@ -206,24 +199,9 @@ def save_session(payload: dict, dry_run: bool = False) -> None:
     activity_log("save_hook", "upsert_session", session=session_id, turns=outcome.turn_count)
 
     warning_by_stage = {warning.stage: warning for warning in outcome.warnings}
-
-    if outcome.embedding_stored:
-        logging.info("stored embedding for session %s", session_id)
-        activity_log("save_hook", "embedding", session=session_id, status="ok")
-    elif "embedding" in warning_by_stage:
-        logging.warning("embedding skipped: %s", warning_by_stage["embedding"].message)
-        activity_log("save_hook", "embedding", session=session_id, status="skipped_error")
-        error_log("save_hook", f"embedding failed for session {session_id}: {warning_by_stage['embedding'].message}")
-    else:
-        activity_log("save_hook", "embedding", session=session_id, status="skipped_empty")
-
-    if "chunking" in warning_by_stage:
-        logging.warning("chunking skipped: %s", warning_by_stage["chunking"].message)
-        activity_log("save_hook", "chunking", session=session_id, status="skipped_error")
-        error_log("save_hook", f"chunking failed for session {session_id}: {warning_by_stage['chunking'].message}")
-    else:
-        logging.info("saved %d chunks for session %s", outcome.chunk_count, session_id)
-        activity_log("save_hook", "chunking", session=session_id, chunks=outcome.chunk_count, status="ok")
+    for warning in warning_by_stage.values():
+        logging.warning("%s skipped: %s", warning.stage, warning.message)
+        error_log("save_hook", f"{warning.stage} failed for session {session_id}: {warning.message}")
 
     conn.close()
 

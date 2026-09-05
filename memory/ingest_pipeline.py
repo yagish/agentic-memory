@@ -8,14 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from memory.db import (
-    cache_session_responses,
-    chunk_transcript,
-    delete_chunks_for_session,
-    store_chunk,
-    store_embedding,
-    upsert_session,
-)
+from memory.db import upsert_session
 from memory.inference import embed_text
 
 
@@ -49,12 +42,13 @@ def ingest_session(
     metadata: dict | None = None,
     embed_fn=embed_text,
 ) -> IngestOutcome:
-    """Store a session, its full-session embedding, and its chunk embeddings.
+    """Store a session only.
 
-    Session storage is authoritative. Embedding and chunking failures are treated as
-    non-fatal warnings so adapters can keep user-facing flows unblocked.
+    The database was simplified to keep just sessions, facts, and episodic
+    memory. Session ingest therefore persists the transcript and skips the old
+    response-cache/chunk/session-vector side tables.
     """
-    warnings: list[IngestWarning] = []
+    del embed_fn
 
     upsert_session(
         conn,
@@ -65,37 +59,11 @@ def ingest_session(
         updated_at=updated_at,
         metadata=metadata,
     )
-    cache_session_responses(conn, session_id, turns)
-
-    embedding_stored = False
-    full_text = " ".join(
-        turn.get("content", "")
-        for turn in turns
-        if isinstance(turn.get("content"), str)
-    ).strip()
-
-    if full_text:
-        try:
-            store_embedding(conn, session_id, embed_fn(full_text))
-            embedding_stored = True
-        except Exception as exc:
-            warnings.append(IngestWarning("embedding", str(exc)))
-
-    chunk_count = 0
-    try:
-        chunk_texts = chunk_transcript(turns)
-        delete_chunks_for_session(conn, session_id)
-        for chunk_index, chunk_text in enumerate(chunk_texts):
-            chunk_vector = embed_fn(chunk_text) if chunk_text.strip() else None
-            store_chunk(conn, session_id, chunk_index, chunk_text, chunk_vector)
-        chunk_count = len(chunk_texts)
-    except Exception as exc:
-        warnings.append(IngestWarning("chunking", str(exc)))
 
     return IngestOutcome(
         session_id=session_id,
         turn_count=len(turns),
-        chunk_count=chunk_count,
-        embedding_stored=embedding_stored,
-        warnings=warnings,
+        chunk_count=0,
+        embedding_stored=False,
+        warnings=[],
     )

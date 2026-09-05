@@ -1,939 +1,193 @@
-# cli.py — command-line tool for inspecting the memory database.
-#
-# Usage:
-#   python3 cli.py status              # session count, turn count, date range
-#   python3 cli.py search "query"      # FTS5 keyword search
-#   python3 cli.py semantic "query"    # semantic (vector) search
-#   python3 cli.py get-session <id>    # print full transcript
-#   python3 cli.py tail [N]            # last N sessions (default 10)
-#   python3 cli.py dashboard           # open the live dashboard (query server)
+"""Minimal command-line tool for the simplified memory database."""
 
-import argparse      # parses command-line arguments (the words after "python3 cli.py")
-import json          # for pretty-printing dicts
+from __future__ import annotations
+
+import argparse
+import json
 import os
-import subprocess    # for launching the daemon as a background process
 import sys
-import webbrowser    # opens the dashboard HTML in the default browser
+import webbrowser
 
-# Add the project root to the module search path so we can import memory.db.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import re
-
-from memory.db import bootstrap_db, open_db, search, semantic_search, insert_fact, delete_fact
-from memory.consolidation import consolidate_old_sessions, prune_old_transcripts
+from memory.db import (
+    bootstrap_db,
+    delete_fact,
+    insert_fact,
+    open_db,
+    search,
+    semantic_search,
+)
 from memory.debug import enable_debug
 
 
-# Where the database lives — must match the hook and MCP server.
 DB_PATH = os.path.expanduser("~/.memory/memory.db")
-
-# Legacy static dashboard path kept for compatibility; the live dashboard is served on :7748.
-DASHBOARD_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
+DASHBOARD_URL = "http://127.0.0.1:7748"
 
 
 def get_conn():
-    """Open the memory database. Exits with a clear message if it doesn't exist yet."""
     if not os.path.exists(DB_PATH) or os.path.getsize(DB_PATH) == 0:
         print("No memory database found at", DB_PATH)
-        print("Run: python3 cli.py bootstrap  (or start a Claude Code session to create it).")
+        print("Run: python3 cli.py bootstrap")
         sys.exit(1)
     return open_db(DB_PATH)
 
 
-# ---------------------------------------------------------------------------
-# Command: status
-# ---------------------------------------------------------------------------
-
-def _get_token_economics(conn):
-    """
-    Query the retrievals table for injection and retrieval token totals.
-
-    Returns a dict with:
-      injection_total   — sum of est. tokens injected by wake_up_injection rows
-      retrieval_total   — sum of est. tokens returned by MCP tool calls
-      coverage_ratio    — retrieval_total / injection_total, or None if no injections
-      injection_count   — number of wake-up injection events recorded
-      retrieval_count   — number of distinct MCP tool queries recorded
-    """
-    # Total estimated tokens injected via wake-up (all 'wake_up_injection' rows).
-    row = conn.execute(
-        "SELECT COALESCE(SUM(result_size), 0) FROM retrievals WHERE tool = 'wake_up_injection'"
-    ).fetchone()
-    injection_total = row[0]
-
-    # Total estimated tokens returned by MCP tool calls (everything that is NOT
-    # a wake-up injection).
-    row = conn.execute(
-        "SELECT COALESCE(SUM(result_size), 0) FROM retrievals WHERE tool != 'wake_up_injection'"
-    ).fetchone()
-    retrieval_total = row[0]
-
-    # Coverage ratio: how much context was retrieved per token injected.
-    # A ratio >= 1.0 means retrievals returned at least as much context as was injected.
-    if injection_total > 0:
-        coverage_ratio = retrieval_total / injection_total
-    else:
-        # No injections recorded yet — ratio is undefined.
-        coverage_ratio = None
-
-    # Count how many wake-up injection events are recorded (proxy for sessions seen).
-    row2 = conn.execute(
-        "SELECT COUNT(*) FROM retrievals WHERE tool = 'wake_up_injection'"
-    ).fetchone()
-    injection_count = row2[0]
-
-    # Count how many distinct MCP tool queries have been logged.
-    row3 = conn.execute(
-        "SELECT COUNT(DISTINCT query) FROM retrievals WHERE tool != 'wake_up_injection'"
-    ).fetchone()
-    retrieval_count = row3[0]
-
-    return {
-        "injection_total":  injection_total,
-        "retrieval_total":  retrieval_total,
-        "coverage_ratio":   coverage_ratio,
-        "injection_count":  injection_count,
-        "retrieval_count":  retrieval_count,
-    }
+def cmd_bootstrap(_args):
+    conn = bootstrap_db(DB_PATH)
+    conn.close()
+    print("Bootstrapped", DB_PATH)
 
 
 def cmd_status(_args):
-    """Print a summary of everything stored in the database."""
     conn = get_conn()
-
-    total_sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-    total_turns    = conn.execute("SELECT COALESCE(SUM(turn_count), 0) FROM sessions").fetchone()[0]
-    date_row       = conn.execute("SELECT MIN(updated_at), MAX(updated_at) FROM sessions").fetchone()
-    total_vecs     = conn.execute("SELECT COUNT(*) FROM session_vecs").fetchone()[0]
-    total_retrievals = conn.execute("SELECT COUNT(*) FROM retrievals").fetchone()[0]
-
-    # Estimate token count: average English word is ~4-5 characters, roughly 4 chars per token.
-    # We sum the length of all stored transcripts for a rough estimate.
-    char_count = conn.execute(
-        "SELECT COALESCE(SUM(LENGTH(transcript)), 0) FROM sessions"
-    ).fetchone()[0]
-    estimated_tokens = char_count // 4
-
-    # Gather token economics data before closing the connection.
-    # We wrap in try/except so a missing or empty table never crashes status.
-    try:
-        econ = _get_token_economics(conn)
-    except Exception:
-        econ = None
-
+    row = conn.execute(
+        "SELECT COUNT(*) AS sessions, COALESCE(SUM(turn_count), 0) AS turns, MIN(updated_at) AS oldest, MAX(updated_at) AS newest FROM sessions"
+    ).fetchone()
+    facts = conn.execute("SELECT COUNT(*) AS c FROM facts").fetchone()["c"]
+    episodes = conn.execute("SELECT COUNT(*) AS c FROM episodic_memory").fetchone()["c"]
     conn.close()
 
     print("=== Memory Status ===")
-    print(f"  Sessions stored   : {total_sessions}")
-    print(f"  Turns stored      : {total_turns}")
-    print(f"  Embeddings stored : {total_vecs}")
-    print(f"  Tokens (estimated): {estimated_tokens:,}")
-    print(f"  Retrievals logged : {total_retrievals}")
-    print(f"  Oldest session    : {date_row[0] or 'none'}")
-    print(f"  Newest session    : {date_row[1] or 'none'}")
+    print(f"Sessions : {row['sessions']}")
+    print(f"Turns    : {row['turns']}")
+    print(f"Facts    : {facts}")
+    print(f"Episodes : {episodes}")
+    print(f"Oldest   : {row['oldest'] or 'none'}")
+    print(f"Newest   : {row['newest'] or 'none'}")
 
-    # Token economics section — shows injection overhead vs. retrieval yield.
-    if econ is not None:
-        print("\n=== Token Economics ===")
-        print(f"  Wake-up injections:    {econ['injection_count']} sessions")
-        print(f"  Est. tokens injected:  {econ['injection_total']:,}")
-        print(f"  Est. tokens retrieved: {econ['retrieval_total']:,}")
-        if econ['coverage_ratio'] is not None:
-            # Format as a decimal ratio and a percentage (e.g. 1.25x  125%).
-            ratio_pct = econ['coverage_ratio'] * 100
-            print(f"  Coverage ratio:        {econ['coverage_ratio']:.2f}x ({ratio_pct:.0f}%)")
-            # Plain-English sentence so readers do not have to interpret the number.
-            if econ['coverage_ratio'] >= 1.0:
-                interp = "retrievals returned more context than was injected"
-            elif econ['coverage_ratio'] >= 0.5:
-                interp = "retrievals cover about half of injection overhead"
-            else:
-                interp = "retrievals cover less than half of injection overhead"
-            print(f"  Interpretation:        {interp}")
-        else:
-            print(f"  Coverage ratio:        N/A (no injections recorded yet)")
-
-
-# ---------------------------------------------------------------------------
-# Command: search
-# ---------------------------------------------------------------------------
 
 def cmd_search(args):
-    """Full-text keyword search across all transcripts."""
     conn = get_conn()
     results = search(conn, args.query, limit=args.limit)
     conn.close()
-
     if not results:
         print(f"No results for: {args.query!r}")
         return
+    for index, row in enumerate(results, start=1):
+        print(f"[{index}] {row['session_id']}  {row['updated_at']}")
+        print(f"    {row['snippet']}")
 
-    print(f"Found {len(results)} result(s) for: {args.query!r}\n")
-    for i, r in enumerate(results, 1):
-        print(f"[{i}] {r['session_id']}")
-        print(f"     Updated : {r['updated_at']}")
-        # The snippet has matching words wrapped in [square brackets].
-        print(f"     Excerpt : {r['snippet']}")
-        print()
-
-
-# ---------------------------------------------------------------------------
-# Command: semantic
-# ---------------------------------------------------------------------------
 
 def cmd_semantic(args):
-    """Semantic (vector) search — finds sessions by meaning, not exact words."""
     conn = get_conn()
     results = semantic_search(conn, args.query, limit=args.limit)
     conn.close()
-
     if not results:
         print(f"No results for: {args.query!r}")
         return
+    for index, row in enumerate(results, start=1):
+        similarity = round((1 - row['distance'] / 2) * 100, 1)
+        print(f"[{index}] {row['session_id']}  {row['updated_at']}  similarity={similarity}%")
 
-    print(f"Found {len(results)} result(s) for: {args.query!r}\n")
-    for i, r in enumerate(results, 1):
-        # Distance is cosine distance: 0.0 = identical, 2.0 = opposite.
-        # We convert to a similarity percentage for readability.
-        similarity = round((1 - r['distance'] / 2) * 100, 1)
-        print(f"[{i}] {r['session_id']}")
-        print(f"     Updated    : {r['updated_at']}")
-        print(f"     Similarity : {similarity}%  (distance={r['distance']:.4f})")
-        print()
-
-
-# ---------------------------------------------------------------------------
-# Command: get-session
-# ---------------------------------------------------------------------------
 
 def cmd_get_session(args):
-    """Print the full verbatim transcript for one session."""
     conn = get_conn()
-
     row = conn.execute(
-        "SELECT session_id, agent, started_at, updated_at, turn_count, transcript "
-        "FROM sessions WHERE session_id = ?",
+        "SELECT session_id, agent, started_at, updated_at, turn_count, transcript FROM sessions WHERE session_id = ?",
         (args.session_id,),
     ).fetchone()
     conn.close()
-
     if row is None:
         print(f"Session not found: {args.session_id}")
         sys.exit(1)
+    print(json.dumps({key: row[key] for key in row.keys()}, indent=2))
 
-    print(f"=== Session: {row['session_id']} ===")
-    print(f"Agent      : {row['agent']}")
-    print(f"Started    : {row['started_at']}")
-    print(f"Updated    : {row['updated_at']}")
-    print(f"Turns      : {row['turn_count']}")
-    print()
-
-    # json.loads converts the stored JSON string back into a Python list of dicts.
-    turns = json.loads(row["transcript"])
-    for turn in turns:
-        role = turn.get("role", "?").upper()
-        content = turn.get("content", "")
-        print(f"[{role}]")
-        print(content)
-        print()
-
-
-# ---------------------------------------------------------------------------
-# Command: tail
-# ---------------------------------------------------------------------------
 
 def cmd_tail(args):
-    """Print a summary of the last N sessions."""
     conn = get_conn()
-
     rows = conn.execute(
-        """
-        SELECT session_id, updated_at, turn_count, transcript
-        FROM sessions
-        ORDER BY updated_at DESC
-        LIMIT ?
-        """,
+        "SELECT session_id, updated_at, turn_count, transcript FROM sessions ORDER BY updated_at DESC LIMIT ?",
         (args.n,),
     ).fetchall()
     conn.close()
-
-    if not rows:
-        print("No sessions stored yet.")
-        return
-
-    print(f"=== Last {len(rows)} session(s) ===\n")
-    for i, row in enumerate(rows, 1):
-        # Extract the first user message as a preview.
+    for row in rows:
         try:
-            turns = json.loads(row["transcript"])
-            first_user = next((t["content"] for t in turns if t.get("role") == "user"), "")
-            preview = first_user[:80].replace("\n", " ")
+            transcript = json.loads(row["transcript"] or "[]")
+            preview = next((turn.get("content", "") for turn in transcript if turn.get("role") == "user"), "")
         except Exception:
             preview = ""
-
-        print(f"[{i}] {row['session_id']}")
-        print(f"     Updated : {row['updated_at']}")
-        print(f"     Turns   : {row['turn_count']}")
-        print(f"     Preview : {preview}")
-        print()
+        print(f"{row['updated_at']}  {row['session_id']}  turns={row['turn_count']}")
+        print(f"    {preview[:140]}")
 
 
-# ---------------------------------------------------------------------------
-# Command: dashboard
-# ---------------------------------------------------------------------------
+def cmd_add_fact(args):
+    conn = bootstrap_db(DB_PATH)
+    try:
+        fact_id = insert_fact(conn, args.content, tags=args.tags, source="manual", session_id=args.session_id)
+    finally:
+        conn.close()
+    print(fact_id)
+
+
+def cmd_delete_fact(args):
+    conn = get_conn()
+    try:
+        ok = delete_fact(conn, args.fact_id)
+    finally:
+        conn.close()
+    if not ok:
+        print(f"Fact not found: {args.fact_id}")
+        sys.exit(1)
+    print("deleted")
+
 
 def cmd_dashboard(_args):
-    """Open the live dashboard served by memory/dashboard_server.py."""
-    url = os.environ.get("MEMORY_DASHBOARD_URL", "http://localhost:7748")
-    print(f"Opening dashboard: {url}")
-    print("If it does not load, start the query server: python3 memory/dashboard_server.py")
-    webbrowser.open(url)
+    webbrowser.open(DASHBOARD_URL)
+    print(DASHBOARD_URL)
 
 
-# ---------------------------------------------------------------------------
-# Command: logs
-# ---------------------------------------------------------------------------
-
-# Paths for the two structured log files written by memory.logger.
-ACTIVITY_LOG_PATH = os.path.expanduser("~/.memory/activity.log")
-ERROR_LOG_PATH    = os.path.expanduser("~/.memory/error.log")
-
-
-def cmd_logs(args):
-    """Print the last N lines of activity.log or error.log."""
-    # Choose which log file to read based on the --errors flag.
-    path = ERROR_LOG_PATH if args.errors else ACTIVITY_LOG_PATH
-    label = "error" if args.errors else "activity"
-
-    if not os.path.exists(path):
-        print(f"No {label} log found at {path}")
-        print("The log is created automatically once the memory system runs.")
-        return
-
-    # Read all lines and slice to the last N.
-    with open(path, "r") as f:
-        lines = f.readlines()
-
-    tail = lines[-args.tail:]  # last N lines
-
-    print(f"=== {label}.log (last {len(tail)} lines) ===\n")
-    print("".join(tail), end="")
-
-
-# ---------------------------------------------------------------------------
-# Command: consolidate (Phase 12)
-# ---------------------------------------------------------------------------
-
-def cmd_consolidate(args):
-    """Summarise sessions older than --days days using local ollama."""
-    # Open the database (exits with a clear message if it doesn't exist).
-    conn = get_conn()
-
-    # Call the consolidation function which does the heavy lifting.
-    # dry_run=True means nothing is written — just printed.
-    result = consolidate_old_sessions(conn, days_threshold=args.days, dry_run=args.dry_run)
-    conn.close()
-
-    # Print a human-readable summary of what was done.
-    # result["summarised"] is the count of sessions that got a new summary.
-    # result["skipped"] covers dry-run entries, errors, and empty transcripts.
-    print(f"Summarised {result['summarised']} sessions. "
-          f"Skipped {result['skipped']} (already done, empty, or error).")
-
-
-# ---------------------------------------------------------------------------
-# Command: prune (Phase 12)
-# ---------------------------------------------------------------------------
-
-def cmd_prune(args):
-    """Null out raw transcripts for summarised sessions older than --days days."""
-    # Open the database (exits with a clear message if it doesn't exist).
-    conn = get_conn()
-
-    # Call the prune function. Only sessions with an existing summary are pruned.
-    result = prune_old_transcripts(conn, days_threshold=args.days, dry_run=args.dry_run)
-    conn.close()
-
-    # Print how many transcripts were cleared.
-    print(f"Pruned transcripts for {result['pruned']} sessions.")
-
-
-# ---------------------------------------------------------------------------
-# Command: daemon (Phase 13)
-# ---------------------------------------------------------------------------
-
-# Paths for the daemon PID file and log file.
-_DAEMON_PID_PATH = os.path.expanduser("~/.memory/daemon.pid")
-_DAEMON_LOG_CLI_PATH = os.path.expanduser("~/.memory/daemon.log")
-
-# Absolute path to the daemon script — constructed from this file's location.
-_DAEMON_SCRIPT = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "memory", "daemon.py"
-)
-
-# ---------------------------------------------------------------------------
-# Command: ingest-server (Phase 16)
-# ---------------------------------------------------------------------------
-
-# Paths for the ingest server PID file and log file.
-_INGEST_PID_PATH = os.path.expanduser("~/.memory/ingest.pid")
-_INGEST_LOG_PATH  = os.path.expanduser("~/.memory/ingest.log")
-
-# Absolute path to the ingest server script — constructed from this file's location.
-_INGEST_SCRIPT = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "memory", "ingest_server.py"
-)
-
-# Port the ingest server listens on — must match ingest_server.py default.
-_INGEST_PORT = int(os.environ.get("MEMORY_INGEST_PORT", "7747"))
-
-
-def _read_ingest_pid() -> int | None:
-    """
-    Read the ingest server PID from ~/.memory/ingest.pid.
-
-    Returns the PID as an integer, or None if the file doesn't exist or
-    contains an invalid value (e.g. leftover from a previous crash).
-    """
-    if not os.path.exists(_INGEST_PID_PATH):
-        return None
-    try:
-        with open(_INGEST_PID_PATH, "r") as f:
-            return int(f.read().strip())
-    except (ValueError, OSError):
-        # File exists but content is not a valid integer — treat as absent.
-        return None
-
-
-def cmd_ingest_server(args):
-    """
-    Manage the HTTP ingest server (Phase 16).
-
-    Subcommands:
-      start   — launch the server in the background, write PID to ~/.memory/ingest.pid
-      stop    — read PID file and send SIGTERM to the server
-      status  — print whether the server is running, its PID, and the port
-    """
-    import signal as sig_mod  # imported locally to avoid shadowing the built-in signal
-
-    # Ensure the ~/.memory directory exists before writing PID/log files.
-    os.makedirs(os.path.expanduser("~/.memory"), exist_ok=True)
-
-    # Read the positional subcommand (start | stop | status).
-    sub = getattr(args, "ingest_sub", None)
-
-    if sub == "start":
-        # --- Check if already running ---
-        pid = _read_ingest_pid()
-        if pid is not None and _is_process_running(pid):
-            print(f"Ingest server is already running (PID {pid}, port {_INGEST_PORT}).")
-            return
-
-        # Open the log file in append mode so previous logs are preserved.
-        log_file = open(_INGEST_LOG_PATH, "a")
-
-        # Popen launches the server as a detached background process.
-        # stdout and stderr both go to the shared log file.
-        proc = subprocess.Popen(
-            [sys.executable, _INGEST_SCRIPT],
-            stdout=log_file,
-            stderr=log_file,
-            # start_new_session=True detaches the server from the current terminal
-            # so it keeps running after the shell exits.
-            start_new_session=True,
-        )
-
-        # Write the PID so stop/status can find the process later.
-        with open(_INGEST_PID_PATH, "w") as f:
-            f.write(str(proc.pid))
-
-        print(f"Ingest server started (PID {proc.pid}, port {_INGEST_PORT}).")
-        print(f"Log: {_INGEST_LOG_PATH}")
-
-    elif sub == "stop":
-        # --- Stop the server by sending SIGTERM ---
-        pid = _read_ingest_pid()
-        if pid is None:
-            print("Ingest server is not running (no PID file found).")
-            return
-
-        if not _is_process_running(pid):
-            print(f"Ingest server PID {pid} is not running. Cleaning up stale PID file.")
-            os.unlink(_INGEST_PID_PATH)
-            return
-
-        try:
-            # SIGTERM asks the server to shut down gracefully.
-            os.kill(pid, sig_mod.SIGTERM)
-            print(f"Sent SIGTERM to ingest server (PID {pid}).")
-            # Remove the PID file — we expect the process to exit shortly.
-            os.unlink(_INGEST_PID_PATH)
-        except OSError as exc:
-            print(f"Failed to stop ingest server (PID {pid}): {exc}")
-
-    elif sub == "status":
-        # --- Show whether the server is running ---
-        pid = _read_ingest_pid()
-        if pid is None:
-            print("Ingest server status: stopped (no PID file).")
-            return
-
-        if _is_process_running(pid):
-            print(f"Ingest server status: running (PID {pid}, port {_INGEST_PORT}).")
-        else:
-            print(f"Ingest server status: stopped (PID {pid} is no longer alive).")
-            # Clean up the stale PID file.
-            os.unlink(_INGEST_PID_PATH)
-
-    else:
-        # Unknown or missing subcommand — print usage help.
-        print("Usage: python3 cli.py ingest-server <start|stop|status>")
-
-
-def _read_pid() -> int | None:
-    """
-    Read the daemon PID from ~/.memory/daemon.pid.
-
-    Returns the PID as an integer, or None if the file doesn't exist or
-    is not a valid integer (e.g. if it was left over from a crash).
-    """
-    # If the PID file doesn't exist, the daemon is not running (or was never started).
-    if not os.path.exists(_DAEMON_PID_PATH):
-        return None
-    try:
-        with open(_DAEMON_PID_PATH, "r") as f:
-            return int(f.read().strip())
-    except (ValueError, OSError):
-        # File exists but content is not a valid integer — treat as absent.
-        return None
-
-
-def _is_process_running(pid: int) -> bool:
-    """
-    Check whether a process with the given PID is currently alive.
-
-    Uses os.kill(pid, 0) which sends no signal but raises OSError if
-    the process does not exist or we lack permission to signal it.
-
-    Args:
-        pid — the process ID to check
-
-    Returns:
-        True if the process is running, False otherwise.
-    """
-    try:
-        # Signal 0 checks process existence without sending a real signal.
-        os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError):
-        return False
-
-
-def cmd_daemon(args):
-    """
-    Manage the background relearning daemon.
-
-    Subcommands:
-      start   — launch the daemon in the background, write PID to ~/.memory/daemon.pid
-      stop    — read PID file and send SIGTERM to the daemon
-      status  — print whether the daemon is running and its PID
-      --once  — run one processing pass and exit (useful for testing)
-    """
-    import signal as sig_mod  # imported locally to avoid shadowing built-in signal
-
-    # Ensure the ~/.memory directory exists before writing PID/log files.
-    os.makedirs(os.path.expanduser("~/.memory"), exist_ok=True)
-
-    sub = getattr(args, "daemon_sub", None)
-
-    if sub == "start" or getattr(args, "daemon_once", False):
-        # --- Handle --once mode: run directly in this process and exit ---
-        if getattr(args, "daemon_once", False):
-            # Import and run the daemon synchronously — useful for CI and manual tests.
-            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-            from memory.daemon import run as daemon_run
-            print("Running daemon in --once mode…")
-            daemon_run(once=True)
-            print("Done.")
-            return
-
-        # --- Start the daemon as a background process ---
-        pid = _read_pid()
-        if pid is not None and _is_process_running(pid):
-            print(f"Daemon is already running (PID {pid}).")
-            return
-
-        # Open the log file in append mode for stdout and stderr.
-        log_file = open(_DAEMON_LOG_CLI_PATH, "a")
-
-        # Popen launches the daemon as a separate process.
-        # The daemon's stdout and stderr both go to the shared log file.
-        proc = subprocess.Popen(
-            [sys.executable, _DAEMON_SCRIPT],
-            stdout=log_file,
-            stderr=log_file,
-            # start_new_session=True detaches the daemon from the current terminal
-            # so it keeps running after the shell exits.
-            start_new_session=True,
-        )
-
-        # Write the PID so stop/status can find the process later.
-        with open(_DAEMON_PID_PATH, "w") as f:
-            f.write(str(proc.pid))
-
-        print(f"Daemon started (PID {proc.pid}). Log: {_DAEMON_LOG_CLI_PATH}")
-
-    elif sub == "stop":
-        # --- Stop the daemon by sending SIGTERM ---
-        pid = _read_pid()
-        if pid is None:
-            print("Daemon is not running (no PID file found).")
-            return
-
-        if not _is_process_running(pid):
-            print(f"Daemon PID {pid} is not running. Cleaning up stale PID file.")
-            os.unlink(_DAEMON_PID_PATH)
-            return
-
-        try:
-            # Send SIGTERM — the daemon's signal handler will set _shutdown=True
-            # and the loop will exit cleanly after the current session.
-            os.kill(pid, sig_mod.SIGTERM)
-            print(f"Sent SIGTERM to daemon (PID {pid}).")
-            # Remove the PID file since we expect the daemon to exit shortly.
-            os.unlink(_DAEMON_PID_PATH)
-        except OSError as exc:
-            print(f"Failed to stop daemon (PID {pid}): {exc}")
-
-    elif sub == "status":
-        # --- Show whether the daemon is running ---
-        pid = _read_pid()
-        if pid is None:
-            print("Daemon status: stopped (no PID file).")
-            return
-
-        if _is_process_running(pid):
-            print(f"Daemon status: running (PID {pid}).")
-            # Show how many sessions were processed today by counting processed sessions
-            # from the database.
-            if os.path.exists(DB_PATH):
-                conn = open_db(DB_PATH)
-                today = __import__("datetime").date.today().isoformat()
-                count = conn.execute(
-                    """
-                    SELECT COUNT(*) FROM sessions
-                    WHERE daemon_processed_at IS NOT NULL
-                      AND daemon_processed_at >= ?
-                    """,
-                    (today,),
-                ).fetchone()[0]
-                conn.close()
-                print(f"Sessions processed today: {count}")
-        else:
-            print(f"Daemon status: stopped (PID {pid} is no longer alive).")
-            # Clean up the stale PID file.
-            os.unlink(_DAEMON_PID_PATH)
-
-    else:
-        # Unknown or missing subcommand — print usage help.
-        print("Usage: python3 cli.py daemon <start|stop|status|--once>")
-
-
-# ---------------------------------------------------------------------------
-# Command: compact
-# ---------------------------------------------------------------------------
-
-def cmd_compact(_args):
-    """Manually run one daemon compaction pass (episodic, working memory, compact, procedural)."""
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from memory.daemon import run as daemon_run
-    print("Running daemon compaction pass…")
-    daemon_run(once=True)
-    print("Done.")
-
-
-# ---------------------------------------------------------------------------
-# Command: bootstrap
-# ---------------------------------------------------------------------------
-
-
-def cmd_bootstrap(_args):
-    """Create or migrate the memory database schema explicitly."""
-    conn = bootstrap_db(DB_PATH)
-    conn.close()
-    print(f"Bootstrapped memory DB at {DB_PATH}")
-
-
-# ---------------------------------------------------------------------------
-# Command: install
-# ---------------------------------------------------------------------------
-
-# Path to the global Claude Code settings file.
-_CLAUDE_SETTINGS_PATH = os.path.expanduser("~/.claude/settings.json")
-
-
-def cmd_install(_args):
-    """Wire wake_up.py and save_hook.py into the global ~/.claude/settings.json."""
-    # Install time is also an explicit bootstrap boundary for the DB schema.
-    conn = bootstrap_db(DB_PATH)
-    conn.close()
-
-    # Compute absolute paths to the hook scripts based on this file's location.
-    repo_root  = os.path.dirname(os.path.abspath(__file__))
-    wake_up    = os.path.join(repo_root, "hooks", "wake_up.py")
-    save_hook  = os.path.join(repo_root, "hooks", "save_hook.py")
-
-    wake_cmd = f"python3 {wake_up}"
-    save_cmd = f"python3 {save_hook}"
-
-    # Load existing settings or start fresh.
-    if os.path.exists(_CLAUDE_SETTINGS_PATH):
-        with open(_CLAUDE_SETTINGS_PATH) as f:
-            settings = json.load(f)
-    else:
-        settings = {}
-
-    hooks = settings.setdefault("hooks", {})
-
-    def _has_command(hook_list: list, cmd: str) -> bool:
-        # Check whether any entry in the hook list already contains this command.
-        for group in hook_list:
-            for h in group.get("hooks", []):
-                if h.get("command") == cmd:
-                    return True
-        return False
-
-    def _add_hook(event: str, cmd: str) -> bool:
-        # Returns True if the hook was added, False if it was already present.
-        groups = hooks.setdefault(event, [])
-        if _has_command(groups, cmd):
-            return False
-        groups.append({"matcher": "", "hooks": [{"type": "command", "command": cmd}]})
-        return True
-
-    added_wake = _add_hook("UserPromptSubmit", wake_cmd)
-    added_save = _add_hook("Stop", save_cmd)
-
-    if not added_wake and not added_save:
-        print("Hooks already registered in ~/.claude/settings.json — nothing to do.")
-        return
-
-    os.makedirs(os.path.dirname(_CLAUDE_SETTINGS_PATH), exist_ok=True)
-    with open(_CLAUDE_SETTINGS_PATH, "w") as f:
-        json.dump(settings, f, indent=2)
-        f.write("\n")
-
-    if added_wake:
-        print(f"  + UserPromptSubmit → {wake_cmd}")
-    if added_save:
-        print(f"  + Stop             → {save_cmd}")
-    print("Done. Restart Claude Code for the hooks to take effect.")
-
-
-# ---------------------------------------------------------------------------
-# Command: sync-identity
-# ---------------------------------------------------------------------------
-
-IDENTITY_PATH = os.path.expanduser("~/.memory/identity.md")
-
-
-def cmd_sync_identity(_args):
-    # Parse each "- **Key**: Value" bullet in identity.md into a natural-language fact,
-    # replacing any stale identity facts in the DB so FTS5 search can find them.
-    if not os.path.exists(IDENTITY_PATH):
-        print(f"No identity file found at {IDENTITY_PATH}")
-        print("Create it with your name, role, and preferences first.")
-        return
-
-    with open(IDENTITY_PATH) as f:
-        text = f.read()
-
-    conn = get_conn()
-
-    # Remove all previously synced identity facts so stale data doesn't accumulate.
-    old_ids = [r[0] for r in conn.execute(
-        "SELECT id FROM facts WHERE source = 'identity'"
-    ).fetchall()]
-    for fact_id in old_ids:
-        delete_fact(conn, fact_id)
-
-    # Parse bullet lines into facts.  Handles both "- **Key**: Value" (bold)
-    # and "- Key: Value" (plain) so the format doesn't need to be exact.
-    facts_added = 0
-    for line in text.splitlines():
-        m = re.match(r'-\s+\*{0,2}(.+?)\*{0,2}\s*:\s*(.+)', line.strip())
-        if not m:
-            continue
-        key   = m.group(1).strip()
-        value = m.group(2).strip()
-        content = f"User's {key.lower()} is {value}"
-        insert_fact(conn, content, tags=["identity"], source="identity")
-        print(f"  + {content}")
-        facts_added += 1
-
-    conn.commit()
-
-    conn.close()
-    print(f"\nSynced {facts_added} fact(s) from identity.md (removed {len(old_ids)} stale).")
-
-
-# ---------------------------------------------------------------------------
-# Argument parsing + dispatch
-# ---------------------------------------------------------------------------
-
-def main():
-    enable_debug("cli")
-    # argparse builds a command-line interface from the definitions below.
-    # Each subcommand (status, search, etc.) becomes a separate parser.
-    parser = argparse.ArgumentParser(
-        prog="cli.py",
-        description="Inspect the agentic memory database.",
-    )
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Agentic memory CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # status
-    sub.add_parser("status", help="Show session count, turn count, date range")
+    p = sub.add_parser("bootstrap")
+    p.set_defaults(func=cmd_bootstrap)
 
-    # search
-    p_search = sub.add_parser("search", help="FTS5 keyword search")
-    p_search.add_argument("query")
-    p_search.add_argument("--limit", type=int, default=10)
+    p = sub.add_parser("status")
+    p.set_defaults(func=cmd_status)
 
-    # semantic
-    p_semantic = sub.add_parser("semantic", help="Semantic vector search")
-    p_semantic.add_argument("query")
-    p_semantic.add_argument("--limit", type=int, default=5)
+    p = sub.add_parser("search")
+    p.add_argument("query")
+    p.add_argument("--limit", type=int, default=10)
+    p.set_defaults(func=cmd_search)
 
-    # get-session
-    p_get = sub.add_parser("get-session", help="Print full transcript for one session")
-    p_get.add_argument("session_id")
+    p = sub.add_parser("semantic")
+    p.add_argument("query")
+    p.add_argument("--limit", type=int, default=10)
+    p.set_defaults(func=cmd_semantic)
 
-    # tail
-    p_tail = sub.add_parser("tail", help="Show last N sessions")
-    p_tail.add_argument("n", type=int, nargs="?", default=10,
-                        help="Number of sessions to show (default 10)")
+    p = sub.add_parser("get-session")
+    p.add_argument("session_id")
+    p.set_defaults(func=cmd_get_session)
 
-    # dashboard
-    sub.add_parser("dashboard", help="Open the live dashboard on the query server")
+    p = sub.add_parser("tail")
+    p.add_argument("n", nargs="?", type=int, default=10)
+    p.set_defaults(func=cmd_tail)
 
-    # logs
-    p_logs = sub.add_parser("logs", help="Print recent activity or error log lines")
-    p_logs.add_argument(
-        "--errors", action="store_true",
-        help="Show error.log instead of activity.log",
-    )
-    p_logs.add_argument(
-        "--tail", type=int, default=20,
-        help="Number of lines to show (default 20)",
-    )
+    p = sub.add_parser("add-fact")
+    p.add_argument("content")
+    p.add_argument("--tag", dest="tags", action="append", default=[])
+    p.add_argument("--session-id")
+    p.set_defaults(func=cmd_add_fact)
 
-    # consolidate — summarise old sessions with local ollama (Phase 12)
-    p_consolidate = sub.add_parser(
-        "consolidate",
-        help="Summarise sessions older than --days days using local ollama",
-    )
-    p_consolidate.add_argument(
-        "--days", type=int, default=30,
-        help="Sessions updated more than this many days ago are candidates (default 30)",
-    )
-    p_consolidate.add_argument(
-        "--dry-run", action="store_true",
-        help="Print what would be done without writing anything",
-    )
+    p = sub.add_parser("delete-fact")
+    p.add_argument("fact_id")
+    p.set_defaults(func=cmd_delete_fact)
 
-    # prune — delete raw transcripts that already have a summary (Phase 12)
-    p_prune = sub.add_parser(
-        "prune",
-        help="Null out raw transcripts for summarised sessions older than --days days",
-    )
-    p_prune.add_argument(
-        "--days", type=int, default=90,
-        help="Sessions updated more than this many days ago are candidates (default 90)",
-    )
-    p_prune.add_argument(
-        "--dry-run", action="store_true",
-        help="Print what would be pruned without writing anything",
-    )
+    p = sub.add_parser("dashboard")
+    p.set_defaults(func=cmd_dashboard)
 
-    # daemon — manage the background relearning daemon (Phase 13)
-    p_daemon = sub.add_parser(
-        "daemon",
-        help="Start, stop, or check the status of the background relearning daemon",
-    )
-    # Positional sub-subcommand: start, stop, status (optional; --once is a flag).
-    p_daemon.add_argument(
-        "daemon_sub",
-        choices=["start", "stop", "status"],
-        nargs="?",                    # optional — omitted when --once is used
-        help="start | stop | status",
-    )
-    p_daemon.add_argument(
-        "--once",
-        dest="daemon_once",
-        action="store_true",
-        help="Run one processing pass and exit (for testing or manual runs)",
-    )
+    return parser
 
-    # compact — manually trigger one daemon compaction pass
-    sub.add_parser(
-        "compact",
-        help="Run one daemon compaction pass: episodic entries, working memory, compacted sessions, procedural patterns",
-    )
 
-    # bootstrap — create or migrate the DB schema explicitly
-    sub.add_parser(
-        "bootstrap",
-        help="Create or migrate the memory database schema",
-    )
-
-    # install — wire hooks into the global ~/.claude/settings.json
-    sub.add_parser(
-        "install",
-        help="Add wake_up.py and save_hook.py to ~/.claude/settings.json (global hooks)",
-    )
-
-    # sync-identity — load identity.md fields into the facts table
-    sub.add_parser(
-        "sync-identity",
-        help="Parse ~/.memory/identity.md and upsert its fields as searchable facts",
-    )
-
-    # ingest-server — manage the HTTP ingest server (Phase 16)
-    p_ingest = sub.add_parser(
-        "ingest-server",
-        help="Start, stop, or check the status of the HTTP ingest server (port 7747)",
-    )
-    # Positional sub-subcommand: start, stop, or status.
-    p_ingest.add_argument(
-        "ingest_sub",
-        choices=["start", "stop", "status"],
-        nargs="?",
-        help="start | stop | status",
-    )
-
-    args = parser.parse_args()
-
-    # Dispatch to the right function based on which subcommand was typed.
-    dispatch = {
-        "status":        cmd_status,
-        "search":        cmd_search,
-        "semantic":      cmd_semantic,
-        "get-session":   cmd_get_session,
-        "tail":          cmd_tail,
-        "dashboard":     cmd_dashboard,
-        "logs":          cmd_logs,
-        "consolidate":   cmd_consolidate,
-        "prune":         cmd_prune,
-        "daemon":        cmd_daemon,
-        "ingest-server":   cmd_ingest_server,
-        "compact":         cmd_compact,
-        "bootstrap":       cmd_bootstrap,
-        "install":         cmd_install,
-        "sync-identity":   cmd_sync_identity,
-    }
-    dispatch[args.command](args)
+def main(argv: list[str] | None = None) -> int:
+    enable_debug("cli")
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    args.func(args)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

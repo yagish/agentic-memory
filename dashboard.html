@@ -5,640 +5,230 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Agentic Memory Dashboard</title>
 <style>
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-:root {
-  --bg:      #0d1117;
-  --surface: #161b22;
-  --surface2:#1c2128;
-  --border:  #30363d;
-  --text:    #e6edf3;
-  --muted:   #8b949e;
-  --accent:  #7c3aed;
-  --green:   #10b981;
-  --red:     #ef4444;
-  --yellow:  #f59e0b;
-  --blue:    #5b8def;
-  --purple:  #a78bfa;
-  --teal:    #34d399;
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d1117;--surface:#161b22;--surface2:#1c2128;--border:#30363d;--text:#e6edf3;
+  --muted:#8b949e;--accent:#7c3aed;--green:#10b981;--red:#ef4444;--blue:#5b8def;
+  --teal:#34d399;--purple:#a78bfa;
 }
-
-html, body { height: 100%; background: var(--bg); color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  font-size: 14px; line-height: 1.5; }
-
-#app { display: grid; grid-template-columns: 230px 1fr; height: 100vh; overflow: hidden; }
-
-/* ── Sidebar ──────────────────────────────────────────────── */
-#sidebar { background: var(--surface); border-right: 1px solid var(--border);
-  display: flex; flex-direction: column; overflow-y: auto; }
-
-.sidebar-title { padding: 14px 14px 12px; font-size: 15px; font-weight: 600;
-  letter-spacing: -0.01em; border-bottom: 1px solid var(--border); display: flex;
-  align-items: baseline; gap: 6px; }
-.sidebar-title small { color: var(--muted); font-size: 11px; font-weight: 400; }
-
-.sidebar-section { padding: 10px 14px 4px; font-size: 10px; font-weight: 700;
-  letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
-
-.svc-item { display: flex; align-items: flex-start; gap: 9px; padding: 9px 14px;
-  cursor: pointer; border-left: 2px solid transparent; transition: background 0.1s;
-  position: relative; }
-.svc-item:hover { background: var(--surface2); }
-.svc-item.active { background: var(--surface2); border-left-color: var(--accent); }
-
-.svc-dot { width: 8px; height: 8px; border-radius: 50%; background: #6b7280;
-  flex-shrink: 0; margin-top: 4px; }
-.svc-dot.up { background: var(--green); box-shadow: 0 0 5px var(--green); }
-.svc-dot.down { background: var(--red); }
-
-.svc-body { flex: 1; min-width: 0; }
-.svc-name { font-size: 13px; font-weight: 500; color: var(--text);
-  display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
-.svc-port { font-size: 11px; color: var(--muted); font-weight: 400; }
-.svc-desc { font-size: 11px; color: var(--muted); margin-top: 1px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.info-icon { display: inline-flex; align-items: center; justify-content: center;
-  width: 13px; height: 13px; border-radius: 50%; border: 1px solid var(--muted);
-  font-size: 9px; color: var(--muted); cursor: help; flex-shrink: 0;
-  position: relative; line-height: 1; }
-.info-icon .tip { display: none; position: absolute; left: 16px; top: -4px;
-  background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
-  padding: 8px 10px; font-size: 11px; color: var(--text); width: 210px;
-  white-space: normal; z-index: 200; line-height: 1.5; pointer-events: none;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.5); }
-.info-icon:hover .tip { display: block; }
-
-.svc-restart { background: none; border: none; color: var(--muted); cursor: pointer;
-  padding: 1px 3px; border-radius: 3px; font-size: 15px; flex-shrink: 0;
-  margin-top: 0; align-self: flex-start; transition: color 0.1s, background 0.1s;
-  line-height: 1; }
-.svc-restart:hover { color: var(--text); background: var(--border); }
-.svc-restart:disabled { opacity: 0.4; cursor: not-allowed; }
-
-.sidebar-footer { margin-top: auto; padding: 12px 14px; border-top: 1px solid var(--border); }
-.restart-all-btn { width: 100%; padding: 7px 10px; background: var(--surface2);
-  border: 1px solid var(--border); border-radius: 6px; color: var(--muted);
-  font-size: 12px; cursor: pointer; transition: color 0.1s, border-color 0.1s; }
-.restart-all-btn:hover { color: var(--text); border-color: var(--muted); }
-.restart-all-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.sidebar-note { font-size: 10px; color: var(--muted); text-align: center; margin-top: 6px; }
-
-/* ── Main ─────────────────────────────────────────────────── */
-#main { display: flex; flex-direction: column; overflow: hidden; }
-
-/* ── Tab bar ──────────────────────────────────────────────── */
-#tab-bar { display: flex; align-items: center; border-bottom: 1px solid var(--border);
-  background: var(--surface); padding: 0 16px; flex-shrink: 0; gap: 2px; overflow-x: auto; }
-.tab-btn { background: none; border: none; border-bottom: 2px solid transparent;
-  color: var(--muted); cursor: pointer; font-size: 13px; padding: 10px 12px 8px;
-  transition: color 0.15s; white-space: nowrap; margin-bottom: -1px; }
-.tab-btn:hover { color: var(--text); }
-.tab-btn.active { color: var(--text); border-bottom-color: var(--accent); }
-.tab-spacer { flex: 1; }
-.tab-updated { font-size: 11px; color: var(--muted); }
-
-/* ── Panels ───────────────────────────────────────────────── */
-#panels { flex: 1; overflow-y: auto; }
-.panel { padding: 20px 24px; }
-
-/* ── Stat tiles ───────────────────────────────────────────── */
-.tiles-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
-.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
-.tile-value { font-size: 22px; font-weight: 600; color: var(--text); line-height: 1.2; }
-.tile-label { font-size: 10px; color: var(--muted); margin-top: 4px;
-  text-transform: uppercase; letter-spacing: 0.07em; }
-
-/* ── Charts ───────────────────────────────────────────────── */
-.charts-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 22px; }
-.chart-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
-  padding: 14px 16px 8px; overflow: visible; }
-.chart-title { font-size: 10px; font-weight: 700; color: var(--muted);
-  text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 10px; }
-.chart-card svg { width: 100%; height: auto; display: block; overflow: visible; }
-.chart-empty { font-size: 12px; color: var(--muted); text-align: center; padding: 28px 0; }
-.ax { fill: #555e6a; font-size: 9px; font-family: inherit; }
-.ax-line { stroke: var(--border); stroke-width: 1; }
-.grid-l { stroke: var(--border); stroke-width: 0.5; stroke-dasharray: 3 3; }
-
-/* ── Section label ────────────────────────────────────────── */
-.sec-label { display: block; font-size: 10px; font-weight: 700; letter-spacing: 0.1em;
-  text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
-
-/* ── Token economics ──────────────────────────────────────── */
-.econ-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 22px; }
-.econ-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; }
-.econ-value { font-size: 24px; font-weight: 600; color: var(--purple); }
-.econ-name { font-size: 13px; font-weight: 500; color: var(--text); margin-top: 3px; }
-.econ-desc { font-size: 11px; color: var(--muted); margin-top: 4px; line-height: 1.5; }
-
-/* ── Compression card ─────────────────────────────────────── */
-.compress-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
-  padding: 18px 20px; display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
-.compress-info h3 { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
-.compress-info p { font-size: 12px; color: var(--muted); max-width: 500px; line-height: 1.6; }
-.compress-info code { font-family: "SF Mono", ui-monospace, monospace; font-size: 11px;
-  background: var(--surface2); padding: 1px 4px; border-radius: 3px; }
-.compress-actions { flex-shrink: 0; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
-.compress-btn { background: var(--accent); border: none; border-radius: 6px; color: #fff;
-  cursor: pointer; font-size: 13px; font-weight: 500; padding: 8px 16px;
-  white-space: nowrap; transition: opacity 0.15s; }
-.compress-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.compress-status { font-size: 11px; color: var(--muted); text-align: right; max-width: 190px; line-height: 1.4; }
-.compress-status.ok  { color: var(--green); }
-.compress-status.err { color: var(--red); }
-
-/* ── Compress debug log ────────────────────────────────────── */
-.cdl-toolbar { display: flex; align-items: center; gap: 12px; margin: 20px 0 10px; }
-.cdl-btn { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
-  color: var(--text); font-size: 12px; padding: 5px 12px; cursor: pointer; }
-.cdl-btn:hover { border-color: var(--accent); color: var(--accent); }
-.cdl-meta { font-size: 11px; color: var(--muted); }
-.cdl-entry { background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
-  margin-bottom: 8px; overflow: hidden; }
-.cdl-head { display: flex; align-items: center; gap: 8px; padding: 7px 12px;
-  border-bottom: 1px solid var(--border); background: var(--surface2); }
-.cdl-badge { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px;
-  letter-spacing: 0.04em; text-transform: uppercase; flex-shrink: 0; }
-.cdl-badge.b-session  { background: rgba(88,166,255,0.15); color: #58a6ff; }
-.cdl-badge.b-map-in   { background: rgba(255,179,71,0.15);  color: #ffb347; }
-.cdl-badge.b-map-out  { background: rgba(63,185,80,0.15);   color: #3fb950; }
-.cdl-badge.b-final    { background: rgba(188,140,255,0.15); color: #bc8cff; }
-.cdl-sid { font-size: 11px; color: var(--muted); }
-.cdl-ts  { font-size: 10px; color: var(--muted); margin-left: auto; }
-.cdl-body { padding: 10px 12px; font-family: "SF Mono","Fira Code",ui-monospace,monospace;
-  font-size: 11px; line-height: 1.6; color: var(--text); white-space: pre-wrap;
-  word-break: break-word; max-height: 280px; overflow-y: auto; }
-.cdl-empty { color: var(--muted); font-size: 13px; padding: 16px 0; }
-
-/* ── Log viewer ───────────────────────────────────────────── */
-#log-view { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
-.log-header { display: flex; align-items: center; gap: 12px; padding: 10px 20px;
-  background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; }
-.log-back { background: none; border: none; color: var(--accent); cursor: pointer;
-  font-size: 13px; padding: 0; }
-.log-back:hover { text-decoration: underline; }
-.log-svc-name { font-weight: 600; font-size: 14px; }
-.log-meta { font-size: 11px; color: var(--muted); margin-left: auto; }
-#log-content { flex: 1; overflow-y: auto; background: var(--bg); padding: 10px 14px;
-  font-family: "SF Mono", "Fira Code", ui-monospace, monospace; font-size: 12px; line-height: 1.7; }
-.ll { color: #c9d1d9; }
-.ll.err { color: var(--red); }
-.ll.warn { color: var(--yellow); }
-.ll-empty { color: var(--muted); font-style: italic; }
-
-/* ── Tables ───────────────────────────────────────────────── */
-.tbl-search { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
-  color: var(--text); font-size: 13px; padding: 7px 12px; width: 300px; margin-bottom: 14px;
-  outline: none; display: block; }
-.tbl-search:focus { border-color: var(--accent); }
-.tbl-search::placeholder { color: var(--muted); }
-.dtbl { width: 100%; border-collapse: collapse; font-size: 13px; }
-.dtbl th { text-align: left; padding: 8px 12px; font-size: 10px; font-weight: 700;
-  letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted);
-  border-bottom: 1px solid var(--border); white-space: nowrap; }
-.dtbl td { padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
-.dtbl tr:last-child td { border-bottom: none; }
-.dtbl tr:hover td { background: var(--surface2); }
-.mono { font-family: "SF Mono", ui-monospace, monospace; font-size: 11px; color: var(--muted); }
-.pill { display: inline-block; background: var(--surface2); border: 1px solid var(--border);
-  border-radius: 10px; font-size: 10px; padding: 1px 7px; color: var(--muted); margin: 1px 2px 1px 0; }
-.tbl-meta { font-size: 11px; color: var(--muted); margin-top: 10px; }
-.tbl-loading { color: var(--muted); font-size: 13px; padding: 16px 0; }
-
-/* ── Utils ────────────────────────────────────────────────── */
-[hidden] { display: none !important; }
-.spin { display: inline-block; animation: spin 0.7s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;font-size:14px;line-height:1.5}
+#app{display:grid;grid-template-columns:230px 1fr;height:100vh;overflow:hidden}
+#sidebar{background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto}
+.sidebar-title{padding:14px;font-size:15px;font-weight:600;border-bottom:1px solid var(--border)}
+.sidebar-title small{color:var(--muted);font-size:11px;font-weight:400}
+.sidebar-section{padding:10px 14px 4px;font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.svc-item{display:flex;align-items:flex-start;gap:9px;padding:9px 14px;cursor:pointer;border-left:2px solid transparent;transition:background .1s}
+.svc-item:hover,.svc-item.active{background:var(--surface2)}
+.svc-item.active{border-left-color:var(--accent)}
+.svc-dot{width:8px;height:8px;border-radius:50%;background:#6b7280;flex-shrink:0;margin-top:4px}
+.svc-dot.up{background:var(--green);box-shadow:0 0 5px var(--green)}
+.svc-dot.down{background:var(--red)}
+.svc-body{flex:1;min-width:0}.svc-name{font-size:13px;font-weight:500}.svc-desc{font-size:11px;color:var(--muted);margin-top:1px}
+.sidebar-note{margin-top:auto;padding:12px 14px;border-top:1px solid var(--border);font-size:11px;color:var(--muted)}
+#main{display:flex;flex-direction:column;overflow:hidden}
+#tab-bar{display:flex;align-items:center;gap:2px;padding:0 16px;background:var(--surface);border-bottom:1px solid var(--border);overflow-x:auto}
+.tab-btn{background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);cursor:pointer;font-size:13px;padding:10px 12px 8px;white-space:nowrap;margin-bottom:-1px}
+.tab-btn:hover{color:var(--text)}.tab-btn.active{color:var(--text);border-bottom-color:var(--accent)}
+.tab-spacer{flex:1}.tab-updated{font-size:11px;color:var(--muted)}
+#panels{flex:1;overflow-y:auto}.panel{padding:20px 24px}
+.tiles-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px}
+.tile{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px}
+.tile-value{font-size:22px;font-weight:600}.tile-label{font-size:10px;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:.07em}
+.charts-row{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px}
+.chart-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px 8px}
+.chart-title{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px}
+.chart-card svg{width:100%;height:auto;display:block;overflow:visible}.ax{fill:#555e6a;font-size:9px;font-family:inherit}.ax-line{stroke:var(--border);stroke-width:1}.grid-l{stroke:var(--border);stroke-width:.5;stroke-dasharray:3 3}
+.overview-copy{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px 18px;color:var(--muted);font-size:13px;line-height:1.7}
+.tbl-search{background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;padding:7px 12px;width:320px;margin-bottom:14px;outline:none;display:block}
+.tbl-search:focus{border-color:var(--accent)}.tbl-search::placeholder{color:var(--muted)}
+.dtbl{width:100%;border-collapse:collapse;font-size:13px}.dtbl th{text-align:left;padding:8px 12px;font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--border);white-space:nowrap}.dtbl td{padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:top}.dtbl tr:last-child td{border-bottom:none}.dtbl tr:hover td{background:var(--surface2)}
+.clickable-row{cursor:pointer}.clickable-row.active td{background:var(--surface2)}
+.mono{font-family:"SF Mono",ui-monospace,monospace;font-size:11px;color:var(--muted)}
+.pill{display:inline-block;background:var(--surface2);border:1px solid var(--border);border-radius:10px;font-size:10px;padding:1px 7px;color:var(--muted);margin:1px 2px 1px 0}
+.tbl-meta{font-size:11px;color:var(--muted);margin-top:10px}.tbl-loading{color:var(--muted);font-size:13px;padding:16px 0}
+.detail-box{display:none;margin-top:16px;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.detail-head{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--surface);border-bottom:1px solid var(--border)}
+.detail-title{font-size:13px;font-weight:600}.detail-close{background:none;border:none;cursor:pointer;color:var(--muted);font-size:16px}
+.detail-body{padding:14px;max-height:480px;overflow-y:auto;display:flex;flex-direction:column;gap:12px}
+.detail-grid{display:grid;grid-template-columns:160px 1fr;gap:8px 12px;font-size:12px}.detail-label{color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-size:10px}.detail-value{white-space:pre-wrap;word-break:break-word}
+.log-header{display:flex;align-items:center;gap:12px;padding:10px 20px;background:var(--surface);border-bottom:1px solid var(--border)}
+.log-back{background:none;border:none;color:var(--accent);cursor:pointer;font-size:13px;padding:0}.log-svc-name{font-weight:600;font-size:14px}.log-meta{font-size:11px;color:var(--muted);margin-left:auto}
+#log-view{display:flex;flex-direction:column;flex:1;overflow:hidden}#log-content{flex:1;overflow-y:auto;background:var(--bg);padding:10px 14px;font-family:"SF Mono","Fira Code",ui-monospace,monospace;font-size:12px;line-height:1.7}.ll{color:#c9d1d9}.ll.err{color:var(--red)}.ll.warn{color:#f59e0b}.ll-empty{color:var(--muted);font-style:italic}
+[hidden]{display:none!important}
 </style>
 </head>
 <body>
 <div id="app">
-
-<!-- ── Sidebar ───────────────────────────────────────────── -->
-<aside id="sidebar">
-  <div class="sidebar-title">Agentic Memory <small>Dashboard</small></div>
-
-  <div class="sidebar-section">Services</div>
-
-  <div class="svc-item" id="svc-query" onclick="selectService('query')">
-    <span class="svc-dot" id="dot-query"></span>
-    <div class="svc-body">
-      <div class="svc-name">Query Server <span class="svc-port">:7748</span></div>
-      <div class="svc-desc">Agentic Memory Dashboard &amp; queries</div>
+  <aside id="sidebar">
+    <div class="sidebar-title">Agentic Memory <small>Dashboard</small></div>
+    <div class="sidebar-section">Logs</div>
+    <div class="svc-item" id="svc-daemon" onclick="selectLog('daemon')">
+      <span class="svc-dot" id="dot-daemon"></span>
+      <div class="svc-body"><div class="svc-name">Daemon</div><div class="svc-desc">Background extraction log</div></div>
     </div>
-    <button class="svc-restart" id="rbtn-query" title="Restart query server"
-            onclick="event.stopPropagation();restartService('query')">&#8635;</button>
-  </div>
-
-  <div class="svc-item" id="svc-daemon" onclick="selectService('daemon')">
-    <span class="svc-dot" id="dot-daemon"></span>
-    <div class="svc-body">
-      <div class="svc-name">
-        Daemon
-        <span class="info-icon">i
-          <span class="tip">Runs in the background every 5 min. Reads new sessions &rarr; calls Ollama &rarr; extracts facts and cross-session insights. Never contacts cloud APIs.</span>
-        </span>
-      </div>
-      <div class="svc-desc">Fact extraction &amp; insight clustering</div>
+    <div class="svc-item" id="svc-facts" onclick="selectLog('facts')">
+      <span class="svc-dot" id="dot-facts"></span>
+      <div class="svc-body"><div class="svc-name">Facts</div><div class="svc-desc">Fact extraction log</div></div>
     </div>
-    <button class="svc-restart" id="rbtn-daemon" title="Restart daemon"
-            onclick="event.stopPropagation();restartService('daemon')">&#8635;</button>
-  </div>
-
-  <div class="svc-item" id="svc-ingest" onclick="selectService('ingest')">
-    <span class="svc-dot" id="dot-ingest"></span>
-    <div class="svc-body">
-      <div class="svc-name">Ingest Server <span class="svc-port">:7747</span></div>
-      <div class="svc-desc">Accepts session writes from agents</div>
+    <div class="svc-item" id="svc-episodic" onclick="selectLog('episodic')">
+      <span class="svc-dot" id="dot-episodic"></span>
+      <div class="svc-body"><div class="svc-name">Episodes</div><div class="svc-desc">Episode extraction and retrieval log</div></div>
     </div>
-    <button class="svc-restart" id="rbtn-ingest" title="Restart ingest server"
-            onclick="event.stopPropagation();restartService('ingest')">&#8635;</button>
-  </div>
-
-  <div class="svc-item" id="svc-ollama" onclick="selectService('ollama')">
-    <span class="svc-dot" id="dot-ollama"></span>
-    <div class="svc-body">
-      <div class="svc-name">Ollama</div>
-      <div class="svc-desc" id="ollama-desc">Local LLM runtime</div>
-    </div>
-    <button class="svc-restart" id="rbtn-ollama" title="Start Ollama"
-            onclick="event.stopPropagation();restartService('ollama')">&#8635;</button>
-  </div>
-
-  <div class="sidebar-section">Logs</div>
-
-  <div class="svc-item" id="svc-activity" onclick="selectService('activity')">
-    <span class="svc-dot" id="dot-activity"></span>
-    <div class="svc-body">
-      <div class="svc-name">Activity Log</div>
-      <div class="svc-desc">Structured operations across the memory system</div>
-    </div>
-  </div>
-
-  <div class="svc-item" id="svc-error" onclick="selectService('error')">
-    <span class="svc-dot" id="dot-error"></span>
-    <div class="svc-body">
-      <div class="svc-name">Error Log</div>
-      <div class="svc-desc">Structured errors across components</div>
-    </div>
-  </div>
-
-  <div class="svc-item" id="svc-wake_up" onclick="selectService('wake_up')">
-    <span class="svc-dot" id="dot-wake_up"></span>
-    <div class="svc-body">
-      <div class="svc-name">Wake Up Hook</div>
-      <div class="svc-desc">Prompt injection hook log</div>
-    </div>
-  </div>
-
-  <div class="svc-item" id="svc-save_hook" onclick="selectService('save_hook')">
-    <span class="svc-dot" id="dot-save_hook"></span>
-    <div class="svc-body">
-      <div class="svc-name">Save Hook</div>
-      <div class="svc-desc">Session save hook log</div>
-    </div>
-  </div>
-
-  <div class="svc-item" id="svc-debug" onclick="selectService('debug')">
-    <span class="svc-dot" id="dot-debug"></span>
-    <div class="svc-body">
-      <div class="svc-name">Debug Log</div>
-      <div class="svc-desc">Optional debugger attach log</div>
-    </div>
-  </div>
-
-  <div class="svc-item" id="svc-facts_debug" onclick="selectService('facts_debug')">
-    <span class="svc-dot" id="dot-facts_debug"></span>
-    <div class="svc-body">
-      <div class="svc-name">Facts Debug</div>
-      <div class="svc-desc">Prompt/session/raw-output fact extraction log</div>
-    </div>
-  </div>
-
-  <div class="sidebar-footer">
-    <button class="restart-all-btn" id="restart-all-btn" onclick="restartAll()">Restart All Services</button>
     <div class="sidebar-note" id="sidebar-note">Refreshing every 30s</div>
-  </div>
-</aside>
+  </aside>
 
-<!-- ── Main ──────────────────────────────────────────────── -->
-<main id="main">
+  <main id="main">
+    <nav id="tab-bar">
+      <button class="tab-btn active" data-tab="overview" onclick="switchTab('overview')">Overview</button>
+      <button class="tab-btn" data-tab="sessions" onclick="switchTab('sessions')">Sessions</button>
+      <button class="tab-btn" data-tab="facts" onclick="switchTab('facts')">Facts</button>
+      <button class="tab-btn" data-tab="episodes" onclick="switchTab('episodes')">Episodes</button>
+      <span class="tab-spacer"></span>
+      <span class="tab-updated" id="tab-updated"></span>
+    </nav>
 
-  <!-- Tab bar -->
-  <nav id="tab-bar">
-    <button class="tab-btn active" data-tab="overview"     onclick="switchTab('overview')">Overview</button>
-    <button class="tab-btn"        data-tab="sessions"     onclick="switchTab('sessions')">Sessions</button>
-    <button class="tab-btn"        data-tab="facts"        onclick="switchTab('facts')">Facts</button>
-    <button class="tab-btn"        data-tab="working"      onclick="switchTab('working')">Working</button>
-    <button class="tab-btn"        data-tab="episodic"     onclick="switchTab('episodic')">Episodic</button>
-    <button class="tab-btn"        data-tab="compacted"    onclick="switchTab('compacted')">Compacted</button>
-    <button class="tab-btn"        data-tab="procedural"   onclick="switchTab('procedural')">Procedural</button>
-    <button class="tab-btn"        data-tab="insights"     onclick="switchTab('insights')">Insights</button>
-    <button class="tab-btn"        data-tab="compression"  onclick="switchTab('compression')">Compression</button>
-    <span class="tab-spacer"></span>
-    <span class="tab-updated" id="tab-updated"></span>
-  </nav>
-
-  <!-- Log viewer (replaces panels when a service or log is selected) -->
-  <div id="log-view" hidden>
-    <div class="log-header">
-      <button class="log-back" onclick="exitLogView()">&#8592; Back</button>
-      <span class="log-svc-name" id="log-svc-name"></span>
-      <span class="log-meta" id="log-meta">Last 200 lines &middot; refreshing every 3s</span>
+    <div id="log-view" hidden>
+      <div class="log-header">
+        <button class="log-back" onclick="exitLogView()">&#8592; Back</button>
+        <span class="log-svc-name" id="log-svc-name"></span>
+        <span class="log-meta" id="log-meta">Last 200 lines</span>
+      </div>
+      <div id="log-content"></div>
     </div>
-    <div id="log-content"></div>
-  </div>
 
-  <!-- Tab panels -->
-  <div id="panels">
-
-    <!-- Overview -->
-    <div class="panel" id="panel-overview">
-      <div class="tiles-row">
-        <div class="tile"><div class="tile-value" id="t-sessions">—</div><div class="tile-label">Sessions</div></div>
-        <div class="tile"><div class="tile-value" id="t-facts">—</div><div class="tile-label">Facts</div></div>
-        <div class="tile"><div class="tile-value" id="t-working">—</div><div class="tile-label">Working Memory</div></div>
-        <div class="tile"><div class="tile-value" id="t-episodic">—</div><div class="tile-label">Episodic Memory</div></div>
-        <div class="tile"><div class="tile-value" id="t-compacted">—</div><div class="tile-label">Compacted Memory</div></div>
-        <div class="tile"><div class="tile-value" id="t-procedural">—</div><div class="tile-label">Procedural Memory</div></div>
-        <div class="tile"><div class="tile-value" id="t-insights">—</div><div class="tile-label">Insights</div></div>
-        <div class="tile"><div class="tile-value" id="t-dbsize">—</div><div class="tile-label">DB Size</div></div>
-      </div>
-
-      <div class="charts-row">
-        <div class="chart-card"><div class="chart-title">Sessions per Day</div><div id="ch-sessions"></div></div>
-        <div class="chart-card"><div class="chart-title">Memory Token Savings</div><div id="ch-tokens"></div></div>
-        <div class="chart-card"><div class="chart-title">Facts Extracted per Day</div><div id="ch-facts"></div></div>
-      </div>
-
-      <span class="sec-label">Memory Architecture</span>
-      <div class="econ-row" style="margin-bottom:22px">
-        <div class="econ-card">
-          <div class="econ-name">Sessions & Facts</div>
-          <div class="econ-desc">Sessions are full conversation transcripts. Facts are small durable items like identity, preferences, and constraints extracted or saved explicitly for fast retrieval.</div>
+    <div id="panels">
+      <div class="panel" id="panel-overview">
+        <div class="tiles-row">
+          <div class="tile"><div class="tile-value" id="t-sessions">—</div><div class="tile-label">Sessions</div></div>
+          <div class="tile"><div class="tile-value" id="t-facts">—</div><div class="tile-label">Facts</div></div>
+          <div class="tile"><div class="tile-value" id="t-episodes">—</div><div class="tile-label">Episodes</div></div>
+          <div class="tile"><div class="tile-value" id="t-dbsize">—</div><div class="tile-label">DB Size</div></div>
         </div>
-        <div class="econ-card">
-          <div class="econ-name">Working & Episodic</div>
-          <div class="econ-desc">Working memory tracks active task context by topic cluster while work is ongoing. Episodic memory stores short "what happened" summaries for completed or notable sessions.</div>
+        <div class="charts-row">
+          <div class="chart-card"><div class="chart-title">Sessions per Day</div><div id="ch-sessions"></div></div>
+          <div class="chart-card"><div class="chart-title">Facts per Day</div><div id="ch-facts"></div></div>
+          <div class="chart-card"><div class="chart-title">Episodes per Day</div><div id="ch-episodes"></div></div>
         </div>
-        <div class="econ-card">
-          <div class="econ-name">Compacted & Procedural</div>
-          <div class="econ-desc">Compacted memory holds cluster-level summaries used for semantic cache and enrichment. Procedural memory stores reusable how-to patterns distilled from repeated successful work.</div>
-        </div>
-        <div class="econ-card">
-          <div class="econ-name">Insights</div>
-          <div class="econ-desc">Insights are cross-session observations generated by the daemon — recurring themes, preferences, and higher-level patterns learned over time.</div>
+        <div class="overview-copy">
+          This dashboard is intentionally trimmed down. The database keeps only <strong>sessions</strong>, <strong>facts</strong>, and <strong>episodes</strong>. The visible logs are only <strong>daemon</strong>, <strong>facts</strong>, and <strong>episodes</strong>. Click any row in a database tab to inspect its full details in the panel below the table.
         </div>
       </div>
 
-      <span class="sec-label">Token Economics</span>
-      <div class="econ-row" style="margin-bottom:22px">
-        <div class="econ-card">
-          <div class="econ-value" id="e-injections">—</div>
-          <div class="econ-name">Sessions answered from memory</div>
-          <div class="econ-desc">Sessions where past context was injected at start — no LLM call needed to reconstruct who you are</div>
-        </div>
-        <div class="econ-card">
-          <div class="econ-value" id="e-tokens">—</div>
-          <div class="econ-name">Tokens served from memory</div>
-          <div class="econ-desc">Tokens delivered from local DB instead of being regenerated by the LLM each session</div>
-        </div>
-      </div>
-
-      <span class="sec-label">Memory Compression</span>
-      <div class="compress-card">
-        <div class="compress-info">
-          <h3>Compress &amp; Archive</h3>
-          <p>Reads all saved sessions, calls Ollama in map-reduce fashion, and produces a single structured memory document covering who you are, your working style, active projects, key decisions, and recurring patterns. All source sessions are deleted — the compressed document becomes the new memory baseline. Also written to <code>~/.memory/compressed_memory.md</code>. The daemon runs this automatically every 50 sessions.</p>
-        </div>
-        <div class="compress-actions">
-          <button class="compress-btn" id="cb1" onclick="doCompress('cb1','cs1')">Compress Memory</button>
-          <div class="compress-status" id="cs1">Ollama must be running.</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Sessions -->
-    <div class="panel" id="panel-sessions" hidden>
-      <input class="tbl-search" id="srch-sessions" type="text" placeholder="Filter sessions…" oninput="filterSessions()">
-      <table class="dtbl">
-        <thead><tr><th>Saved</th><th>Agent</th><th>Turns</th><th>Session ID</th><th>Preview</th></tr></thead>
-        <tbody id="tb-sessions"><tr><td colspan="5" class="tbl-loading">Loading…</td></tr></tbody>
-      </table>
-      <div class="tbl-meta" id="meta-sessions"></div>
-      <!-- transcript viewer — shown when user clicks a session row -->
-      <div id="session-transcript-box" style="display:none;margin-top:16px;border:1px solid var(--border);border-radius:8px;overflow:hidden">
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--surface);border-bottom:1px solid var(--border)">
-          <span id="session-transcript-title" style="font-size:13px;font-weight:600"></span>
-          <button onclick="document.getElementById('session-transcript-box').style.display='none'" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:16px">✕</button>
-        </div>
-        <div id="session-transcript-turns" style="padding:14px;max-height:480px;overflow-y:auto;display:flex;flex-direction:column;gap:10px"></div>
-      </div>
-    </div>
-
-    <!-- Facts -->
-    <div class="panel" id="panel-facts" hidden>
-      <input class="tbl-search" id="srch-facts" type="text" placeholder="Filter facts…" oninput="filterFacts()">
-      <table class="dtbl">
-        <thead><tr><th>Content</th><th>Tags</th><th>Source</th><th>Date</th></tr></thead>
-        <tbody id="tb-facts"><tr><td colspan="4" class="tbl-loading">Loading…</td></tr></tbody>
-      </table>
-      <div class="tbl-meta" id="meta-facts"></div>
-    </div>
-
-    <!-- Working memory -->
-    <div class="panel" id="panel-working" hidden>
-      <input class="tbl-search" id="srch-working" type="text" placeholder="Filter working memory…" oninput="filterWorking()">
-      <table class="dtbl">
-        <thead><tr><th>Updated</th><th>Status</th><th>Sessions</th><th>Cluster</th><th>Summary</th></tr></thead>
-        <tbody id="tb-working"><tr><td colspan="5" class="tbl-loading">Loading…</td></tr></tbody>
-      </table>
-      <div class="tbl-meta" id="meta-working"></div>
-    </div>
-
-    <!-- Episodic memory -->
-    <div class="panel" id="panel-episodic" hidden>
-      <input class="tbl-search" id="srch-episodic" type="text" placeholder="Filter episodic memory…" oninput="filterEpisodic()">
-      <table class="dtbl">
-        <thead><tr><th>When</th><th>Title</th><th>Session</th><th>Abstract</th></tr></thead>
-        <tbody id="tb-episodic"><tr><td colspan="4" class="tbl-loading">Loading…</td></tr></tbody>
-      </table>
-      <div class="tbl-meta" id="meta-episodic"></div>
-    </div>
-
-    <!-- Compacted memory -->
-    <div class="panel" id="panel-compacted" hidden>
-      <input class="tbl-search" id="srch-compacted" type="text" placeholder="Filter compacted memory…" oninput="filterCompacted()">
-      <table class="dtbl">
-        <thead><tr><th>Updated</th><th>Hits</th><th>Sources</th><th>Cluster</th><th>Content</th></tr></thead>
-        <tbody id="tb-compacted"><tr><td colspan="5" class="tbl-loading">Loading…</td></tr></tbody>
-      </table>
-      <div class="tbl-meta" id="meta-compacted"></div>
-      <!-- detail viewer — shown when user clicks a compacted-memory row -->
-      <div id="compacted-detail-box" style="display:none;margin-top:16px;border:1px solid var(--border);border-radius:8px;overflow:hidden">
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--surface);border-bottom:1px solid var(--border)">
-          <span id="compacted-detail-title" style="font-size:13px;font-weight:600"></span>
-          <button onclick="document.getElementById('compacted-detail-box').style.display='none'" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:16px">✕</button>
-        </div>
-        <div id="compacted-detail-content" style="padding:14px;max-height:480px;overflow-y:auto"></div>
-      </div>
-    </div>
-
-    <!-- Procedural memory -->
-    <div class="panel" id="panel-procedural" hidden>
-      <input class="tbl-search" id="srch-procedural" type="text" placeholder="Filter procedural memory…" oninput="filterProcedural()">
-      <table class="dtbl">
-        <thead><tr><th>Title</th><th>Confidence</th><th>Seen</th><th>Updated</th><th>Steps</th></tr></thead>
-        <tbody id="tb-procedural"><tr><td colspan="5" class="tbl-loading">Loading…</td></tr></tbody>
-      </table>
-      <div class="tbl-meta" id="meta-procedural"></div>
-    </div>
-
-    <!-- Insights -->
-    <div class="panel" id="panel-insights" hidden>
-      <table class="dtbl">
-        <thead><tr><th>Type</th><th>Content</th><th>Confidence</th><th>Date</th></tr></thead>
-        <tbody id="tb-insights"><tr><td colspan="4" class="tbl-loading">Loading…</td></tr></tbody>
-      </table>
-      <div class="tbl-meta" id="meta-insights"></div>
-    </div>
-
-    <!-- Compression (standalone) -->
-    <div class="panel" id="panel-compression" hidden>
-      <div class="compress-card">
-        <div class="compress-info">
-          <h3>Compress &amp; Archive</h3>
-          <p>Reads all saved sessions, calls Ollama in map-reduce fashion, and produces a single structured memory document covering who you are, your working style, active projects, key decisions, and recurring patterns. All source sessions are deleted — the compressed document becomes the new memory baseline. Also written to <code>~/.memory/compressed_memory.md</code>. The daemon runs this automatically every 50 sessions.</p>
-        </div>
-        <div class="compress-actions">
-          <button class="compress-btn" id="cb2" onclick="doCompress('cb2','cs2')">Compress Memory</button>
-          <div class="compress-status" id="cs2">Ollama must be running. This may take several minutes.</div>
+      <div class="panel" id="panel-sessions" hidden>
+        <input class="tbl-search" id="srch-sessions" type="text" placeholder="Filter sessions…" oninput="renderSessions()">
+        <table class="dtbl">
+          <thead><tr><th>Saved</th><th>Agent</th><th>Turns</th><th>Session ID</th><th>Preview</th></tr></thead>
+          <tbody id="tb-sessions"><tr><td colspan="5" class="tbl-loading">Loading…</td></tr></tbody>
+        </table>
+        <div class="tbl-meta" id="meta-sessions"></div>
+        <div class="detail-box" id="session-detail-box">
+          <div class="detail-head"><span class="detail-title" id="session-detail-title"></span><button class="detail-close" onclick="hideDetail('session-detail-box')">✕</button></div>
+          <div class="detail-body" id="session-detail-body"></div>
         </div>
       </div>
 
-      <span class="sec-label" style="margin-top:24px;display:block">Compressed Memory Documents</span>
-      <div id="compressed-list" style="display:flex;flex-direction:column;gap:12px;margin-top:12px">
-        <div style="color:var(--muted);font-size:12px">Loading…</div>
+      <div class="panel" id="panel-facts" hidden>
+        <input class="tbl-search" id="srch-facts" type="text" placeholder="Filter facts…" oninput="renderFacts()">
+        <table class="dtbl">
+          <thead><tr><th>Content</th><th>Tags</th><th>Source</th><th>Date</th></tr></thead>
+          <tbody id="tb-facts"><tr><td colspan="4" class="tbl-loading">Loading…</td></tr></tbody>
+        </table>
+        <div class="tbl-meta" id="meta-facts"></div>
+        <div class="detail-box" id="fact-detail-box">
+          <div class="detail-head"><span class="detail-title" id="fact-detail-title"></span><button class="detail-close" onclick="hideDetail('fact-detail-box')">✕</button></div>
+          <div class="detail-body" id="fact-detail-body"></div>
+        </div>
       </div>
 
-      <span class="sec-label" style="margin-top:24px;display:block">Debug Log</span>
-      <div class="cdl-toolbar">
-        <button class="cdl-btn" onclick="loadCompressDebugLog()">&#8635; Refresh</button>
-        <span class="cdl-meta" id="cdl-meta"></span>
+      <div class="panel" id="panel-episodes" hidden>
+        <input class="tbl-search" id="srch-episodes" type="text" placeholder="Filter episodes…" oninput="renderEpisodes()">
+        <table class="dtbl">
+          <thead><tr><th>When</th><th>Title</th><th>Session</th><th>Abstract</th></tr></thead>
+          <tbody id="tb-episodes"><tr><td colspan="4" class="tbl-loading">Loading…</td></tr></tbody>
+        </table>
+        <div class="tbl-meta" id="meta-episodes"></div>
+        <div class="detail-box" id="episode-detail-box">
+          <div class="detail-head"><span class="detail-title" id="episode-detail-title"></span><button class="detail-close" onclick="hideDetail('episode-detail-box')">✕</button></div>
+          <div class="detail-body" id="episode-detail-body"></div>
+        </div>
       </div>
-      <div id="cdl-entries"><div class="cdl-empty">Loading…</div></div>
     </div>
-
-  </div><!-- /panels -->
-</main>
+  </main>
 </div>
 
 <script>
 'use strict';
-
 const BASE = '';
+let _logTimer = null;
+let _svcTimer = null;
+let _activeLog = null;
+let _loaded = {};
+let _activeTab = 'overview';
+let _rawSessions = [];
+let _rawFacts = [];
+let _rawEpisodes = [];
+let _filteredSessions = [];
+let _filteredFacts = [];
+let _filteredEpisodes = [];
+let _selectedSessionId = null;
+let _selectedFactId = null;
+let _selectedEpisodeId = null;
 
-// ── State ──────────────────────────────────────────────────
-let _logTimer       = null;
-let _svcTimer       = null;
-let _activeLog      = null;  // service key currently shown in log viewer
-let _loaded         = {};    // tabs already fetched
-let _rawSessions    = [];
-let _rawFacts       = [];
-let _rawWorking     = [];
-let _rawEpisodic    = [];
-let _rawCompacted   = [];
-let _rawProcedural  = [];
-
-// ── Boot ───────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   loadServices();
   loadCharts();
   _svcTimer = setInterval(loadServices, 30000);
 });
 
-// ── Services ───────────────────────────────────────────────
 async function loadServices() {
   try {
     const r = await fetch(BASE + '/services');
     if (!r.ok) return;
     const d = await r.json();
-
-    setDot('query',  true);  // always up — we received this response
-    setDot('daemon', d.daemon?.running);
-    setDot('ollama', d.ollama?.running);
-    setDot('ingest', d.ingest_server?.running);
-
-    const m = document.getElementById('ollama-desc');
-    if (m) m.textContent = d.ollama?.model ? d.ollama.model : 'Local LLM runtime';
-
-    const appLogs = d.logs?.app || [];
-    appLogs.forEach(log => {
-      setDot(log.name, !!log.exists);
-    });
-
+    const logs = d.logs || [];
+    logs.forEach(log => setDot(log.name, !!log.exists));
     const mem = d.memory || {};
-    set('t-sessions',   fmt(mem.total_sessions));
-    set('t-facts',      fmt(mem.total_facts));
-    set('t-working',    fmt(mem.active_working_memory ?? mem.total_working_memory));
-    set('t-episodic',   fmt(mem.total_episodic));
-    set('t-compacted',  fmt(mem.total_compacted));
-    set('t-procedural', fmt(mem.total_procedural));
-    set('t-insights',   fmt(mem.total_insights));
-    set('t-dbsize',     fmtBytes(mem.db_size_bytes));
-
-    const ret = d.retrieval || {};
-    set('e-injections', fmt(ret.injections));
-    set('e-tokens',     fmtBytes(ret.tokens_from_memory));
-
+    set('t-sessions', fmt(mem.total_sessions));
+    set('t-facts', fmt(mem.total_facts));
+    set('t-episodes', fmt(mem.total_episodes));
+    set('t-dbsize', fmtBytes(mem.db_size_bytes));
     const now = new Date().toLocaleTimeString();
-    set('tab-updated',  'updated ' + now);
+    set('tab-updated', 'updated ' + now);
     set('sidebar-note', 'Updated ' + now);
   } catch (_) {}
 }
 
-function setDot(svc, running) {
-  const el = document.getElementById('dot-' + svc);
+function setDot(name, ok) {
+  const el = document.getElementById('dot-' + name);
   if (!el) return;
-  el.className = 'svc-dot' + (running === true ? ' up' : running === false ? ' down' : '');
+  el.className = 'svc-dot ' + (ok ? 'up' : 'down');
 }
 
-// ── Tab switching ──────────────────────────────────────────
 function switchTab(name) {
+  _activeTab = name;
   stopLogPoll();
   _activeLog = null;
   document.getElementById('log-view').hidden = true;
-  document.getElementById('panels').hidden   = false;
-  document.getElementById('tab-bar').hidden  = false;
+  document.getElementById('panels').hidden = false;
+  document.getElementById('tab-bar').hidden = false;
   document.querySelectorAll('.svc-item').forEach(el => el.classList.remove('active'));
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
-  document.querySelectorAll('.panel').forEach(p => { p.hidden = p.id !== 'panel-' + name; });
-
-  if (!_loaded[name]) {
-    _loaded[name] = true;
-    if (name === 'sessions')       loadSessions();
-    else if (name === 'facts')     loadFacts();
-    else if (name === 'working')   loadWorking();
-    else if (name === 'episodic')  loadEpisodic();
-    else if (name === 'compacted') loadCompacted();
-    else if (name === 'procedural') loadProcedural();
-    else if (name === 'insights')    loadInsights();
-    else if (name === 'compression') { loadCompressed(); loadCompressDebugLog(); }
-  }
+  document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === name));
+  document.querySelectorAll('.panel').forEach(panel => { panel.hidden = panel.id !== 'panel-' + name; });
+  if (_loaded[name]) return;
+  _loaded[name] = true;
+  if (name === 'sessions') loadSessions();
+  if (name === 'facts') loadFacts();
+  if (name === 'episodes') loadEpisodes();
 }
 
-// ── Log viewer ─────────────────────────────────────────────
-function selectService(svc) {
+function selectLog(name) {
   stopLogPoll();
-  _activeLog = svc;
-  document.querySelectorAll('.svc-item').forEach(el => el.classList.toggle('active', el.id === 'svc-' + svc));
-  document.getElementById('panels').hidden   = true;
-  document.getElementById('tab-bar').hidden  = true;
+  _activeLog = name;
+  document.querySelectorAll('.svc-item').forEach(el => el.classList.toggle('active', el.id === 'svc-' + name));
+  document.getElementById('panels').hidden = true;
+  document.getElementById('tab-bar').hidden = true;
   document.getElementById('log-view').hidden = false;
-  set('log-svc-name', svcLabel(svc));
-  set('log-meta', 'Last 200 lines · refreshing every 3s');
+  set('log-svc-name', svcLabel(name));
   fetchLogs();
   _logTimer = setInterval(fetchLogs, 3000);
 }
@@ -648,11 +238,10 @@ function exitLogView() {
   _activeLog = null;
   document.querySelectorAll('.svc-item').forEach(el => el.classList.remove('active'));
   document.getElementById('log-view').hidden = true;
-  document.getElementById('panels').hidden   = false;
-  document.getElementById('tab-bar').hidden  = false;
-  // Restore active tab button highlight
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === 'overview'));
-  document.querySelectorAll('.panel').forEach(p => { p.hidden = p.id !== 'panel-overview'; });
+  document.getElementById('panels').hidden = false;
+  document.getElementById('tab-bar').hidden = false;
+  document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === _activeTab));
+  document.querySelectorAll('.panel').forEach(panel => { panel.hidden = panel.id !== 'panel-' + _activeTab; });
 }
 
 function stopLogPoll() {
@@ -662,24 +251,14 @@ function stopLogPoll() {
 async function fetchLogs() {
   if (!_activeLog) return;
   const el = document.getElementById('log-content');
-
   try {
     const r = await fetch(`${BASE}/logs/${_activeLog}?lines=200`);
-    if (!r.ok) {
-      el.innerHTML = '<div class="ll-empty">Could not fetch log.</div>';
-      set('log-meta', 'Last 200 lines · refreshing every 3s');
-      return;
-    }
+    if (!r.ok) { el.innerHTML = '<div class="ll-empty">Could not fetch log.</div>'; return; }
     const d = await r.json();
-    const meta = d.path
-      ? `Last 200 lines · refreshing every 3s · ${d.path}`
-      : 'Last 200 lines · refreshing every 3s';
-    set('log-meta', meta);
+    set('log-meta', d.path ? `Last 200 lines · ${d.path}` : 'Last 200 lines');
     if (!d.exists) {
-      const searched = (d.candidates || []).length
-        ? `<div class="ll-empty">No log file found yet.<br>Searched: ${esc(d.candidates.join(' · '))}</div>`
-        : '<div class="ll-empty">No log file found yet.</div>';
-      el.innerHTML = searched;
+      const searched = (d.candidates || []).length ? esc(d.candidates.join(' · ')) : 'No log file found yet.';
+      el.innerHTML = `<div class="ll-empty">${searched}</div>`;
       return;
     }
     if (!d.lines.length) {
@@ -697,66 +276,20 @@ async function fetchLogs() {
   } catch (_) {}
 }
 
-// ── Restart ────────────────────────────────────────────────
-async function restartService(svc) {
-  const btn = document.getElementById('rbtn-' + svc);
-  if (!btn) return;
-
-  if (svc === 'query') {
-    if (!confirm('Restarting the query server will briefly disconnect this page. Continue?')) return;
-  }
-
-  const orig = btn.innerHTML;
-  btn.innerHTML = '<span class="spin">&#8635;</span>';
-  btn.disabled  = true;
-
-  try {
-    const r = await fetch(`${BASE}/restart/${svc}`, { method: 'POST' });
-    btn.innerHTML = r.ok ? '&#10003;' : '&#10007;';
-    if (r.ok && svc === 'query') {
-      setTimeout(() => window.location.reload(), 3000);
-      return;
-    }
-  } catch (_) {
-    btn.innerHTML = '&#10007;';
-  }
-
-  setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; }, 2000);
-}
-
-async function restartAll() {
-  const btn = document.getElementById('restart-all-btn');
-  btn.textContent = 'Restarting…';
-  btn.disabled = true;
-  try {
-    await fetch(`${BASE}/restart/daemon`, { method: 'POST' });
-    await fetch(`${BASE}/restart/ingest`, { method: 'POST' });
-  } catch (_) {}
-  setTimeout(async () => {
-    btn.textContent = 'Restart All Services';
-    btn.disabled = false;
-    if (confirm('Restart query server too? This page will reload.')) {
-      await fetch(`${BASE}/restart/query`, { method: 'POST' });
-      setTimeout(() => window.location.reload(), 3000);
-    }
-  }, 2000);
-}
-
-// ── Charts ─────────────────────────────────────────────────
 async function loadCharts() {
   try {
     const r = await fetch(BASE + '/stats/charts');
     if (!r.ok) return;
     const d = await r.json();
-    renderBarChart('ch-sessions', fill14(d.sessions_by_day,  'count'),        '#5b8def', v => v,            '');
-    renderBarChart('ch-tokens',   fill14(d.token_economics,  'memory_tokens'), '#a78bfa', v => v / 1024,    'KB');
-    renderBarChart('ch-facts',    fill14(d.facts_by_day,     'count'),         '#34d399', v => v,            '');
+    renderBarChart('ch-sessions', fill14(d.sessions_by_day, 'count'), '#5b8def');
+    renderBarChart('ch-facts', fill14(d.facts_by_day, 'count'), '#34d399');
+    renderBarChart('ch-episodes', fill14(d.episodes_by_day, 'count'), '#a78bfa');
   } catch (_) {}
 }
 
 function fill14(rows, key) {
   const map = {};
-  (rows || []).forEach(r => { map[r.day] = r[key] || 0; });
+  (rows || []).forEach(row => { map[row.day] = row[key] || 0; });
   const out = [];
   for (let i = 13; i >= 0; i--) {
     const d = new Date(); d.setDate(d.getDate() - i);
@@ -766,476 +299,187 @@ function fill14(rows, key) {
   return out;
 }
 
-function renderBarChart(id, data, color, xform, unit) {
+function renderBarChart(id, data, color) {
   const el = document.getElementById(id);
   if (!el) return;
-
   const maxRaw = Math.max(...data.map(d => d.v), 1);
   const W = 280, H = 155, pL = 38, pR = 6, pT = 8, pB = 50;
   const cw = W - pL - pR, ch = H - pT - pB;
-  const n  = data.length, gap = 2;
+  const n = data.length, gap = 2;
   const bw = Math.max(2, Math.floor((cw - gap * (n - 1)) / n));
-
-  const yFmt = v => {
-    const t = xform(v);
-    if (unit === 'KB' && t >= 1024) return (t / 1024).toFixed(1) + 'MB';
-    if (t >= 1000) return (t / 1000).toFixed(1) + 'K';
-    return parseFloat(t.toFixed(1)) + (unit || '');
-  };
-
-  const ticks = [0, 0.5, 1.0].map(f => ({
-    raw: maxRaw * f,
-    label: yFmt(maxRaw * f),
-    y: pT + ch * (1 - f),
-  }));
-
-  let bars = ticks.map(t =>
-    `<line x1="${pL}" y1="${t.y}" x2="${W - pR}" y2="${t.y}" class="grid-l"/>` +
-    `<text x="${pL - 3}" y="${t.y + 3}" class="ax" text-anchor="end">${t.label}</text>`
-  ).join('');
-
-  bars += `<line x1="${pL}" y1="${pT}" x2="${pL}" y2="${pT + ch}" class="ax-line"/>` +
-          `<line x1="${pL}" y1="${pT + ch}" x2="${W - pR}" y2="${pT + ch}" class="ax-line"/>`;
-
+  const ticks = [0, .5, 1].map(f => ({ raw: Math.round(maxRaw * f), y: pT + ch * (1 - f) }));
+  let svg = ticks.map(t => `<line x1="${pL}" y1="${t.y}" x2="${W-pR}" y2="${t.y}" class="grid-l"/><text x="${pL-3}" y="${t.y+3}" class="ax" text-anchor="end">${t.raw}</text>`).join('');
+  svg += `<line x1="${pL}" y1="${pT}" x2="${pL}" y2="${pT+ch}" class="ax-line"/><line x1="${pL}" y1="${pT+ch}" x2="${W-pR}" y2="${pT+ch}" class="ax-line"/>`;
   data.forEach((d, i) => {
-    const frac = d.v / maxRaw;
-    const bh   = Math.max(frac > 0 ? 2 : 0, Math.round(ch * frac));
-    const x    = pL + i * (bw + gap);
-    const y    = pT + ch - bh;
-    bars += `<rect x="${x}" y="${y}" width="${bw}" height="${bh}" fill="${color}" rx="1" opacity="0.9">` +
-            `<title>${d.day}: ${yFmt(d.v)}</title></rect>`;
+    const bh = Math.max(d.v > 0 ? 2 : 0, Math.round(ch * (d.v / maxRaw)));
+    const x = pL + i * (bw + gap);
+    const y = pT + ch - bh;
+    svg += `<rect x="${x}" y="${y}" width="${bw}" height="${bh}" fill="${color}" rx="1" opacity="0.9"><title>${d.day}: ${d.v}</title></rect>`;
   });
-
-  // x-axis labels every other bar
   data.forEach((d, i) => {
     if (i % 2 !== 0) return;
     const x = pL + i * (bw + gap) + bw / 2;
     const ay = pT + ch + 12;
-    bars += `<text x="${x}" y="${ay}" class="ax" text-anchor="end" ` +
-            `transform="rotate(-40 ${x} ${ay})">${d.day.slice(5)}</text>`;
+    svg += `<text x="${x}" y="${ay}" class="ax" text-anchor="end" transform="rotate(-40 ${x} ${ay})">${d.day.slice(5)}</text>`;
   });
-
-  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="overflow:visible">${bars}</svg>`;
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="overflow:visible">${svg}</svg>`;
 }
 
-// ── Sessions table ─────────────────────────────────────────
 async function loadSessions() {
   try {
     const r = await fetch(BASE + '/memory/sessions');
     if (!r.ok) return;
     const d = await r.json();
     _rawSessions = d.sessions || [];
-    renderSessions(_rawSessions);
+    renderSessions();
   } catch (_) {}
 }
 
-function filterSessions() { renderSessions(_rawSessions); }
-
-function renderSessions(rows) {
+function renderSessions() {
   const q = (document.getElementById('srch-sessions')?.value || '').toLowerCase();
-  const f = q ? rows.filter(r =>
-    (r.session_id || '').toLowerCase().includes(q) ||
-    (r.agent || '').toLowerCase().includes(q) ||
-    (r.preview || '').toLowerCase().includes(q)
-  ) : rows;
+  _filteredSessions = q ? _rawSessions.filter(row =>
+    (row.session_id || '').toLowerCase().includes(q) ||
+    (row.agent || '').toLowerCase().includes(q) ||
+    (row.preview || '').toLowerCase().includes(q)
+  ) : _rawSessions.slice();
   const tb = document.getElementById('tb-sessions');
   if (!tb) return;
-  tb.innerHTML = f.length
-    ? f.map(s => `<tr style="cursor:pointer" onclick="loadSessionTranscript('${esc(s.session_id)}', '${esc(s.updated_at)}')">
-        <td style="white-space:nowrap">${fmtDate(s.updated_at)}</td>
-        <td>${esc(s.agent || '')}</td>
-        <td>${s.turn_count}</td>
-        <td class="mono" title="${esc(s.session_id)}">${esc((s.session_id || '').slice(0, 22))}…</td>
-        <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)">${esc(s.preview || '')}</td>
-      </tr>`).join('')
-    : `<tr><td colspan="5" class="tbl-loading">No sessions found.</td></tr>`;
-  set('meta-sessions', `${f.length} of ${rows.length} sessions`);
+  tb.innerHTML = _filteredSessions.length
+    ? _filteredSessions.map((row, i) => `<tr class="clickable-row ${row.session_id === _selectedSessionId ? 'active' : ''}" onclick="showSessionDetail(${i})"><td style="white-space:nowrap">${fmtDate(row.updated_at)}</td><td>${esc(row.agent || '')}</td><td>${fmt(row.turn_count)}</td><td class="mono" title="${esc(row.session_id)}">${esc(shortId(row.session_id))}</td><td style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)">${esc(row.preview || '')}</td></tr>`).join('')
+    : '<tr><td colspan="5" class="tbl-loading">No sessions found.</td></tr>';
+  set('meta-sessions', `${_filteredSessions.length} of ${_rawSessions.length} sessions`);
 }
 
-async function loadSessionTranscript(sessionId, updatedAt) {
-  // show the box immediately with a loading state
-  const box = document.getElementById('session-transcript-box');
-  const title = document.getElementById('session-transcript-title');
-  const turns = document.getElementById('session-transcript-turns');
-  title.textContent = `Session ${sessionId.slice(0, 22)}… — ${fmtDate(updatedAt)}`;
-  turns.innerHTML = '<div style="color:var(--muted);font-size:12px">Loading…</div>';
+async function showSessionDetail(index) {
+  const row = _filteredSessions[index];
+  if (!row) return;
+  _selectedSessionId = row.session_id;
+  renderSessions();
+  const box = document.getElementById('session-detail-box');
+  const title = document.getElementById('session-detail-title');
+  const body = document.getElementById('session-detail-body');
+  title.textContent = `Session ${shortId(row.session_id)} — ${fmtDate(row.updated_at)}`;
+  body.innerHTML = '<div class="detail-value" style="color:var(--muted)">Loading…</div>';
   box.style.display = 'block';
   box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   try {
-    const r = await fetch(`${BASE}/memory/sessions/${encodeURIComponent(sessionId)}/transcript`);
-    if (!r.ok) { turns.innerHTML = '<div style="color:var(--red)">Failed to load transcript.</div>'; return; }
+    const r = await fetch(`${BASE}/memory/sessions/${encodeURIComponent(row.session_id)}/transcript`);
     const d = await r.json();
-    if (d.error) { turns.innerHTML = `<div style="color:var(--red)">${esc(d.error)}</div>`; return; }
-    // render each turn as a labelled bubble
-    turns.innerHTML = (d.transcript || []).map(t => {
-      const role = t.role || 'unknown';
-      const content = typeof t.content === 'string' ? t.content : JSON.stringify(t.content, null, 2);
-      const bg = role === 'user' ? 'var(--accent)' : 'var(--surface)';
+    if (!r.ok || d.error) {
+      body.innerHTML = `<div class="detail-value" style="color:var(--red)">${esc(d.error || 'Failed to load transcript.')}</div>`;
+      return;
+    }
+    const meta = `<div class="detail-grid"><div class="detail-label">Session ID</div><div class="detail-value mono">${esc(d.session_id || '')}</div><div class="detail-label">Agent</div><div class="detail-value">${esc(d.agent || '')}</div><div class="detail-label">Started</div><div class="detail-value">${esc(fmtDate(d.started_at))}</div><div class="detail-label">Updated</div><div class="detail-value">${esc(fmtDate(d.updated_at))}</div><div class="detail-label">Turns</div><div class="detail-value">${fmt(d.turn_count)}</div></div>`;
+    const turns = (d.transcript || []).map(turn => {
+      const role = turn.role || 'unknown';
+      const content = typeof turn.content === 'string' ? turn.content : JSON.stringify(turn.content, null, 2);
+      const bg = role === 'user' ? 'var(--accent)' : 'var(--surface2)';
       const align = role === 'user' ? 'flex-end' : 'flex-start';
-      return `<div style="display:flex;flex-direction:column;align-items:${align};gap:2px">
-        <span style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">${esc(role)}</span>
-        <div style="background:${bg};border:1px solid var(--border);border-radius:8px;padding:8px 12px;max-width:90%;font-size:12px;white-space:pre-wrap;word-break:break-word">${esc(content)}</div>
-      </div>`;
-    }).join('') || '<div style="color:var(--muted)">No turns.</div>';
+      return `<div style="display:flex;flex-direction:column;align-items:${align};gap:4px"><span class="detail-label">${esc(role)}</span><div style="background:${bg};border:1px solid var(--border);border-radius:8px;padding:8px 12px;max-width:92%;font-size:12px;white-space:pre-wrap;word-break:break-word">${esc(content)}</div></div>`;
+    }).join('') || '<div class="detail-value" style="color:var(--muted)">No turns.</div>';
+    body.innerHTML = meta + turns;
   } catch (e) {
-    turns.innerHTML = `<div style="color:var(--red)">${esc(String(e))}</div>`;
+    body.innerHTML = `<div class="detail-value" style="color:var(--red)">${esc(String(e))}</div>`;
   }
 }
 
-// ── Facts table ────────────────────────────────────────────
 async function loadFacts() {
   try {
     const r = await fetch(BASE + '/memory/facts');
     if (!r.ok) return;
     const d = await r.json();
     _rawFacts = d.facts || [];
-    renderFacts(_rawFacts);
+    renderFacts();
   } catch (_) {}
 }
 
-function filterFacts() { renderFacts(_rawFacts); }
-
-function renderFacts(rows) {
+function renderFacts() {
   const q = (document.getElementById('srch-facts')?.value || '').toLowerCase();
-  const f = q ? rows.filter(r =>
-    (r.content || '').toLowerCase().includes(q) ||
-    (r.source || '').toLowerCase().includes(q) ||
-    (r.tags || []).join(' ').toLowerCase().includes(q)
-  ) : rows;
+  _filteredFacts = q ? _rawFacts.filter(row =>
+    (row.content || '').toLowerCase().includes(q) ||
+    (row.source || '').toLowerCase().includes(q) ||
+    (row.session_id || '').toLowerCase().includes(q) ||
+    (row.tags || []).join(' ').toLowerCase().includes(q)
+  ) : _rawFacts.slice();
   const tb = document.getElementById('tb-facts');
   if (!tb) return;
-  tb.innerHTML = f.length
-    ? f.map(fct => `<tr>
-        <td>${esc(fct.content || '')}</td>
-        <td>${(fct.tags || []).map(t => `<span class="pill">${esc(t)}</span>`).join('')}</td>
-        <td class="mono">${esc((fct.source || '').slice(0, 18))}</td>
-        <td style="white-space:nowrap">${fmtDate(fct.created_at)}</td>
-      </tr>`).join('')
-    : `<tr><td colspan="4" class="tbl-loading">No facts found.</td></tr>`;
-  set('meta-facts', `${f.length} of ${rows.length} facts`);
+  tb.innerHTML = _filteredFacts.length
+    ? _filteredFacts.map((row, i) => `<tr class="clickable-row ${row.id === _selectedFactId ? 'active' : ''}" onclick="showFactDetail(${i})"><td>${esc(trunc(row.content, 160))}</td><td>${(row.tags || []).slice(0, 4).map(tag => `<span class="pill">${esc(tag)}</span>`).join('')}</td><td class="mono">${esc(row.source || '')}</td><td style="white-space:nowrap">${fmtDate(row.created_at)}</td></tr>`).join('')
+    : '<tr><td colspan="4" class="tbl-loading">No facts found.</td></tr>';
+  set('meta-facts', `${_filteredFacts.length} of ${_rawFacts.length} facts`);
 }
 
-// ── Working memory table ───────────────────────────────────
-async function loadWorking() {
-  try {
-    const r = await fetch(BASE + '/memory/working');
-    if (!r.ok) return;
-    const d = await r.json();
-    _rawWorking = d.working || [];
-    renderWorking(_rawWorking);
-  } catch (_) {}
-}
-
-function filterWorking() { renderWorking(_rawWorking); }
-
-function renderWorking(rows) {
-  const q = (document.getElementById('srch-working')?.value || '').toLowerCase();
-  const f = q ? rows.filter(r =>
-    (r.cluster_id || '').toLowerCase().includes(q) ||
-    (r.summary || '').toLowerCase().includes(q) ||
-    (r.status || '').toLowerCase().includes(q)
-  ) : rows;
-  const tb = document.getElementById('tb-working');
-  if (!tb) return;
-  tb.innerHTML = f.length
-    ? f.map(w => `<tr>
-        <td style="white-space:nowrap">${fmtDate(w.updated_at)}</td>
-        <td><span class="pill">${esc(w.status || '')}</span></td>
-        <td>${fmt(w.session_count)}</td>
-        <td class="mono">${esc((w.cluster_id || '').slice(0, 18))}${(w.cluster_id || '').length > 18 ? '…' : ''}</td>
-        <td>${esc(trunc(w.summary, 220))}</td>
-      </tr>`).join('')
-    : `<tr><td colspan="5" class="tbl-loading">No working-memory entries found.</td></tr>`;
-  set('meta-working', `${f.length} of ${rows.length} working-memory entries`);
-}
-
-// ── Episodic memory table ──────────────────────────────────
-async function loadEpisodic() {
-  try {
-    const r = await fetch(BASE + '/memory/episodic');
-    if (!r.ok) return;
-    const d = await r.json();
-    _rawEpisodic = d.episodic || [];
-    renderEpisodic(_rawEpisodic);
-  } catch (_) {}
-}
-
-function filterEpisodic() { renderEpisodic(_rawEpisodic); }
-
-function renderEpisodic(rows) {
-  const q = (document.getElementById('srch-episodic')?.value || '').toLowerCase();
-  const f = q ? rows.filter(r =>
-    (r.title || '').toLowerCase().includes(q) ||
-    (r.abstract || '').toLowerCase().includes(q) ||
-    (r.session_id || '').toLowerCase().includes(q)
-  ) : rows;
-  const tb = document.getElementById('tb-episodic');
-  if (!tb) return;
-  tb.innerHTML = f.length
-    ? f.map(ep => `<tr>
-        <td style="white-space:nowrap">${fmtDate(ep.happened_at)}</td>
-        <td>${esc(ep.title || '')}</td>
-        <td class="mono">${esc((ep.session_id || '').slice(0, 18))}${(ep.session_id || '').length > 18 ? '…' : ''}</td>
-        <td>${esc(trunc(ep.abstract, 220))}</td>
-      </tr>`).join('')
-    : `<tr><td colspan="4" class="tbl-loading">No episodic-memory entries found.</td></tr>`;
-  set('meta-episodic', `${f.length} of ${rows.length} episodic-memory entries`);
-}
-
-// ── Compacted memory table ─────────────────────────────────
-async function loadCompacted() {
-  try {
-    const r = await fetch(BASE + '/memory/compacted');
-    if (!r.ok) return;
-    const d = await r.json();
-    _rawCompacted = d.compacted || [];
-    renderCompacted(_rawCompacted);
-  } catch (_) {}
-}
-
-function filterCompacted() { renderCompacted(_rawCompacted); }
-
-let _filteredCompacted = [];
-
-function renderCompacted(rows) {
-  const q = (document.getElementById('srch-compacted')?.value || '').toLowerCase();
-  const f = q ? rows.filter(r =>
-    (r.cluster_id || '').toLowerCase().includes(q) ||
-    (r.content || '').toLowerCase().includes(q)
-  ) : rows;
-  _filteredCompacted = f;
-  const tb = document.getElementById('tb-compacted');
-  if (!tb) return;
-  tb.innerHTML = f.length
-    ? f.map((cs, i) => `<tr style="cursor:pointer" onclick="showCompactedDetail(${i})">
-        <td style="white-space:nowrap">${fmtDate(cs.updated_at)}</td>
-        <td>${fmt(cs.hit_count)}</td>
-        <td>${fmt(cs.source_session_count)}</td>
-        <td class="mono">${esc((cs.cluster_id || '').slice(0, 18))}${(cs.cluster_id || '').length > 18 ? '…' : ''}</td>
-        <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)">${esc(trunc(cs.content, 220))}</td>
-      </tr>`).join('')
-    : `<tr><td colspan="5" class="tbl-loading">No compacted-memory entries found.</td></tr>`;
-  set('meta-compacted', `${f.length} of ${rows.length} compacted-memory entries`);
-}
-
-function showCompactedDetail(i) {
-  const cs = _filteredCompacted[i];
-  if (!cs) return;
-  const box     = document.getElementById('compacted-detail-box');
-  const title   = document.getElementById('compacted-detail-title');
-  const content = document.getElementById('compacted-detail-content');
-  title.textContent = `Cluster ${(cs.cluster_id || '').slice(0, 22)}… — ${fmtDate(cs.updated_at)}`;
-  content.innerHTML = `<pre style="margin:0;white-space:pre-wrap;word-break:break-word;font-size:12px;font-family:inherit">${esc(cs.content || '')}</pre>`;
+function showFactDetail(index) {
+  const row = _filteredFacts[index];
+  if (!row) return;
+  _selectedFactId = row.id;
+  renderFacts();
+  const box = document.getElementById('fact-detail-box');
+  const title = document.getElementById('fact-detail-title');
+  const body = document.getElementById('fact-detail-body');
+  title.textContent = `Fact ${shortId(row.id)} — ${fmtDate(row.created_at)}`;
+  body.innerHTML = `<div class="detail-grid"><div class="detail-label">Fact ID</div><div class="detail-value mono">${esc(row.id || '')}</div><div class="detail-label">Session ID</div><div class="detail-value mono">${esc(row.session_id || '—')}</div><div class="detail-label">Source</div><div class="detail-value">${esc(row.source || '—')}</div><div class="detail-label">Created</div><div class="detail-value">${esc(fmtDate(row.created_at))}</div><div class="detail-label">Updated</div><div class="detail-value">${esc(fmtDate(row.updated_at))}</div><div class="detail-label">Tags</div><div class="detail-value">${(row.tags || []).length ? row.tags.map(tag => `<span class="pill">${esc(tag)}</span>`).join('') : '—'}</div><div class="detail-label">Content</div><div class="detail-value">${esc(row.content || '')}</div></div>`;
   box.style.display = 'block';
   box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
-// ── Procedural memory table ────────────────────────────────
-async function loadProcedural() {
+async function loadEpisodes() {
   try {
-    const r = await fetch(BASE + '/memory/procedural');
+    const r = await fetch(BASE + '/memory/episodes');
     if (!r.ok) return;
     const d = await r.json();
-    _rawProcedural = d.procedural || [];
-    renderProcedural(_rawProcedural);
+    _rawEpisodes = d.episodes || d.episodic || [];
+    renderEpisodes();
   } catch (_) {}
 }
 
-function filterProcedural() { renderProcedural(_rawProcedural); }
-
-function renderProcedural(rows) {
-  const q = (document.getElementById('srch-procedural')?.value || '').toLowerCase();
-  const f = q ? rows.filter(r =>
-    (r.title || '').toLowerCase().includes(q) ||
-    (r.steps || '').toLowerCase().includes(q)
-  ) : rows;
-  const tb = document.getElementById('tb-procedural');
+function renderEpisodes() {
+  const q = (document.getElementById('srch-episodes')?.value || '').toLowerCase();
+  _filteredEpisodes = q ? _rawEpisodes.filter(row =>
+    (row.title || '').toLowerCase().includes(q) ||
+    (row.abstract || '').toLowerCase().includes(q) ||
+    (row.session_id || '').toLowerCase().includes(q)
+  ) : _rawEpisodes.slice();
+  const tb = document.getElementById('tb-episodes');
   if (!tb) return;
-  tb.innerHTML = f.length
-    ? f.map(proc => `<tr>
-        <td>${esc(proc.title || '')}</td>
-        <td>${Math.round((proc.confidence || 0) * 100)}%</td>
-        <td>${fmt(proc.observation_count)}</td>
-        <td style="white-space:nowrap">${fmtDate(proc.updated_at)}</td>
-        <td>${esc(trunc(proc.steps, 220))}</td>
-      </tr>`).join('')
-    : `<tr><td colspan="5" class="tbl-loading">No procedural-memory entries found.</td></tr>`;
-  set('meta-procedural', `${f.length} of ${rows.length} procedural-memory entries`);
+  tb.innerHTML = _filteredEpisodes.length
+    ? _filteredEpisodes.map((row, i) => `<tr class="clickable-row ${row.id === _selectedEpisodeId ? 'active' : ''}" onclick="showEpisodeDetail(${i})"><td style="white-space:nowrap">${fmtDate(row.happened_at)}</td><td>${esc(row.title || '')}</td><td class="mono" title="${esc(row.session_id || '')}">${esc(shortId(row.session_id || ''))}</td><td>${esc(trunc(row.abstract, 180))}</td></tr>`).join('')
+    : '<tr><td colspan="4" class="tbl-loading">No episodes found.</td></tr>';
+  set('meta-episodes', `${_filteredEpisodes.length} of ${_rawEpisodes.length} episodes`);
 }
 
-// ── Insights table ─────────────────────────────────────────
-async function loadInsights() {
-  try {
-    const r = await fetch(BASE + '/memory/insights');
-    if (!r.ok) return;
-    const rows = (await r.json()).insights || [];
-    const tb = document.getElementById('tb-insights');
-    if (!tb) return;
-    tb.innerHTML = rows.length
-      ? rows.map(ins => `<tr>
-          <td><span class="pill">${esc(ins.insight_type || '')}</span></td>
-          <td>${esc(ins.content || '')}</td>
-          <td>${Math.round((ins.confidence || 0) * 100)}%</td>
-          <td style="white-space:nowrap">${fmtDate(ins.updated_at)}</td>
-        </tr>`).join('')
-      : `<tr><td colspan="4" class="tbl-loading">No insights yet.</td></tr>`;
-    set('meta-insights', `${rows.length} insights`);
-  } catch (_) {}
+function showEpisodeDetail(index) {
+  const row = _filteredEpisodes[index];
+  if (!row) return;
+  _selectedEpisodeId = row.id;
+  renderEpisodes();
+  const box = document.getElementById('episode-detail-box');
+  const title = document.getElementById('episode-detail-title');
+  const body = document.getElementById('episode-detail-body');
+  title.textContent = `${row.title || 'Episode'} — ${fmtDate(row.happened_at)}`;
+  body.innerHTML = `<div class="detail-grid"><div class="detail-label">Episode ID</div><div class="detail-value mono">${esc(row.id || '')}</div><div class="detail-label">Session ID</div><div class="detail-value mono">${esc(row.session_id || '')}</div><div class="detail-label">Source</div><div class="detail-value">${esc(row.source || '—')}</div><div class="detail-label">Happened At</div><div class="detail-value">${esc(fmtDate(row.happened_at))}</div><div class="detail-label">Confidence</div><div class="detail-value">${row.confidence == null ? '—' : esc(String(row.confidence))}</div><div class="detail-label">Abstract</div><div class="detail-value">${esc(row.abstract || '')}</div><div class="detail-label">Participants</div><div class="detail-value">${renderList(row.participants)}</div><div class="detail-label">Decisions</div><div class="detail-value">${renderList(row.decisions)}</div><div class="detail-label">Outcomes</div><div class="detail-value">${renderList(row.outcomes)}</div><div class="detail-label">Follow Ups</div><div class="detail-value">${renderList(row.follow_ups)}</div><div class="detail-label">Source Quote</div><div class="detail-value">${esc(row.source_quote || '—')}</div></div>`;
+  box.style.display = 'block';
+  box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
-// ── Compression ────────────────────────────────────────────
-async function doCompress(btnId, statusId) {
-  const btn = document.getElementById(btnId);
-  const sta = document.getElementById(statusId);
-  btn.disabled    = true;
-  btn.textContent = 'Processing…';
-  sta.className   = 'compress-status';
-  sta.textContent = 'Triggering daemon to process unprocessed sessions…';
-
-  try {
-    const r = await fetch(BASE + '/compress', { method: 'POST' });
-    const d = await r.json();
-    if (r.ok && d.ok) {
-      sta.className   = 'compress-status ok';
-      sta.textContent = 'Daemon triggered. Check logs for progress.';
-      loadServices();
-      loadCharts();
-    } else {
-      const msg = (d.detail && d.detail.error) || d.error || d.message || 'Unknown error';
-      sta.className   = 'compress-status err';
-      sta.textContent = msg;
-    }
-  } catch (e) {
-    sta.className   = 'compress-status err';
-    sta.textContent = 'Could not reach server: ' + e.message;
-  } finally {
-    btn.disabled    = false;
-    btn.textContent = 'Compress Memory';
-  }
+function renderList(items) {
+  if (!items || !items.length) return '—';
+  return `<ul style="margin:0;padding-left:18px">${items.map(item => `<li>${esc(item)}</li>`).join('')}</ul>`;
 }
 
-// ── Compress debug log ─────────────────────────────────────
-async function loadCompressed() {
-  // fetch all compressed_memory rows and render them as expandable cards
-  const list = document.getElementById('compressed-list');
-  if (!list) return;
-  list.innerHTML = '<div style="color:var(--muted);font-size:12px">Loading…</div>';
-  try {
-    const r = await fetch(`${BASE}/memory/compressed`);
-    if (!r.ok) { list.innerHTML = '<div style="color:var(--red)">Failed to load.</div>'; return; }
-    const d = await r.json();
-    const rows = d.compressed || [];
-    if (!rows.length) { list.innerHTML = '<div style="color:var(--muted);font-size:12px">No compressed memory documents yet.</div>'; return; }
-    list.innerHTML = rows.map((c, i) => `
-      <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden">
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--surface);cursor:pointer"
-             onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
-          <span style="font-size:13px;font-weight:600">Document #${c.id} — ${fmtDate(c.created_at)}</span>
-          <span style="font-size:11px;color:var(--muted)">${c.sessions_compressed} sessions · ${c.model}</span>
-        </div>
-        <div style="display:${i===0?'block':'none'};padding:14px;max-height:400px;overflow-y:auto">
-          <pre style="margin:0;white-space:pre-wrap;word-break:break-word;font-size:12px;font-family:inherit">${esc(c.content || '')}</pre>
-        </div>
-      </div>`).join('');
-  } catch (e) {
-    list.innerHTML = `<div style="color:var(--red)">${esc(String(e))}</div>`;
-  }
+function hideDetail(id) {
+  const el = document.getElementById(id);
+  if (el) el.style.display = 'none';
 }
 
-async function loadCompressDebugLog() {
-  const container = document.getElementById('cdl-entries');
-  const meta      = document.getElementById('cdl-meta');
-  meta.textContent = 'Loading…';
-  container.innerHTML = '<div class="cdl-empty">Loading…</div>';
-  try {
-    const r = await fetch(BASE + '/logs/compress_debug?lines=2000');
-    const d = await r.json();
-    if (!r.ok || !d.exists) {
-      container.innerHTML = '<div class="cdl-empty">No debug log yet — run a compression first.</div>';
-      meta.textContent = '';
-      return;
-    }
-    // Each entry ends with a line of ─ chars; split on those separators.
-    const raw    = d.lines.join('\n');
-    const blocks = raw.split(/^─{10,}$/m).map(b => b.trim()).filter(Boolean);
-    if (!blocks.length) {
-      container.innerHTML = '<div class="cdl-empty">Log is empty.</div>';
-      meta.textContent = '';
-      return;
-    }
-    meta.textContent = blocks.length + ' entries';
-    container.innerHTML = blocks.map(block => {
-      const nl     = block.indexOf('\n');
-      const header = nl >= 0 ? block.slice(0, nl) : block;
-      const body   = nl >= 0 ? block.slice(nl + 1) : '';
-      const m      = header.match(/^(\S+)\s+\[([^\]]+)\]/);
-      const ts     = m ? m[1].replace('T',' ').replace(/\.\d+/,'').replace('+00:00','Z') : '';
-      const label  = m ? m[2] : header;
-      let cls = 'b-session', badge = label, sid = '';
-      if (label.startsWith('session_text:summary')) {
-        badge = 'session · summary'; sid = label.replace('session_text:summary session=','');
-      } else if (label.startsWith('session_text:transcript')) {
-        badge = 'session · transcript'; sid = label.replace('session_text:transcript session=','');
-      } else if (label === 'intermediate_summary:input') {
-        cls = 'b-map-in';  badge = 'map · input';
-      } else if (label === 'intermediate_summary:output') {
-        cls = 'b-map-out'; badge = 'map · output';
-      } else if (label === 'final_compress:output') {
-        cls = 'b-final';   badge = 'reduce · output';
-      }
-      return `<div class="cdl-entry">
-        <div class="cdl-head">
-          <span class="cdl-badge ${cls}">${esc(badge)}</span>
-          ${sid ? `<span class="cdl-sid">${esc(sid.slice(0,8))}</span>` : ''}
-          <span class="cdl-ts">${esc(ts)}</span>
-        </div>
-        <div class="cdl-body">${esc(body)}</div>
-      </div>`;
-    }).join('');
-  } catch (e) {
-    container.innerHTML = `<div class="cdl-empty">Error: ${esc(e.message)}</div>`;
-    meta.textContent = '';
-  }
-}
-
-// ── Helpers ────────────────────────────────────────────────
-function set(id, val) { const el = document.getElementById(id); if (el) el.textContent = val; }
-function trunc(s, n) {
-  const t = String(s || '').replace(/\s+/g, ' ').trim();
-  return t.length > n ? t.slice(0, n) + '…' : t;
-}
-function esc(s) {
-  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
+function set(id, value) { const el = document.getElementById(id); if (el) el.textContent = value; }
+function trunc(s, n) { const t = String(s || '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n) + '…' : t; }
+function shortId(s) { const t = String(s || ''); return t.length > 22 ? t.slice(0, 22) + '…' : t || '—'; }
+function esc(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function fmt(n) { return n == null ? '—' : n.toLocaleString(); }
-function fmtBytes(b) {
-  if (!b) return '—';
-  if (b >= 1073741824) return (b / 1073741824).toFixed(1) + ' GB';
-  if (b >= 1048576)    return (b / 1048576).toFixed(1) + ' MB';
-  if (b >= 1024)       return (b / 1024).toFixed(1) + ' KB';
-  return b + ' B';
-}
-function fmtDate(iso) {
-  if (!iso) return '—';
-  try {
-    return new Date(iso).toLocaleString(undefined,
-      { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-  } catch (_) { return iso.slice(0, 16); }
-}
-function svcLabel(s) {
-  return {
-    query:'Query Server',
-    daemon:'Daemon',
-    ingest:'Ingest Server',
-    ollama:'Ollama',
-    activity:'Activity Log',
-    error:'Error Log',
-    wake_up:'Wake Up Hook',
-    save_hook:'Save Hook',
-    debug:'Debug Log',
-    facts_debug:'Facts Debug',
-  }[s] || s;
-}
+function fmtBytes(b) { if (!b) return '—'; if (b >= 1073741824) return (b / 1073741824).toFixed(1) + ' GB'; if (b >= 1048576) return (b / 1048576).toFixed(1) + ' MB'; if (b >= 1024) return (b / 1024).toFixed(1) + ' KB'; return b + ' B'; }
+function fmtDate(iso) { if (!iso) return '—'; try { return new Date(iso).toLocaleString(undefined, { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }); } catch (_) { return String(iso).slice(0, 16); } }
+function svcLabel(s) { return { daemon:'Daemon', facts:'Facts', episodic:'Episodes' }[s] || s; }
 </script>
 </body>
 </html>

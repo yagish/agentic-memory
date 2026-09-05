@@ -21,6 +21,25 @@ def _normalize_identifier(value: str) -> str:
     return value.strip().lower().replace(" ", "_").replace("-", "_")
 
 
+def _strip_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return str(value).strip()
+
+
+def _normalize_text_list(value: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+    if value is None:
+        return ()
+
+    deduped: list[str] = []
+    for item in value:
+        normalized = str(item).strip()
+        if not normalized or normalized in deduped:
+            continue
+        deduped.append(normalized)
+    return tuple(deduped)
+
+
 class ExtractedFact(BaseModel):
     """One fact emitted by the extractor before persistence/provenance is added.
 
@@ -48,9 +67,7 @@ class ExtractedFact(BaseModel):
     @classmethod
     def _strip_text_fields(cls, value: str | None) -> str | None:
         # Trim harmless outer whitespace but preserve the actual semantic text.
-        if value is None:
-            return None
-        return str(value).strip()
+        return _strip_text(value)
 
 
 class FactMemory(BaseModel):
@@ -80,3 +97,61 @@ class FactMemory(BaseModel):
     @classmethod
     def _strip_fact_memory_text_fields(cls, value: str) -> str:
         return str(value).strip()
+
+
+class ExtractedEpisode(BaseModel):
+    """One episodic memory emitted by the extractor before persistence fields.
+
+    This is the extractor-facing contract for event/discussion/decision memory.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    title: str = Field(min_length=1, max_length=200)
+    abstract: str = Field(min_length=1, max_length=600)
+    participants: tuple[str, ...] = ()
+    decisions: tuple[str, ...] = ()
+    outcomes: tuple[str, ...] = ()
+    follow_ups: tuple[str, ...] = ()
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    source_quote: str | None = None
+
+    @field_validator("title", "abstract", "source_quote", mode="before")
+    @classmethod
+    def _strip_episode_text_fields(cls, value: str | None) -> str | None:
+        return _strip_text(value)
+
+    @field_validator("participants", "decisions", "outcomes", "follow_ups", mode="before")
+    @classmethod
+    def _normalize_episode_lists(cls, value: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+        return _normalize_text_list(value)
+
+
+class EpisodicMemory(BaseModel):
+    """A durable structured episodic memory stored with provenance.
+
+    Compared with ExtractedEpisode, this adds the source session and timestamp.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    title: str = Field(min_length=1, max_length=200)
+    abstract: str = Field(min_length=1, max_length=600)
+    participants: tuple[str, ...] = ()
+    decisions: tuple[str, ...] = ()
+    outcomes: tuple[str, ...] = ()
+    follow_ups: tuple[str, ...] = ()
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    source_quote: str | None = None
+    source_session_id: str = Field(min_length=1)
+    happened_at: datetime
+
+    @field_validator("title", "abstract", "source_quote", "source_session_id", mode="before")
+    @classmethod
+    def _strip_episodic_memory_text_fields(cls, value: str | None) -> str | None:
+        return _strip_text(value)
+
+    @field_validator("participants", "decisions", "outcomes", "follow_ups", mode="before")
+    @classmethod
+    def _normalize_episodic_memory_lists(cls, value: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+        return _normalize_text_list(value)
