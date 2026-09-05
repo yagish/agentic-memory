@@ -51,23 +51,16 @@ class TestFactExtractionHelpers(unittest.TestCase):
 
     def test_prompt_biases_toward_stable_user_facts_and_empty_output_when_unsure(self):
         prompt = build_fact_extraction_prompt(
-            "User: Remove ObsoleteTables from db.py.\n"
-            "User: Use --once as a force flag.\n"
-            "User: Facts should mostly be about the user and their preferences."
+            "User: Remove ObsoleteTables from db.py.\nUser: Use --once as a force flag."
         )
 
         self.assertIn("Most valid facts are about the user", prompt)
         self.assertIn("Every fact must include: entity, attribute, value, source_quote.", prompt)
         self.assertIn("Never copy values from examples into the output.", prompt)
-        self.assertIn("Preferences about how this memory system should extract/store/log facts or episodes are not valid user facts.", prompt)
-        self.assertIn("Do not extract preferences about prompt wording, memory extraction policy, schema cleanup, logging, dashboard layout, or daemon behavior.", prompt)
-        self.assertIn("Facts should help in future unrelated conversations, not just improve this memory system itself.", prompt)
         self.assertIn("If the transcript is mostly current-session work instructions, return [].", prompt)
         self.assertIn("If unsure whether something is a durable fact, return [].", prompt)
         self.assertIn("User: Remove ObsoleteTables from db.py.", prompt)
         self.assertIn("User: Use --once as a force flag.", prompt)
-        self.assertIn("User: Facts should mostly be about the user and their preferences.", prompt)
-        self.assertIn("User: Please do not store schema cleanup instructions as facts.", prompt)
         self.assertIn("Output:\n[]", prompt)
 
 

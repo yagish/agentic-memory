@@ -22,7 +22,7 @@ from memory.inference import (
 
 
 # Keep prompt version explicit so future prompt changes can be tracked in tests.
-_FACT_PROMPT_VERSION = "facts-v4"
+_FACT_PROMPT_VERSION = "facts-v3"
 
 
 # Seam so tests can inject a fake model call while production uses Ollama.
@@ -73,8 +73,7 @@ def _with_strict_json_retry(prompt: str) -> str:
         "stable user preferences, and clearly stated durable project metadata. "
         "Do not emit request/action facts. Never convert code-edit instructions, "
         "file names, function names, CLI flags, bug reports, or current-session tasks into facts. "
-        "Do not emit facts about memory extraction policy, prompts, schema, logging, dashboard layout, "
-        "or daemon behavior. If unsure, return []."
+        "If unsure, return []."
     )
 
 
@@ -115,10 +114,9 @@ def build_fact_extraction_prompt(session_text: str) -> str:
 Prompt version: {_FACT_PROMPT_VERSION}
 
 Definition of a valid fact:
-- A fact is stable, reusable knowledge that will likely still be useful in future unrelated sessions.
+- A fact is stable, reusable knowledge that will likely still be useful in future sessions.
 - Most valid facts are about the user: identity, role, company, timezone, location, editor, shell, package manager, terminal, and stable preferences.
-- A stable preference includes recurring user preferences such as response style, tooling preference, or collaboration/workflow preference when the user states them explicitly.
-- Preferences about how this memory system should extract/store/log facts or episodes are not valid user facts.
+- A stable preference includes recurring user preferences such as response style, tooling preference, or workflow preference when the user states them explicitly.
 - Only extract non-user facts when the user explicitly states durable project metadata such as repo name or default branch.
 
 Rules:
@@ -137,8 +135,6 @@ Rules:
 - Never copy values from examples into the output.
 - Do not extract requests, questions, tasks, TODOs, commands, implementation instructions, bug reports, or temporary plans.
 - Do not turn file names, function names, flags, or one-off code-change requests into facts.
-- Do not extract preferences about prompt wording, memory extraction policy, schema cleanup, logging, dashboard layout, or daemon behavior.
-- Facts should help in future unrelated conversations, not just improve this memory system itself.
 - If the transcript is mostly current-session work instructions, return [].
 - If unsure whether something is a durable fact, return [].
 - If the user says they work at a company as a role/title, extract both company and role.
@@ -210,16 +206,6 @@ Output:
 
 Input:
 User: Let's clean up the DB tables and run extraction.
-Output:
-[]
-
-Input:
-User: Facts should mostly be about the user and their preferences.
-Output:
-[]
-
-Input:
-User: Please do not store schema cleanup instructions as facts.
 Output:
 []
 
