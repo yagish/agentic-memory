@@ -8,15 +8,15 @@ UID_NUM="$(id -u)"
 mkdir -p "$MEMORY_HOME"
 
 all_services() {
-  echo daemon ingest query
+  echo daemon recall ingest query
 }
 
 validate_service() {
   case "$1" in
-    daemon|ingest|query) ;;
+    daemon|recall|ingest|query) ;;
     *)
       echo "Unknown service: $1" >&2
-      echo "Valid services: daemon ingest query" >&2
+      echo "Valid services: daemon recall ingest query" >&2
       return 1
       ;;
   esac
@@ -25,7 +25,7 @@ validate_service() {
 service_label() {
   case "$1" in
     daemon) echo "com.memory.daemon" ;;
-    ingest) echo "com.memory.ingest" ;;
+    recall|ingest) echo "com.memory.ingest" ;;
     query)  echo "com.memory.query" ;;
   esac
 }
@@ -33,7 +33,7 @@ service_label() {
 service_script() {
   case "$1" in
     daemon) echo "$ROOT_DIR/memory/daemon.py" ;;
-    ingest) echo "$ROOT_DIR/memory/ingest_server.py" ;;
+    recall|ingest) echo "$ROOT_DIR/memory/ingest_server.py" ;;
     query)  echo "$ROOT_DIR/memory/dashboard_server.py" ;;
   esac
 }
@@ -41,7 +41,7 @@ service_script() {
 service_log() {
   case "$1" in
     daemon) echo "$MEMORY_HOME/daemon.log" ;;
-    ingest) echo "$MEMORY_HOME/ingest.log" ;;
+    recall|ingest) echo "$MEMORY_HOME/ingest.log" ;;
     query)  echo "$MEMORY_HOME/query.log" ;;
   esac
 }
@@ -52,7 +52,7 @@ service_pidfile() {
 
 service_port() {
   case "$1" in
-    ingest) echo "7747" ;;
+    recall|ingest) echo "7747" ;;
     query)  echo "7748" ;;
     *)      echo "" ;;
   esac
@@ -65,7 +65,7 @@ service_plist() {
 service_name() {
   case "$1" in
     daemon) echo "daemon" ;;
-    ingest) echo "ingest server" ;;
+    recall|ingest) echo "recall server" ;;
     query)  echo "query server" ;;
   esac
 }
@@ -73,11 +73,10 @@ service_name() {
 service_debug_prefix() {
   case "$1" in
     daemon) echo "MEMORY_DEBUG_DAEMON" ;;
-    ingest) echo "MEMORY_DEBUG_INGEST" ;;
+    recall|ingest) echo "MEMORY_DEBUG_INGEST" ;;
     query)  echo "MEMORY_DEBUG_QUERY" ;;
   esac
 }
-
 service_debug_port() {
   local prefix var_name
   prefix="$(service_debug_prefix "$1")"

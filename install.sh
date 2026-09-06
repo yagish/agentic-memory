@@ -294,9 +294,9 @@ launchctl unload "$HOME/Library/LaunchAgents/com.memory.daemon.plist" 2>/dev/nul
 launchctl load   "$HOME/Library/LaunchAgents/com.memory.daemon.plist"
 echo "  + Daemon loaded (starts on login, logs: ~/.memory/daemon.log)"
 
-# ── Step 9: launchd — ingest server ─────────────────────────────────────────
+# ── Step 9: launchd — recall server ─────────────────────────────────────────
 echo ""
-echo "Installing ingest server (receives sessions from other agents)..."
+echo "Installing recall server (singleton embeddings + ingest endpoint on port 7747)..."
 
 # Same approach: write plist directly with the correct absolute python3 path.
 cat > "$HOME/Library/LaunchAgents/com.memory.ingest.plist" << PLIST_EOF
@@ -334,7 +334,7 @@ PLIST_EOF
 
 launchctl unload "$HOME/Library/LaunchAgents/com.memory.ingest.plist" 2>/dev/null || true
 launchctl load   "$HOME/Library/LaunchAgents/com.memory.ingest.plist"
-echo "  + Ingest server loaded on port 7747 (logs: ~/.memory/ingest.log)"
+echo "  + Recall server loaded on port 7747 (logs: ~/.memory/ingest.log)"
 
 # ── Step 10: launchd — query server ──────────────────────────────────────────
 echo ""
@@ -424,12 +424,12 @@ echo "  Memory DB:        $HOME/.memory/memory.db"
 echo "  Identity profile: $HOME/.memory/identity.md"
 echo "  Activity log:     $HOME/.memory/activity.log"
 echo "  Daemon log:       $HOME/.memory/daemon.log"
-echo "  Ingest log:       $HOME/.memory/ingest.log"
+echo "  Recall log:       $HOME/.memory/ingest.log"
 echo "  Query log:        $HOME/.memory/query.log"
 echo "  Log archive:      $HOME/.memory/log-archive"
 echo ""
 echo "  Daemon:           running (auto-restarts on login)"
-echo "  Ingest server:    port 7747 — write endpoint for agents"
+echo "  Recall server:    port 7747 — singleton embeddings + /ingest + /recall"
 echo "  Query server:     port 7748 — dashboard at http://localhost:7748"
 echo "  Log rotation:     daily at 03:17, keep 7 days"
 echo "  Default model:    $OLLAMA_MODEL"
@@ -441,4 +441,5 @@ echo ""
 echo "  After that — every session is saved automatically."
 echo "  Dashboard: http://localhost:7748"
 echo "  Other agents POST sessions to: http://localhost:7747/ingest"
+echo "  Hooks/adapters recall via:    http://localhost:7747/recall"
 echo ""

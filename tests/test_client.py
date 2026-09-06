@@ -65,6 +65,12 @@ class TestMemoryClient(unittest.TestCase):
             )
         self.assertEqual(result, {"ok": True, "session_id": "abc"})
 
+    def test_client_recall_returns_dict(self):
+        client = MemoryClient()
+        with patch("urllib.request.urlopen", return_value=_fake_response({"action": "answer", "answer": "Your name is Yash."})):
+            result = client.recall("what is my name?")
+        self.assertEqual(result, {"action": "answer", "answer": "Your name is Yash."})
+
     def test_client_status_returns_dict(self):
         client = MemoryClient()
         with patch("urllib.request.urlopen", return_value=_fake_response({"status": "ok"})):

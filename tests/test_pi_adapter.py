@@ -4,29 +4,30 @@ from unittest.mock import patch
 
 from integrations.pi.adapter import handle_recall, handle_save
 from memory.db import get_session_by_id, init_db
-from memory.retrieval import WakeUpContext
 
 
 class TestPiAdapterRecall(unittest.TestCase):
-    def test_recall_returns_noop_when_db_missing(self):
-        result = handle_recall({"prompt": "hello"}, db_path="/tmp/definitely-missing-agentic-memory.db")
-        self.assertEqual(result, {"action": "noop"})
+    def test_recall_returns_noop_when_server_is_unavailable(self):
+        with patch("integrations.pi.adapter.MemoryClient.recall", side_effect=ConnectionError("offline")):
+            result = handle_recall({"prompt": "hello"}, db_path="/tmp/definitely-missing-agentic-memory.db")
+        self.assertEqual(result["action"], "noop")
+        self.assertEqual(result["server_required"], True)
+        self.assertIn("offline", result["error"])
 
-    def test_recall_returns_answer_when_only_facts_match(self):
-        context = WakeUpContext(
-            None,
-            None,
-            [],
-            [],
-            [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.99}],
-            [],
-        )
-        with tempfile.NamedTemporaryFile(suffix=".db") as tmp, \
-             patch("integrations.pi.adapter.retrieve_prompt_memory", return_value=context), \
-             patch("integrations.pi.adapter.decide_prompt_memory_action") as decide_action:
-            init_db(tmp.name).close()
-            decide_action.return_value = type("Outcome", (), {"action": "answer", "answer": "Your name is Yash.", "injection": ""})()
-            result = handle_recall({"prompt": "what is my name?"}, db_path=tmp.name)
+    def test_recall_returns_answer_from_server(self):
+        with patch(
+            "integrations.pi.adapter.MemoryClient.recall",
+            return_value={
+                "action": "answer",
+                "answer": "Your name is Yash.",
+                "facts_count": 1,
+                "episodic_count": 0,
+                "procedural_count": 0,
+                "warnings": [],
+                "context": {"facts": [{"id": "fact-1", "content": "user.name = Yash"}], "episodic": [], "procedural": []},
+            },
+        ):
+            result = handle_recall({"prompt": "what is my name?"})
 
         self.assertEqual(result["action"], "answer")
         self.assertEqual(result["answer"], "Your name is Yash.")

@@ -111,3 +111,25 @@ def decide_prompt_memory_action(prompt: str, context: WakeUpContext) -> RecallOu
 
     injection = build_wake_up_injection(context)
     return RecallOutcome(context=context, injection=injection)
+
+
+def build_recall_response(prompt: str, context: WakeUpContext) -> dict:
+    """Serialize one recall decision for HTTP/adapter callers."""
+    outcome = decide_prompt_memory_action(prompt, context)
+    response = {
+        "action": outcome.action,
+        "facts_count": len(context.facts),
+        "episodic_count": len(context.episodic),
+        "procedural_count": len(context.procedural),
+        "warnings": [warning.__dict__ for warning in context.warnings],
+        "context": {
+            "facts": context.facts,
+            "episodic": context.episodic,
+            "procedural": context.procedural,
+        },
+    }
+    if outcome.answer:
+        response["answer"] = outcome.answer
+    if outcome.injection:
+        response["injection"] = outcome.injection
+    return response

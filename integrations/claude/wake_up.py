@@ -23,6 +23,7 @@ from integrations.common import (
     open_existing_memory_db,
     retrieve_prompt_memory,
 )
+from memory.client import MemoryClient
 from memory.db import log_retrieval
 from memory.logger import activity_log
 from memory.debug import enable_debug
@@ -118,8 +119,7 @@ def _open_connection():
     return open_existing_memory_db(DB_PATH)
 
 
-def _retrieve_context(conn, request: HookRequest):
-    include_working_memory = _is_first_message(request.session_id)
+def _retrieve_context(conn, request: HookRequest, *, include_working_memory: bool):
     _log_info(
         f"running semantic search for prompt={request.prompt!r}, "
         f"include_working_memory={include_working_memory}"
@@ -131,9 +131,30 @@ def _retrieve_context(conn, request: HookRequest):
     )
 
 
+def _recall_via_server(request: HookRequest, *, include_working_memory: bool) -> dict | None:
+    try:
+        _log_info(
+            f"calling recall server for prompt={request.prompt!r}, "
+            f"include_working_memory={include_working_memory}"
+        )
+        return MemoryClient(port=int(os.environ.get("MEMORY_INGEST_PORT", "7747"))).recall(
+            request.prompt,
+            include_working_memory=include_working_memory,
+            session_id=request.session_id,
+        )
+    except (ConnectionError, RuntimeError) as exc:
+        _log_info(f"recall server unavailable ({exc})")
+        return None
+
+
 def _log_context_warnings(context) -> None:
     for warning in context.warnings:
         _log_error(f"{warning.stage} failed: {warning.message}")
+
+
+def _log_response_warnings(response: dict) -> None:
+    for warning in response.get("warnings", []):
+        _log_error(f"{warning.get('stage')} failed: {warning.get('message')}")
 
 
 def _log_fact_lookup_details(_request: HookRequest, context) -> None:
@@ -147,11 +168,30 @@ def _log_fact_lookup_details(_request: HookRequest, context) -> None:
     _log_info(f"fact lookup results={json.dumps(results, ensure_ascii=False)}")
 
 
+def _log_response_fact_lookup_details(response: dict) -> None:
+    results = []
+    for fact in response.get("context", {}).get("facts", []):
+        results.append({
+            "content": str(fact.get("content", "")).strip(),
+            "similarity": fact.get("similarity"),
+            "id": fact.get("id"),
+        })
+    _log_info(f"fact lookup results={json.dumps(results, ensure_ascii=False)}")
+
+
 def _log_context_details(context) -> None:
     if context.episodic:
         _log_info("episodic=" + json.dumps(context.episodic, ensure_ascii=False))
     if context.procedural:
         _log_info("procedural=" + json.dumps(context.procedural, ensure_ascii=False))
+
+
+def _log_response_context_details(response: dict) -> None:
+    context = response.get("context", {})
+    if context.get("episodic"):
+        _log_info("episodic=" + json.dumps(context["episodic"], ensure_ascii=False))
+    if context.get("procedural"):
+        _log_info("procedural=" + json.dumps(context["procedural"], ensure_ascii=False))
 
 
 def _log_retrieval_metrics(
@@ -196,72 +236,73 @@ def main() -> None:
         _log_info("empty prompt, skipping wake_up injection")
         _allow()
 
+    include_working_memory = _is_first_message(request.session_id)
+
+    server_response = _recall_via_server(request, include_working_memory=include_working_memory)
+    if server_response is None:
+        _log_info("recall server unavailable; allowing prompt through")
+        _allow()
+
     conn = None
     try:
         conn = _open_connection()
     except Exception:
-        _log_error(f"failed to open DB: {traceback.format_exc()}")
-        _allow()
-
-    if conn is None:
-        _log_info(f"memory db not found at {DB_PATH}, skipping wake_up injection")
-        _allow()
+        conn = None
 
     try:
-        try:
-            context = _retrieve_context(conn, request)
-        except Exception as exc:
-            _log_error(f"embed failed: {exc}")
-            _allow()
+        _log_response_warnings(server_response)
+        _log_response_fact_lookup_details(server_response)
+        _log_response_context_details(server_response)
 
-        _log_context_warnings(context)
-        _log_fact_lookup_details(request, context)
-        _log_context_details(context)
-
-        outcome = decide_prompt_memory_action(request.prompt, context)
-        if outcome.action == "answer":
-            fact_contents = [str(fact.get("content", "")) for fact in context.facts]
-            canonical_facts = [fact.strip() for fact in fact_contents if fact.strip()]
+        if server_response.get("action") == "answer":
+            answer = str(server_response.get("answer", ""))
+            canonical_facts = [
+                str(fact.get("content", "")).strip()
+                for fact in server_response.get("context", {}).get("facts", [])
+                if str(fact.get("content", "")).strip()
+            ]
             _log_info(f"fact renderer input={json.dumps(canonical_facts, ensure_ascii=False)}")
-            _log_info(f"fact renderer output={outcome.answer!r}")
-            if outcome.answer.strip() in canonical_facts or outcome.answer.strip() == "\n".join(canonical_facts):
-                _log_info("fact lookup hit; renderer fell back to canonical facts")
-            else:
-                _log_info("fact lookup hit; rendered answer from retrieved facts with local llm")
-            _log_retrieval_metrics(
-                conn,
-                tool_name="wake_up_fact_hit",
-                action="fact_hit_blocked",
-                request=request,
-                context=context,
-                payload_text=outcome.answer,
-            )
-            _respond_with_blocked_prompt(outcome.answer)
+            _log_info(f"fact renderer output={answer!r}")
+            _log_info("fact lookup hit; rendered answer deterministically from stored facts")
+            if conn is not None:
+                _log_retrieval_metrics(
+                    conn,
+                    tool_name="wake_up_fact_hit",
+                    action="fact_hit_blocked",
+                    request=request,
+                    context=type("Ctx", (), server_response.get("context", {}))(),
+                    payload_text=answer,
+                )
+            _respond_with_blocked_prompt(answer)
 
-        if outcome.injection:
-            _log_info(f"wake-up context found but prompt injection is unavailable for this hook: {outcome.injection}")
-            _log_retrieval_metrics(
-                conn,
-                tool_name="wake_up_context_found",
-                action="context_found_allow",
-                request=request,
-                context=context,
-                payload_text=outcome.injection,
-            )
+        injection = str(server_response.get("injection", ""))
+        if injection:
+            _log_info(f"wake-up context found but prompt injection is unavailable for this hook: {injection}")
+            if conn is not None:
+                _log_retrieval_metrics(
+                    conn,
+                    tool_name="wake_up_context_found",
+                    action="context_found_allow",
+                    request=request,
+                    context=type("Ctx", (), server_response.get("context", {}))(),
+                    payload_text=injection,
+                )
         else:
             _log_info("no wake-up memory found; allowing prompt through")
-            _log_retrieval_metrics(
-                conn,
-                tool_name="wake_up_noop",
-                action="context_miss_allow",
-                request=request,
-                context=context,
-                payload_text="",
-            )
+            if conn is not None:
+                _log_retrieval_metrics(
+                    conn,
+                    tool_name="wake_up_noop",
+                    action="context_miss_allow",
+                    request=request,
+                    context=type("Ctx", (), server_response.get("context", {}))(),
+                    payload_text="",
+                )
         _allow()
     finally:
         try:
-            conn.close()
+            if conn is not None:
+                conn.close()
         except Exception:
             pass
 

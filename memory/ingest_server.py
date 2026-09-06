@@ -20,14 +20,18 @@ from pydantic import BaseModel, field_validator
 import uvicorn
 from uvicorn.config import LOGGING_CONFIG as UVICORN_LOGGING_CONFIG
 
+from integrations.common import build_recall_response, retrieve_prompt_memory
 from memory.db import bootstrap_db, open_db
 from memory.ingest_pipeline import ingest_session
 from memory.logger import error_log
 from memory.debug import enable_debug
+from memory.inference import embed_text
 
 
 DB_PATH = os.path.expanduser("~/.memory/memory.db")
 PORT = int(os.environ.get("MEMORY_INGEST_PORT", "7747"))
+_EMBED_MODEL_READY = False
+_EMBED_MODEL_ERROR = ""
 
 
 def _timestamped_excepthook(exc_type, exc, tb) -> None:
@@ -51,9 +55,21 @@ _UVICORN_LOG_CONFIG["formatters"]["access"]["datefmt"] = "%Y-%m-%dT%H:%M:%S"
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
+    global _EMBED_MODEL_READY, _EMBED_MODEL_ERROR
+
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = bootstrap_db(DB_PATH)
     conn.close()
+
+    try:
+        embed_text("memory recall warmup")
+    except Exception as exc:
+        _EMBED_MODEL_READY = False
+        _EMBED_MODEL_ERROR = str(exc)
+    else:
+        _EMBED_MODEL_READY = True
+        _EMBED_MODEL_ERROR = ""
+
     yield
 
 
@@ -106,13 +122,42 @@ class IngestRequest(BaseModel):
         return value
 
 
+class RecallRequest(BaseModel):
+    prompt: str
+    include_working_memory: bool = False
+    session_id: str | None = None
+
+
 @app.get("/status")
 def get_status() -> dict:
     return {
         "status": "ok",
         "db_path": DB_PATH,
         "db_exists": os.path.exists(DB_PATH),
+        "embed_model_ready": _EMBED_MODEL_READY,
+        "embed_model_error": _EMBED_MODEL_ERROR,
     }
+
+
+@app.post("/recall")
+def post_recall(request: RecallRequest) -> dict:
+    prompt = request.prompt.strip()
+    if not prompt:
+        return {"action": "noop"}
+
+    conn = _get_conn()
+    try:
+        context = retrieve_prompt_memory(
+            conn,
+            prompt,
+            include_working_memory=request.include_working_memory,
+        )
+        return build_recall_response(prompt, context)
+    except Exception as exc:
+        error_log("ingest", f"unhandled error in POST /recall: {exc}", exc=exc)
+        raise
+    finally:
+        conn.close()
 
 
 @app.post("/ingest")

@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -11,6 +12,7 @@ from fastapi.testclient import TestClient
 import memory.ingest_server as ingest_server_module
 from memory.ingest_server import app
 from memory.db import init_db
+from memory.retrieval import WakeUpContext
 
 
 class TestIngestEndpoints(unittest.TestCase):
@@ -61,10 +63,31 @@ class TestIngestEndpoints(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 422)
 
+    def test_post_recall_returns_answer(self):
+        context = WakeUpContext(
+            None,
+            None,
+            [],
+            [],
+            [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.99}],
+            [],
+        )
+        with patch.object(ingest_server_module, "retrieve_prompt_memory", return_value=context):
+            response = self.client.post(
+                "/recall",
+                json={"prompt": "what is my name?"},
+            )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["action"], "answer")
+        self.assertEqual(body["answer"], "Your name is Yash.")
+        self.assertEqual(body["facts_count"], 1)
+
     def test_status_ok(self):
         response = self.client.get("/status")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "ok")
+        self.assertIn("embed_model_ready", response.json())
 
 
 if __name__ == "__main__":

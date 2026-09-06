@@ -16,12 +16,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from integrations.common import (
     DEFAULT_DB_PATH,
-    decide_prompt_memory_action,
-    open_existing_memory_db,
     open_memory_db_for_ingest,
     save_session_to_memory,
-    retrieve_prompt_memory,
 )
+from memory.client import MemoryClient
 
 
 DB_PATH = DEFAULT_DB_PATH
@@ -71,35 +69,24 @@ def handle_save(payload: dict, *, db_path: str = DB_PATH) -> dict:
 
 
 def handle_recall(payload: dict, *, db_path: str = DB_PATH) -> dict:
+    del db_path
+
     prompt = str(payload.get("prompt", "")).strip()
     if not prompt:
         return {"action": "noop"}
 
-    conn = open_existing_memory_db(db_path)
-    if conn is None:
-        return {"action": "noop"}
-
     try:
-        context = retrieve_prompt_memory(
-            conn,
+        return MemoryClient(port=int(os.environ.get("MEMORY_INGEST_PORT", "7747"))).recall(
             prompt,
             include_working_memory=bool(payload.get("include_working_memory", False)),
+            session_id=payload.get("session_id"),
         )
-        outcome = decide_prompt_memory_action(prompt, context)
-        response = {
-            "action": outcome.action,
-            "facts_count": len(context.facts),
-            "episodic_count": len(context.episodic),
-            "procedural_count": len(context.procedural),
-            "warnings": [warning.__dict__ for warning in context.warnings],
+    except (ConnectionError, RuntimeError) as exc:
+        return {
+            "action": "noop",
+            "error": str(exc),
+            "server_required": True,
         }
-        if outcome.answer:
-            response["answer"] = outcome.answer
-        if outcome.injection:
-            response["injection"] = outcome.injection
-        return response
-    finally:
-        conn.close()
 
 
 def main(argv: list[str] | None = None) -> int:

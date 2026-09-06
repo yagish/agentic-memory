@@ -1,4 +1,4 @@
-"""Thin Python client for the memory ingest server."""
+"""Thin Python client for the memory ingest/recall server."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import urllib.request
 
 
 class MemoryClient:
-    """Small stdlib-only HTTP client for /ingest and /status."""
+    """Small stdlib-only HTTP client for /ingest, /recall, and /status."""
 
     def __init__(self, host: str = "localhost", port: int = 7747) -> None:
         self._base_url = f"http://{host}:{port}"
@@ -78,6 +78,15 @@ class MemoryClient:
         if metadata is not None:
             payload["metadata"] = metadata
         return self._post("/ingest", payload)
+
+    def recall(self, prompt: str, *, include_working_memory: bool = False, session_id: str | None = None) -> dict:
+        payload: dict = {
+            "prompt": prompt,
+            "include_working_memory": include_working_memory,
+        }
+        if session_id is not None:
+            payload["session_id"] = session_id
+        return self._post("/recall", payload)
 
     def status(self) -> dict:
         return self._get("/status")

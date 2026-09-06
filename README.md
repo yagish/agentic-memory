@@ -43,9 +43,11 @@ Everything else from the older design was removed.
 - `--once` forces one immediate extraction pass and skips the CPU gate
 - writes only `~/.memory/daemon.log`
 
-### 4. Ingest server
+### 4. Recall server
 `memory/ingest_server.py`
+- long-lived singleton embedding model for recall
 - `POST /ingest`
+- `POST /recall`
 - `GET /status`
 
 ### 5. Dashboard server
@@ -108,10 +110,18 @@ ollama pull qwen2.5:7b
 Start services manually if needed:
 
 ```bash
-python3 memory/ingest_server.py
+python3 memory/ingest_server.py   # recall server
 python3 memory/dashboard_server.py
 python3 memory/daemon.py
 python3 memory/daemon.py --once
+```
+
+Or use the helper scripts:
+
+```bash
+./scripts/start-memory.sh
+./scripts/restart-memory.sh
+./scripts/stop-memory.sh
 ```
 
 ## Integrations
@@ -173,8 +183,8 @@ pytest -q
 
 - `WakeUpContext` still keeps some old fields for compatibility, but runtime retrieval uses `episodic`, `facts`, and `procedural` memory.
 - Model selection:
-  - `MEMORY_OLLAMA_MODEL` sets the model used for fact extraction, episodic extraction, procedural extraction, fact rendering, and fact-answer compaction.
-  - Use one stronger local model here when you want prompt quality to do the filtering work instead of per-stage model splits.
+  - `MEMORY_OLLAMA_MODEL` sets the model used for fact extraction, episodic extraction, and procedural extraction.
+  - Recall is model-free apart from the singleton embedding model hosted by `memory/ingest_server.py`.
 - `memory.db.log_retrieval()` is a compatibility no-op because retrieval-event storage was removed.
 - `integrations/common.py` holds the shared save/retrieve policy used by Claude and pi.
 - `dashboard.html` supports click-row details for Sessions, Facts, and Episodes. Procedural storage exists in the runtime, but the dashboard UI has not been expanded for it yet.

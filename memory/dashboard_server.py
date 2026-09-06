@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.request
 from contextlib import asynccontextmanager
 
@@ -24,7 +25,9 @@ from memory.ollama import is_ollama_running, start_ollama_if_needed
 DB_PATH = os.path.expanduser("~/.memory/memory.db")
 DAEMON_LOG = os.path.expanduser("~/.memory/daemon.log")
 PORT = int(os.environ.get("MEMORY_QUERY_PORT", "7748"))
+RECALL_PORT = int(os.environ.get("MEMORY_INGEST_PORT", "7747"))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+RECALL_SERVER_URL = f"http://127.0.0.1:{RECALL_PORT}"
 
 _LOG_SOURCES: dict[str, dict[str, object]] = {
     "daemon": {
@@ -106,6 +109,45 @@ def _check_ollama() -> tuple[bool, str | None, list[str]]:
     return running, active_model, installed_models
 
 
+def _recall_server_script() -> str:
+    return os.path.join(PROJECT_ROOT, "memory", "ingest_server.py")
+
+
+def _check_recall_server() -> dict:
+    try:
+        with urllib.request.urlopen(f"{RECALL_SERVER_URL}/status", timeout=2) as response:
+            if response.status != 200:
+                return {
+                    "running": False,
+                    "status": "unreachable",
+                    "port": RECALL_PORT,
+                    "embed_model_ready": False,
+                    "embed_model_error": f"HTTP {response.status}",
+                }
+            payload = json.loads(response.read().decode("utf-8") or "{}")
+    except Exception as exc:
+        return {
+            "running": False,
+            "status": "stopped",
+            "port": RECALL_PORT,
+            "embed_model_ready": False,
+            "embed_model_error": str(exc),
+        }
+
+    embed_ready = bool(payload.get("embed_model_ready", False))
+    embed_error = payload.get("embed_model_error") or ""
+    status = "running" if embed_ready else "degraded"
+    return {
+        "running": True,
+        "status": status,
+        "port": RECALL_PORT,
+        "embed_model_ready": embed_ready,
+        "embed_model_error": embed_error,
+        "db_path": payload.get("db_path"),
+        "db_exists": payload.get("db_exists"),
+    }
+
+
 def _resolve_log_path(name: str) -> str | None:
     config = _LOG_SOURCES.get(name) or {}
     for candidate in config.get("paths", []):
@@ -173,6 +215,7 @@ def dashboard() -> HTMLResponse:
 def get_services() -> dict:
     daemon_running, daemon_pid = _check_daemon()
     ollama_running, ollama_model, ollama_installed_models = _check_ollama()
+    recall = _check_recall_server()
     last_run_iso, facts_extracted_total = _parse_daemon_log()
 
     total_sessions = 0
@@ -210,6 +253,11 @@ def get_services() -> dict:
             "pull_recommendation": "ollama pull qwen2.5:7b",
             "start_command": "ollama serve",
             "start_endpoint": "/ops/ollama/start",
+        },
+        "recall": {
+            **recall,
+            "restart_command": f"{sys.executable} memory/ingest_server.py",
+            "restart_endpoint": "/ops/recall/restart",
         },
         "logs": _list_logs(),
         "memory": {
@@ -446,6 +494,59 @@ def start_ollama() -> dict:
         "default_model": os.environ.get("MEMORY_OLLAMA_MODEL", "qwen2.5:7b"),
         "started_here": proc is not None,
         "start_command": "ollama serve",
+    }
+
+
+@ops_router.post("/ops/recall/restart")
+def restart_recall_server() -> dict:
+    script = _recall_server_script()
+    command = [sys.executable, script]
+
+    try:
+        subprocess.run(["pkill", "-f", script], capture_output=True, text=True, timeout=5)
+    except Exception:
+        pass
+
+    time.sleep(0.25)
+
+    try:
+        proc = subprocess.Popen(
+            command,
+            cwd=PROJECT_ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as exc:
+        status = _check_recall_server()
+        return {
+            "ok": False,
+            "started_here": False,
+            "pid": None,
+            "error": str(exc),
+            **status,
+            "restart_command": f"{sys.executable} memory/ingest_server.py",
+        }
+
+    for _ in range(20):
+        time.sleep(0.25)
+        status = _check_recall_server()
+        if status.get("running"):
+            return {
+                "ok": True,
+                "started_here": True,
+                "pid": proc.pid,
+                **status,
+                "restart_command": f"{sys.executable} memory/ingest_server.py",
+            }
+
+    status = _check_recall_server()
+    return {
+        "ok": bool(status.get("running")),
+        "started_here": True,
+        "pid": proc.pid,
+        **status,
+        "restart_command": f"{sys.executable} memory/ingest_server.py",
     }
 
 

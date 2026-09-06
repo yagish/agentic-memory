@@ -67,6 +67,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
   <aside id="sidebar">
     <div class="sidebar-title">Agentic Memory <small>Dashboard</small></div>
     <div class="sidebar-section">Runtime</div>
+    <div class="svc-item" id="svc-recall-runtime">
+      <span class="svc-dot" id="dot-recall"></span>
+      <div class="svc-body"><div class="svc-name">Recall Server</div><div class="svc-desc" id="svc-desc-recall">Checking status…</div></div>
+    </div>
     <div class="svc-item" id="svc-ollama-runtime">
       <span class="svc-dot" id="dot-ollama"></span>
       <div class="svc-body"><div class="svc-name">Ollama</div><div class="svc-desc" id="svc-desc-ollama">Checking status…</div></div>
@@ -122,6 +126,17 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
           <div class="tile"><div class="tile-value" id="t-episodes">—</div><div class="tile-label">Episodes</div></div>
           <div class="tile"><div class="tile-value" id="t-dbsize">—</div><div class="tile-label">DB Size</div></div>
           <div class="tile">
+            <div class="tile-value" id="t-recall">—</div>
+            <div class="tile-label">Recall Server</div>
+            <div class="tile-sub" id="t-recall-port">Port: —</div>
+            <div class="tile-sub" id="t-recall-embed">Embedding model: —</div>
+            <div class="tile-sub" id="t-recall-warning"></div>
+            <div class="tile-actions">
+              <button class="action-btn" id="btn-restart-recall" onclick="restartRecallServer()">Restart Recall Server</button>
+              <span class="mono" id="recall-command">python3 memory/ingest_server.py</span>
+            </div>
+          </div>
+          <div class="tile">
             <div class="tile-value" id="t-ollama">—</div>
             <div class="tile-label">Ollama</div>
             <div class="tile-sub" id="t-ollama-model">Checking status…</div>
@@ -140,7 +155,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
           <div class="chart-card"><div class="chart-title">Episodes per Day</div><div id="ch-episodes"></div></div>
         </div>
         <div class="overview-copy">
-          This dashboard is intentionally trimmed down. The database keeps only <strong>sessions</strong>, <strong>facts</strong>, and <strong>episodes</strong>. The visible logs are <strong>daemon</strong>, <strong>wake up</strong>, <strong>save hook</strong>, <strong>facts</strong>, and <strong>episodes</strong>. Ollama status is shown above, and the <strong>Start Ollama</strong> button calls the local dashboard endpoint if the server is down. Click any row in a database tab to inspect its full details in the panel below the table.
+          This dashboard is intentionally trimmed down. The database keeps only <strong>sessions</strong>, <strong>facts</strong>, and <strong>episodes</strong>. The visible logs are <strong>daemon</strong>, <strong>wake up</strong>, <strong>save hook</strong>, <strong>facts</strong>, and <strong>episodes</strong>. Recall server status is shown above, and the <strong>Restart Recall Server</strong> button restarts the singleton embedding/recall process. Ollama status is also shown for extraction-time model work, and the <strong>Start Ollama</strong> button calls the local dashboard endpoint if the server is down. Click any row in a database tab to inspect its full details in the panel below the table.
         </div>
       </div>
 
@@ -218,11 +233,23 @@ async function loadServices() {
     const logs = d.logs || [];
     logs.forEach(log => setDot(log.name, !!log.exists));
     const mem = d.memory || {};
+    const recall = d.recall || {};
     const ollama = d.ollama || {};
     set('t-sessions', fmt(mem.total_sessions));
     set('t-facts', fmt(mem.total_facts));
     set('t-episodes', fmt(mem.total_episodes));
     set('t-dbsize', fmtBytes(mem.db_size_bytes));
+    setDot('recall', !!recall.running);
+    set('t-recall', recall.running ? (recall.status === 'degraded' ? 'Degraded' : 'Running') : 'Stopped');
+    set('t-recall-port', `Port: ${recall.port || '7747'}`);
+    set('t-recall-embed', recall.embed_model_ready ? 'Embedding model: ready' : 'Embedding model: not ready');
+    set('t-recall-warning', recall.embed_model_error || '');
+    set('svc-desc-recall', recall.running
+      ? (recall.status === 'degraded' ? 'Running · embedding warmup failed' : 'Running · singleton embeddings loaded')
+      : 'Stopped · click Restart Recall Server');
+    set('recall-command', recall.restart_command || 'python3 memory/ingest_server.py');
+    const recallBtn = document.getElementById('btn-restart-recall');
+    if (recallBtn) recallBtn.disabled = false;
     setDot('ollama', !!ollama.running);
     set('t-ollama', ollama.running ? 'Running' : 'Stopped');
     set('t-ollama-model', ollama.model ? `Active model: ${ollama.model}` : 'No active model detected');
@@ -245,6 +272,24 @@ function setDot(name, ok) {
   const el = document.getElementById('dot-' + name);
   if (!el) return;
   el.className = 'svc-dot ' + (ok ? 'up' : 'down');
+}
+
+async function restartRecallServer() {
+  const btn = document.getElementById('btn-restart-recall');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Restarting…';
+  }
+  try {
+    await fetch(BASE + '/ops/recall/restart', { method: 'POST' });
+  } catch (_) {
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Restart Recall Server';
+    }
+    await loadServices();
+  }
 }
 
 async function startOllama() {

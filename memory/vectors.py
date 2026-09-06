@@ -11,6 +11,8 @@ separately from storage operations.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import math
 import os
 import struct
@@ -77,7 +79,11 @@ def embed(text: str) -> list[float]:
         # local_files_only=True guarantees no Hugging Face network calls.
         # The model must already exist in local cache (default: ~/.cache/huggingface).
         try:
-            _model = SentenceTransformer(_MODEL_NAME, local_files_only=True)
+            # Hook invocations should stay quiet. Some model backends print
+            # one-time weight-loading progress to stderr/stdout, which Claude/pi
+            # surfaces as noisy hook errors even though retrieval succeeds.
+            with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                _model = SentenceTransformer(_MODEL_NAME, local_files_only=True)
         except Exception as exc:
             raise RuntimeError(
                 "Embedding model not available in local cache while offline mode is enabled. "

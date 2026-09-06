@@ -46,16 +46,18 @@ class TestMainIntegration(unittest.TestCase):
         *,
         prompt="hello",
         session_id="test-sess",
-        context=None,
+        server_response=None,
         first_message=True,
-        outcome=None,
     ):
         payload = json.dumps({"session_id": session_id, "prompt": prompt})
         stdout = io.StringIO()
         stderr = io.StringIO()
         conn = MagicMock()
-        retrieval_context = context or WakeUpContext(None, None, [], [], [], [])
-        memory_outcome = outcome or type("Outcome", (), {"action": "noop", "answer": "", "injection": ""})()
+        response = server_response or {
+            "action": "noop",
+            "warnings": [],
+            "context": {"facts": [], "episodic": [], "procedural": []},
+        }
 
         exit_code = None
         with patch("sys.stdin", io.StringIO(payload)), \
@@ -65,8 +67,7 @@ class TestMainIntegration(unittest.TestCase):
              patch.object(_wu, "DB_PATH", "/fake/test.db"), \
              patch.object(_wu, "_open_connection", return_value=conn), \
              patch.object(_wu, "_is_first_message", return_value=first_message), \
-             patch.object(_wu, "retrieve_prompt_memory", return_value=retrieval_context) as retrieve_context, \
-             patch.object(_wu, "decide_prompt_memory_action", return_value=memory_outcome) as decide_action, \
+             patch.object(_wu, "_recall_via_server", return_value=response) as recall_via_server, \
              patch.object(_wu, "log_retrieval") as log_retrieval, \
              patch.object(_wu, "activity_log"):
             with self.assertRaises(SystemExit) as raised:
@@ -78,9 +79,8 @@ class TestMainIntegration(unittest.TestCase):
             "stderr": stderr.getvalue(),
             "exit_code": exit_code,
             "conn": conn,
-            "retrieve_context": retrieve_context,
+            "recall_via_server": recall_via_server,
             "log_retrieval": log_retrieval,
-            "decide_action": decide_action,
         }
 
     def test_no_memory_found_allows_prompt(self):
@@ -93,16 +93,17 @@ class TestMainIntegration(unittest.TestCase):
     def test_fact_hit_returns_documented_block_json_when_only_facts_match(self):
         result = self._run_main(
             prompt="what is my name?",
-            context=WakeUpContext(
-                None,
-                None,
-                [],
-                [],
-                [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.99}],
-                [],
-            ),
+            server_response={
+                "action": "answer",
+                "answer": "Your name is Yash.",
+                "warnings": [],
+                "context": {
+                    "facts": [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.99}],
+                    "episodic": [],
+                    "procedural": [],
+                },
+            },
             first_message=False,
-            outcome=type("Outcome", (), {"action": "answer", "answer": "Your name is Yash.", "injection": ""})(),
         )
         self.assertEqual(result["stderr"], "")
         payload = json.loads(result["stdout"])
@@ -115,12 +116,7 @@ class TestMainIntegration(unittest.TestCase):
             },
         )
         self.assertEqual(result["exit_code"], 0)
-        result["decide_action"].assert_called_once()
-        result["retrieve_context"].assert_called_once_with(
-            result["conn"],
-            "what is my name?",
-            include_working_memory=False,
-        )
+        result["recall_via_server"].assert_called_once()
         result["log_retrieval"].assert_called_once_with(
             result["conn"],
             "wake_up_fact_hit",
@@ -131,16 +127,17 @@ class TestMainIntegration(unittest.TestCase):
     def test_fact_hit_with_episodic_context_allows_prompt(self):
         result = self._run_main(
             prompt="continue fixing auth",
-            context=WakeUpContext(
-                None,
-                None,
-                [],
-                [{"id": "ep-1", "title": "Resolved auth bug", "abstract": "Fixed the login loop.", "similarity": 0.79}],
-                [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.99}],
-                [],
-            ),
+            server_response={
+                "action": "inject",
+                "injection": "[Memory context: foo]",
+                "warnings": [],
+                "context": {
+                    "facts": [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.99}],
+                    "episodic": [{"id": "ep-1", "title": "Resolved auth bug", "abstract": "Fixed the login loop.", "similarity": 0.79}],
+                    "procedural": [],
+                },
+            },
             first_message=False,
-            outcome=type("Outcome", (), {"action": "inject", "answer": "", "injection": "[Memory context: foo]"})(),
         )
 
         self.assertEqual(json.loads(result["stdout"]), {})
@@ -152,17 +149,6 @@ class TestMainIntegration(unittest.TestCase):
         )
 
     def test_logs_fact_lookup_query_results_and_renderer_io(self):
-        retrieval_context = WakeUpContext(
-            None,
-            None,
-            [],
-            [],
-            [
-                {"id": "fact-1", "content": "user.name = Yash", "similarity": 0.99},
-                {"id": "fact-2", "content": "user.location = Seattle", "similarity": 0.97},
-            ],
-            [],
-        )
         payload = json.dumps({"session_id": "test-sess", "prompt": "what is my name and where do i live?"})
         stdout = io.StringIO()
         stderr = io.StringIO()
@@ -175,8 +161,19 @@ class TestMainIntegration(unittest.TestCase):
              patch.object(_wu, "DB_PATH", "/fake/test.db"), \
              patch.object(_wu, "_open_connection", return_value=conn), \
              patch.object(_wu, "_is_first_message", return_value=False), \
-             patch.object(_wu, "retrieve_prompt_memory", return_value=retrieval_context), \
-             patch.object(_wu, "decide_prompt_memory_action", return_value=type("Outcome", (), {"action": "answer", "answer": "Your name is Yash and you live in Seattle.", "injection": ""})()), \
+             patch.object(_wu, "_recall_via_server", return_value={
+                 "action": "answer",
+                 "answer": "Your name is Yash and you live in Seattle.",
+                 "warnings": [],
+                 "context": {
+                     "facts": [
+                         {"id": "fact-1", "content": "user.name = Yash", "similarity": 0.99},
+                         {"id": "fact-2", "content": "user.location = Seattle", "similarity": 0.97},
+                     ],
+                     "episodic": [],
+                     "procedural": [],
+                 },
+             }), \
              patch.object(_wu, "log_retrieval"), \
              patch.object(_wu, "activity_log"), \
              patch.object(_wu, "_log_info") as log_info:
@@ -188,19 +185,17 @@ class TestMainIntegration(unittest.TestCase):
         self.assertTrue(any('fact renderer input=["user.name = Yash", "user.location = Seattle"]' in msg for msg in logged_messages))
         self.assertTrue(any("fact renderer output='Your name is Yash and you live in Seattle.'" in msg for msg in logged_messages))
 
-    def test_retrieval_is_called_with_first_message_flag(self):
+    def test_recall_server_is_called_with_first_message_flag(self):
         first = self._run_main(prompt="hello there", first_message=True)
-        first["retrieve_context"].assert_called_once_with(
-            first["conn"],
-            "hello there",
-            include_working_memory=True,
+        self.assertEqual(
+            first["recall_via_server"].call_args.kwargs,
+            {"include_working_memory": True},
         )
 
         later = self._run_main(prompt="hello there", first_message=False)
-        later["retrieve_context"].assert_called_once_with(
-            later["conn"],
-            "hello there",
-            include_working_memory=False,
+        self.assertEqual(
+            later["recall_via_server"].call_args.kwargs,
+            {"include_working_memory": False},
         )
 
 

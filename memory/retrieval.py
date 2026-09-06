@@ -19,7 +19,7 @@ from typing import Any
 
 from memory.db import search_facts_semantic
 from memory.episodic_repository import list_recent_episodic_memories, retrieve_episodic_memories
-from memory.inference import GenerationRequest, InferenceError, embed_text, generate_text
+from memory.inference import embed_text
 from memory.procedural_repository import retrieve_procedural_memories
 
 MemoryRow = dict[str, Any]
@@ -35,8 +35,6 @@ EPISODIC_RECENT_LIMIT = 5
 FACT_LIMIT = 5
 PROCEDURAL_MIN_SIMILARITY = 0.74
 PROCEDURAL_LIMIT = 2
-_CONTEXT_COMPACTION_MODEL = None
-_CONTEXT_COMPACTION_TIMEOUT_SECONDS = 10
 
 
 @dataclass(frozen=True)
@@ -60,8 +58,10 @@ class WakeUpContext:
     warnings: list[RetrievalWarning] = field(default_factory=list)
 
 
+
 def _normalize_text(content: str) -> str:
     return re.sub(r"\s+", " ", content).strip()
+
 
 
 def _as_sentence(content: str) -> str:
@@ -71,6 +71,7 @@ def _as_sentence(content: str) -> str:
     return content if content.endswith((".", "!", "?")) else f"{content}."
 
 
+
 def _naturalize_fact(content: str) -> str:
     content = _normalize_text(content)
     match = re.fullmatch(r"([a-z0-9_]+)\.([a-z0-9_]+)\s*=\s*(.+)", content, re.IGNORECASE)
@@ -78,6 +79,7 @@ def _naturalize_fact(content: str) -> str:
         entity, attribute, value = match.groups()
         return _as_sentence(f"Remembered fact: {entity}.{attribute} = {value}")
     return _as_sentence(content)
+
 
 
 def _append_warning(warnings: list[RetrievalWarning], stage: str, exc: Exception) -> None:
@@ -115,10 +117,12 @@ def _is_substantive_episode(item: MemoryRow) -> bool:
     return details_count >= 2 and not _looks_like_missing_memory_episode(item)
 
 
+
 def _filter_by_similarity(rows: list[MemoryRow], threshold: float | None) -> list[MemoryRow]:
     if threshold is None:
         return rows
     return [row for row in rows if row.get("similarity", 0.0) >= threshold]
+
 
 
 def _format_episode(item: MemoryRow) -> str:
@@ -146,8 +150,10 @@ def _format_episode(item: MemoryRow) -> str:
     return " ".join(fragments)
 
 
+
 def _format_episodic(episodic: list[MemoryRow]) -> str:
     return " ".join(_format_episode(item) for item in episodic[:2] if _format_episode(item))
+
 
 
 def _format_facts(facts: list[MemoryRow]) -> str:
@@ -157,6 +163,7 @@ def _format_facts(facts: list[MemoryRow]) -> str:
         if content:
             lines.append(_naturalize_fact(content))
     return " ".join(lines)
+
 
 
 def _format_procedural(procedural: list[MemoryRow]) -> str:
@@ -176,9 +183,19 @@ def _format_procedural(procedural: list[MemoryRow]) -> str:
     return " ".join(fragments)
 
 
+
+def _context_sections(context: WakeUpContext) -> list[str]:
+    return [
+        _format_episodic(context.episodic),
+        _format_procedural(context.procedural),
+        _format_facts(context.facts),
+    ]
+
+
+
 def _build_context_body(context: WakeUpContext) -> str:
-    sections = [_format_episodic(context.episodic), _format_procedural(context.procedural), _format_facts(context.facts)]
-    return _normalize_text(" ".join(section for section in sections if section))
+    return _normalize_text(" ".join(section for section in _context_sections(context) if section))
+
 
 
 def _build_context_envelope(body: str) -> str:
@@ -188,44 +205,36 @@ def _build_context_envelope(body: str) -> str:
     return f"[Memory context: {body}]"
 
 
-def _compact_context_body(body: str, *, char_budget: int) -> str:
-    normalized = _normalize_text(body)
-    if not normalized:
-        return ""
-    if len(_build_context_envelope(normalized)) <= char_budget:
-        return normalized
 
-    target_budget = max(1, char_budget - len("[Memory context: ]"))
-    try:
-        result = generate_text(
-            GenerationRequest(
-                prompt=(
-                    "Compress this memory context so it stays faithful, compact, and useful for the next turn. "
-                    "Keep names, decisions, outcomes, follow-ups, concrete facts, and procedural steps. "
-                    f"Return plain text only and stay under {target_budget} characters.\n\n"
-                    f"Memory context:\n{normalized}\n\nCompressed context:"
-                ),
-                model=_CONTEXT_COMPACTION_MODEL,
-                timeout_seconds=_CONTEXT_COMPACTION_TIMEOUT_SECONDS,
-                temperature=0.0,
-            )
-        )
-    except InferenceError:
-        compacted = normalized
-    else:
-        compacted = _normalize_text(result.text) or normalized
+def _fit_context_to_budget(sections: list[str], *, char_budget: int) -> str:
+    available = max(1, char_budget - len("[Memory context: ]"))
+    kept: list[str] = []
 
-    if len(_build_context_envelope(compacted)) <= char_budget:
-        return compacted
-    return compacted[:target_budget].rstrip()
+    for section in (_normalize_text(section) for section in sections):
+        if not section:
+            continue
+        candidate = _normalize_text(" ".join(kept + [section]))
+        if len(candidate) <= available:
+            kept.append(section)
+            continue
+        if not kept:
+            return section[:available].rstrip()
+        break
+
+    return _normalize_text(" ".join(kept))
+
 
 
 def build_wake_up_injection(context: WakeUpContext) -> str:
-    """Assemble the wake-up memory block within the char budget."""
-    body = _build_context_body(context)
+    """Assemble the wake-up memory block within the char budget.
+
+    This path is intentionally deterministic and model-free.
+    """
+    body = _fit_context_to_budget(_context_sections(context), char_budget=CHARS_BUDGET)
     if not body:
         return ""
-    return _build_context_envelope(_compact_context_body(body, char_budget=CHARS_BUDGET))
+    return _build_context_envelope(body)
+
 
 
 def _retrieve_episodic(conn, prompt: str, prompt_vec, embed_fn, warnings: list[RetrievalWarning]) -> list[MemoryRow]:
@@ -242,6 +251,7 @@ def _retrieve_episodic(conn, prompt: str, prompt_vec, embed_fn, warnings: list[R
     except Exception as exc:
         _append_warning(warnings, "episodic", exc)
         return []
+
 
 
 def _retrieve_recent_episodic(conn, warnings: list[RetrievalWarning]) -> list[MemoryRow]:
@@ -298,6 +308,7 @@ def _retrieve_procedural(conn, prompt: str, prompt_vec, embed_fn, warnings: list
     except Exception as exc:
         _append_warning(warnings, "procedural", exc)
         return []
+
 
 
 def retrieve_wake_up_context(

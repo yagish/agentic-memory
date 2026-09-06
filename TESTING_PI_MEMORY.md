@@ -5,7 +5,7 @@
 In one terminal:
 
 ```bash
-python3 memory/ingest_server.py
+python3 memory/ingest_server.py  # recall server
 ```
 
 In another terminal:

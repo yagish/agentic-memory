@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/_memory_common.sh"
 
 services=("$@")
 if [[ ${#services[@]} -eq 0 ]]; then
-  services=(query ingest daemon)
+  services=(query recall daemon)
 fi
 
 for svc in "${services[@]}"; do
