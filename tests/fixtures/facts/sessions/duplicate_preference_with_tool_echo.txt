@@ -1,0 +1,3 @@
+User: I prefer short answers.
+User: <bash-input>ls</bash-input>
+User: I prefer short answers.

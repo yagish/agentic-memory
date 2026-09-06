@@ -1,0 +1,12 @@
+[
+  {
+    "entity": "user",
+    "attribute": "company",
+    "value": "Shopify"
+  },
+  {
+    "entity": "user",
+    "attribute": "response_style",
+    "value": "terse"
+  }
+]

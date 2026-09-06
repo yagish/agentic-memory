@@ -1,0 +1,4 @@
+User: Do not hardcode ontology gates for fact extraction.
+Assistant: We removed the regex hack and tightened the prompt so only durable facts survive.
+User: Great, keep transcript storage raw and let the extractor reject commands instead.
+Assistant: We still need more fixture coverage to prove the new prompt is behaving.

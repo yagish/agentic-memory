@@ -1,0 +1,3 @@
+User: Elena agreed we should move catalog token validation into shared auth middleware instead of keeping it in the route handler.
+Assistant: I implemented the middleware change and the redirect loop stopped.
+User: Good, add regression tests for expired-session flows next Saturday.

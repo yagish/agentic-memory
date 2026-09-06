@@ -1,0 +1,19 @@
+{
+  "title_contains": [
+    "local inference",
+    "Model"
+  ],
+  "abstract_contains": [
+    "qwen2.5:7b",
+    "memory constraints"
+  ],
+  "decisions_contains": [
+    "qwen2.5:7b"
+  ],
+  "outcomes_contains": [
+    "generation is working"
+  ],
+  "follow_ups_contains": [
+    "Benchmark quality"
+  ]
+}

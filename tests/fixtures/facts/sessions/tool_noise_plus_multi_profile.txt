@@ -1,0 +1,2 @@
+User: <tool-stdout>origin	git@github.com:acme/repo.git</tool-stdout>
+User: My name is Sam. I live in Austin, TX. I use WezTerm.

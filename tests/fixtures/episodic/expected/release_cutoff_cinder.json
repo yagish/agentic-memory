@@ -1,0 +1,19 @@
+{
+  "title_contains": [
+    "release"
+  ],
+  "abstract_contains": [
+    "Wednesday",
+    "next train"
+  ],
+  "decisions_contains": [
+    "Wednesday"
+  ],
+  "outcomes_contains": [
+    "Slack",
+    "acknowledged"
+  ],
+  "follow_ups_contains": [
+    "changelog"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "title_contains": [
+    "targeted-extraction",
+    "flag"
+  ],
+  "abstract_contains": [
+    "parser branch",
+    "README"
+  ],
+  "decisions_contains": [
+    "remove the --targeted-extraction flag"
+  ],
+  "outcomes_contains": [
+    "README examples"
+  ],
+  "follow_ups_contains": [
+    "shell completion"
+  ]
+}

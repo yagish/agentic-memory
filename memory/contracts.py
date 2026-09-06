@@ -1,7 +1,7 @@
 """Canonical validated memory contracts.
 
-Start narrow with FactMemory so the facts pipeline can be built test-first,
-then extend this module with additional memory types later.
+The system currently persists facts, episodic memories, and procedural
+memories behind strict Pydantic contracts.
 """
 
 from __future__ import annotations
@@ -154,4 +154,54 @@ class EpisodicMemory(BaseModel):
     @field_validator("participants", "decisions", "outcomes", "follow_ups", mode="before")
     @classmethod
     def _normalize_episodic_memory_lists(cls, value: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+        return _normalize_text_list(value)
+
+
+class ExtractedProcedure(BaseModel):
+    """One repeatable how-to pattern emitted by the extractor."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    title: str = Field(min_length=1, max_length=200)
+    summary: str = Field(min_length=1, max_length=600)
+    steps: tuple[str, ...] = Field(default=(), min_length=1)
+    trigger_phrases: tuple[str, ...] = ()
+    tools: tuple[str, ...] = ()
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    source_quote: str | None = None
+
+    @field_validator("title", "summary", "source_quote", mode="before")
+    @classmethod
+    def _strip_procedural_text_fields(cls, value: str | None) -> str | None:
+        return _strip_text(value)
+
+    @field_validator("steps", "trigger_phrases", "tools", mode="before")
+    @classmethod
+    def _normalize_procedural_lists(cls, value: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+        return _normalize_text_list(value)
+
+
+class ProceduralMemory(BaseModel):
+    """A durable structured procedural memory stored with provenance."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    title: str = Field(min_length=1, max_length=200)
+    summary: str = Field(min_length=1, max_length=600)
+    steps: tuple[str, ...] = Field(default=(), min_length=1)
+    trigger_phrases: tuple[str, ...] = ()
+    tools: tuple[str, ...] = ()
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    source_quote: str | None = None
+    source_session_id: str = Field(min_length=1)
+    updated_at: datetime
+
+    @field_validator("title", "summary", "source_quote", "source_session_id", mode="before")
+    @classmethod
+    def _strip_procedural_memory_text_fields(cls, value: str | None) -> str | None:
+        return _strip_text(value)
+
+    @field_validator("steps", "trigger_phrases", "tools", mode="before")
+    @classmethod
+    def _normalize_procedural_memory_lists(cls, value: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
         return _normalize_text_list(value)

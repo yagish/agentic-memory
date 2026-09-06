@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from memory.contracts import ExtractedEpisode
+from memory.contracts import ExtractedEpisode, ExtractedProcedure
 from memory.db import get_unprocessed_sessions, init_db, mark_session_processed, upsert_session
 
 
@@ -44,7 +44,7 @@ class TestUnprocessedSessions(unittest.TestCase):
 
 
 class TestDaemonOnceMode(unittest.TestCase):
-    def test_daemon_once_mode_extracts_facts_then_episode_then_marks_processed(self):
+    def test_daemon_once_mode_extracts_facts_then_episode_then_procedure_then_marks_processed(self):
         import memory.daemon as daemon_module
 
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
@@ -65,8 +65,13 @@ class TestDaemonOnceMode(unittest.TestCase):
                 call_order.append("episodic")
                 return MagicMock(title="Auth fix", abstract="Resolved the middleware bug.")
 
+            def fake_create_procedure(*args, **kwargs):
+                call_order.append("procedural")
+                return MagicMock(title="Deploy workflow", summary="Use this when deploying auth.")
+
             with patch.object(daemon_module, "_start_ollama_if_needed", return_value=None), \
                  patch.object(daemon_module, "_create_episodic_entry", side_effect=fake_create_episode) as create_episodic, \
+                 patch.object(daemon_module, "_create_procedural_entry", side_effect=fake_create_procedure) as create_procedural, \
                  patch.object(daemon_module, "_extract_facts", side_effect=fake_extract_facts) as extract_facts, \
                  patch("memory.daemon.DB_PATH", tmp_path), \
                  patch("psutil.cpu_percent", return_value=10):
@@ -82,8 +87,9 @@ class TestDaemonOnceMode(unittest.TestCase):
             self.assertIsNotNone(row)
             self.assertIsNotNone(row["daemon_processed_at"])
             create_episodic.assert_called_once()
+            create_procedural.assert_called_once()
             extract_facts.assert_called_once()
-            self.assertEqual(call_order, ["facts", "episodic"])
+            self.assertEqual(call_order, ["facts", "episodic", "procedural"])
         finally:
             os.unlink(tmp_path)
 
@@ -129,6 +135,7 @@ class TestDaemonOnceMode(unittest.TestCase):
 
             with patch.object(daemon_module, "_start_ollama_if_needed", return_value=None), \
                  patch.object(daemon_module, "_create_episodic_entry", return_value=MagicMock(title="Forced episode", abstract="Forced abstract")) as create_episodic, \
+                 patch.object(daemon_module, "_create_procedural_entry", return_value=MagicMock(title="Deploy workflow", summary="Forced summary")) as create_procedural, \
                  patch.object(daemon_module, "_extract_facts", return_value=["user.name = Yash"]) as extract_facts, \
                  patch("memory.daemon.DB_PATH", tmp_path), \
                  patch("psutil.cpu_percent", side_effect=AssertionError("cpu check should be skipped for --once")):
@@ -144,6 +151,7 @@ class TestDaemonOnceMode(unittest.TestCase):
             self.assertIsNotNone(row)
             self.assertIsNotNone(row["daemon_processed_at"])
             create_episodic.assert_called_once()
+            create_procedural.assert_called_once()
             extract_facts.assert_called_once()
         finally:
             os.unlink(tmp_path)
@@ -172,7 +180,7 @@ class TestDaemonOnceMode(unittest.TestCase):
             os.unlink(tmp_path)
 
 
-class TestEpisodicAndFactExtraction(unittest.TestCase):
+class TestStructuredExtractionHelpers(unittest.TestCase):
     def setUp(self):
         self.conn = init_db(":memory:")
 
@@ -255,6 +263,47 @@ class TestEpisodicAndFactExtraction(unittest.TestCase):
             session_id="session-facts",
             source="daemon_fact_extractor",
         )
+
+    def test_create_procedural_entry_uses_shared_extractor_and_repository(self):
+        import memory.daemon as daemon_module
+
+        session = {
+            "session_id": "session-procedural",
+            "updated_at": "2026-01-01T00:00:00+00:00",
+            "transcript": json.dumps([
+                {"role": "user", "content": "Deploy by building the image, running alembic upgrade, then validating staging."},
+            ]),
+        }
+
+        procedure = ExtractedProcedure(
+            title="Web deploy workflow",
+            summary="Use this when deploying the web service.",
+            steps=("Build the image", "Run alembic upgrade", "Validate staging"),
+            trigger_phrases=("how do i deploy the web service",),
+            confidence=0.84,
+        )
+
+        with patch.object(daemon_module, "extract_procedure_from_session_text", return_value=procedure) as extract_procedure, \
+             patch.object(daemon_module, "save_extracted_procedure", return_value="proc-1") as save_procedure, \
+             patch.object(daemon_module, "_daemon_log") as daemon_log:
+            saved_procedure = daemon_module._create_procedural_entry(self.conn, session)
+
+        self.assertIsNotNone(saved_procedure)
+        self.assertEqual(saved_procedure.title, "Web deploy workflow")
+        self.assertEqual(saved_procedure.summary, "Use this when deploying the web service.")
+        extract_procedure.assert_called_once()
+        save_procedure.assert_called_once_with(
+            self.conn,
+            procedure,
+            session_id="session-procedural",
+            updated_at="2026-01-01T00:00:00+00:00",
+            source="daemon",
+            embed_fn=daemon_module.embed,
+        )
+        logged_messages = [call.args[0] for call in daemon_log.call_args_list]
+        self.assertTrue(any("procedure extracted for session-procedural" in message for message in logged_messages))
+        self.assertTrue(any("procedure steps for session-procedural" in message for message in logged_messages))
+        self.assertTrue(any("procedure triggers for session-procedural" in message for message in logged_messages))
 
 
 if __name__ == "__main__":

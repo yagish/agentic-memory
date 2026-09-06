@@ -42,6 +42,10 @@ class HookRequest:
 def _append_log_line(level: str, msg: str) -> None:
     if os.environ.get("MEMORY_DISABLE_FILE_LOGS") == "1":
         return
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    if "pytest" in sys.modules:
+        return
     try:
         os.makedirs(os.path.dirname(WAKE_UP_LOG_PATH), exist_ok=True)
         timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -150,6 +154,8 @@ def _log_fact_lookup_details(request: HookRequest, context) -> None:
 def _log_context_details(context) -> None:
     if context.episodic:
         _log_info("episodic=" + json.dumps(context.episodic, ensure_ascii=False))
+    if context.procedural:
+        _log_info("procedural=" + json.dumps(context.procedural, ensure_ascii=False))
 
 
 def _log_retrieval_metrics(
@@ -170,6 +176,7 @@ def _log_retrieval_metrics(
             session=request.session_id,
             episodic_count=len(context.episodic),
             facts_count=len(context.facts),
+            procedural_count=len(context.procedural),
             est_tokens=est_tokens,
         )
     except Exception:

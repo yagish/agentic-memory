@@ -1,0 +1,7 @@
+[
+  {
+    "entity": "repo",
+    "attribute": "default_branch",
+    "value": "develop"
+  }
+]

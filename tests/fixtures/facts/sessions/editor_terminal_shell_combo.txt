@@ -1,0 +1,1 @@
+User: My editor is Helix, my terminal is Ghostty, and my shell is zsh.

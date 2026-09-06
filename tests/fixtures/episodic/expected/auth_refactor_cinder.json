@@ -1,0 +1,22 @@
+{
+  "title_contains": [
+    "auth",
+    "middleware"
+  ],
+  "abstract_contains": [
+    "search",
+    "redirect loop"
+  ],
+  "participants_contains": [
+    "Jenna"
+  ],
+  "decisions_contains": [
+    "shared auth middleware"
+  ],
+  "outcomes_contains": [
+    "redirect loop"
+  ],
+  "follow_ups_contains": [
+    "regression tests"
+  ]
+}

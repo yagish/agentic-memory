@@ -1,0 +1,2 @@
+User: The default branch is develop.
+User: <bash-input>git checkout -b test</bash-input>

@@ -1,0 +1,20 @@
+{
+  "title_contains": [
+    "flaky",
+    "test"
+  ],
+  "abstract_contains": [
+    "CI",
+    "catalog"
+  ],
+  "decisions_contains": [
+    "test_forge_retry"
+  ],
+  "outcomes_contains": [
+    "quarantined",
+    "green"
+  ],
+  "follow_ups_contains": [
+    "HTTP recordings"
+  ]
+}

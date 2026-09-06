@@ -1,0 +1,3 @@
+User: We paused the nightly search backfill because it was competing with production traffic.
+Assistant: We set the cron to disabled and documented the manual runbook.
+User: Good. On Wednesday let's resume it during the maintenance window after checking queue depth.

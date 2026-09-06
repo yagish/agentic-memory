@@ -1,0 +1,4 @@
+User: The old --targeted-extraction flag is confusing and nobody should use it anymore.
+Assistant: We decided to remove the flag entirely instead of keeping a deprecated alias.
+User: I deleted the parser branch and updated the README examples.
+Assistant: Next session clean up the shell completion script too.

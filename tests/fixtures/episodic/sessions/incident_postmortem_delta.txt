@@ -1,0 +1,4 @@
+User: Priya will own the postmortem for yesterday's identity outage.
+Assistant: We agreed the report should focus on the slow database failover and the missing alert.
+User: I opened the doc and assigned Priya as the DRI.
+Assistant: Add the remediation timeline before Thursday's review.

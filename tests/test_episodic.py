@@ -45,6 +45,18 @@ class TestEpisodicExtractionHelpers(unittest.TestCase):
         self.assertIn("Assistant: I implemented it and fixed the loop.", prompt)
         self.assertIn("Return only the JSON object.", prompt)
 
+    def test_prompt_pushes_concrete_literals_and_named_people(self):
+        prompt = build_episodic_extraction_prompt(
+            "User: Jenna will own the postmortem.\nAssistant: The root cause was STRIPE_WEBHOOK_SECRET."
+        )
+
+        self.assertIn("preserve important literal details", prompt)
+        self.assertIn("names, branch names, env vars, flags, file names, model names, percentages, dates, and numeric thresholds", prompt)
+        self.assertIn("include named people when they materially participated", prompt)
+        self.assertIn("Never copy values from examples unless they appear in the transcript.", prompt)
+        self.assertIn('"participants": ["Jenna"]', prompt)
+        self.assertIn("STRIPE_WEBHOOK_SECRET", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

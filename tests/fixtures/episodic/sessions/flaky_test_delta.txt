@@ -1,0 +1,4 @@
+User: The identity integration suite is still flaky in CI.
+Assistant: We decided to quarantine test_delta_retry until we can stabilize the sandbox.
+User: I marked it quarantined and the pipeline is green now.
+Assistant: Next session capture HTTP recordings so we can unquarantine it.

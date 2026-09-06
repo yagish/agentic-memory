@@ -1,0 +1,23 @@
+{
+  "title_contains": [
+    "on-call",
+    "handoff"
+  ],
+  "abstract_contains": [
+    "Jenna",
+    "queue lag"
+  ],
+  "participants_contains": [
+    "Jenna"
+  ],
+  "decisions_contains": [
+    "disk warning",
+    "queue lag"
+  ],
+  "outcomes_contains": [
+    "runbook"
+  ],
+  "follow_ups_contains": [
+    "threshold"
+  ]
+}

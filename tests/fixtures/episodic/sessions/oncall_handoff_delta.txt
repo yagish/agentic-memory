@@ -1,0 +1,4 @@
+User: Priya is taking over on-call for identity tonight.
+Assistant: We reviewed the open alerts and decided the disk warning can wait until morning, but the queue lag needs paging if it spikes again.
+User: I sent Priya the dashboard links and the runbook.
+Assistant: Tomorrow confirm whether the queue alert threshold needs to be lowered.

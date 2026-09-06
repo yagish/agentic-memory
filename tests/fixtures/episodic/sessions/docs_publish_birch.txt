@@ -1,0 +1,4 @@
+User: The docs publish job for billing is blocked because the site token expired.
+Assistant: We decided not to mint a permanent token; instead we will rotate it through 1Password and CI secrets.
+User: I refreshed the token locally and the publish passed.
+Assistant: Next week document the rotation steps before Tuesday.

@@ -1,0 +1,17 @@
+{
+  "title_contains": [
+    "Rename",
+    "MemoryEvent"
+  ],
+  "abstract_contains": [
+    "EpisodicMemoryRecord",
+    "type errors"
+  ],
+  "outcomes_contains": [
+    "Renamed MemoryEvent to EpisodicMemoryRecord",
+    "repository references"
+  ],
+  "follow_ups_contains": [
+    "dashboard labels"
+  ]
+}

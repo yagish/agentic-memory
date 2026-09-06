@@ -1,0 +1,21 @@
+{
+  "title_contains": [
+    "Fact",
+    "ontology"
+  ],
+  "abstract_contains": [
+    "hardcoded ontology gates",
+    "regex hack"
+  ],
+  "decisions_contains": [
+    "Remove hardcoded ontology gates",
+    "Tighten the prompt"
+  ],
+  "outcomes_contains": [
+    "regex hack",
+    "rejects commands"
+  ],
+  "follow_ups_contains": [
+    "fixture coverage"
+  ]
+}

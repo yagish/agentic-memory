@@ -29,7 +29,7 @@ class TestBuildInjection(unittest.TestCase):
         result = _build_injection(WakeUpContext(None, None, [], [], [], []))
         self.assertEqual(result, "")
 
-    def test_includes_only_episodic_and_fact_sections(self):
+    def test_includes_episodic_fact_and_procedural_sections(self):
         result = _build_injection(
             WakeUpContext(
                 {"id": "cs-1", "similarity": 0.98, "content": "Task: Fix auth middleware"},
@@ -37,16 +37,17 @@ class TestBuildInjection(unittest.TestCase):
                 [{"id": "cs-2", "similarity": 0.83, "content": "Task: Add JWT refresh flow"}],
                 [{"id": "ep-1", "title": "Resolved auth bug", "abstract": "Fixed the login loop.", "similarity": 0.79}],
                 [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.97}],
-                [{"id": "proc-1", "title": "Deploy workflow", "steps": "1. Build\n2. Ship", "similarity": 0.86}],
+                [{"id": "proc-1", "title": "Deploy workflow", "summary": "Use this when deploying auth.", "steps": ["Build", "Ship"], "similarity": 0.86}],
             )
         )
         self.assertTrue(result.startswith("[Memory context: "))
         self.assertIn("Recent related episode: Resolved auth bug. Fixed the login loop.", result)
+        self.assertIn("Relevant how-to pattern: Deploy workflow. Use this when deploying auth.", result)
+        self.assertIn("Steps: Build; Ship.", result)
         self.assertIn("Remembered fact: user.name = Yash.", result)
         self.assertNotIn("Relevant prior session", result)
         self.assertNotIn("Current task context", result)
         self.assertNotIn("Related prior session", result)
-        self.assertNotIn("Relevant how-to pattern", result)
 
 
 class TestMainIntegration(unittest.TestCase):

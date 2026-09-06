@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from datetime import datetime, timezone
 
 
@@ -20,6 +21,8 @@ def _should_write_log_file() -> bool:
     if os.environ.get("MEMORY_DISABLE_FILE_LOGS") == "1":
         return False
     if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    if "pytest" in sys.modules:
         return False
     return True
 

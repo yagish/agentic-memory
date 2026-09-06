@@ -1,0 +1,20 @@
+{
+  "title_contains": [
+    "Search outage",
+    "postmortem"
+  ],
+  "abstract_contains": [
+    "Jenna",
+    "database failover"
+  ],
+  "participants_contains": [
+    "Jenna"
+  ],
+  "decisions_contains": [
+    "database failover",
+    "missing alert"
+  ],
+  "follow_ups_contains": [
+    "remediation timeline"
+  ]
+}

@@ -1,7 +1,20 @@
 {
-  "title_contains": ["deploy", "rollback"],
-  "abstract_contains": ["500", "missing", "environment variable"],
-  "decisions_contains": ["startup guard"],
-  "outcomes_contains": ["rolled back"],
-  "follow_ups_contains": ["staging"]
+  "title_contains": [
+    "API",
+    "rollback"
+  ],
+  "abstract_contains": [
+    "500s",
+    "STRIPE_WEBHOOK_SECRET"
+  ],
+  "decisions_contains": [
+    "startup guard"
+  ],
+  "outcomes_contains": [
+    "Rolled back the API deploy",
+    "Added a startup guard"
+  ],
+  "follow_ups_contains": [
+    "staging"
+  ]
 }

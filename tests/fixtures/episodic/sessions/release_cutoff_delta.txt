@@ -1,0 +1,4 @@
+User: We cannot keep slipping the identity release for minor polish.
+Assistant: Agreed. The cutoff is Thursday noon and anything after that goes to the next train.
+User: I posted the cutoff for release/delta in Slack and the PM acknowledged it.
+Assistant: Before then, verify the changelog is complete.

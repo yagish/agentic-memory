@@ -1,0 +1,19 @@
+{
+  "title_contains": [
+    "Dashboard",
+    "log"
+  ],
+  "abstract_contains": [
+    "wake_up",
+    "save_hook"
+  ],
+  "decisions_contains": [
+    "Restore file logging"
+  ],
+  "outcomes_contains": [
+    "dashboard"
+  ],
+  "follow_ups_contains": [
+    "dashboard test"
+  ]
+}

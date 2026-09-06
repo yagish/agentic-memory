@@ -1,10 +1,11 @@
-# daemon.py — background daemon for fact and episodic extraction.
+# daemon.py — background daemon for structured memory extraction.
 #
 # Runs as a long-lived process. Every poll cycle:
 #   1. finds unprocessed sessions
 #   2. extracts durable facts from the session
 #   3. extracts one episodic memory from the session
-#   4. marks the session processed
+#   4. extracts one procedural memory from the session
+#   5. marks the session processed
 #
 # Run:
 #   python3 memory/daemon.py        # runs forever
@@ -40,6 +41,8 @@ from memory.episodic_repository import save_extracted_episode
 from memory.fact_repository import build_fact_content, save_extracted_facts
 from memory.facts import extract_facts_from_session_text, normalize_extracted_facts
 from memory.logger import activity_log, error_log
+from memory.procedural import extract_procedure_from_session_text
+from memory.procedural_repository import save_extracted_procedure
 from memory.ollama import (
     start_ollama_if_needed as _start_ollama_if_needed,
     stop_ollama as _stop_ollama,
@@ -190,14 +193,58 @@ def _extract_facts(conn, session: dict, text_sample: str | None = None) -> list[
         return []
 
 
+
+def _log_procedure_details(session_id: str, procedure) -> None:
+    _daemon_log(
+        f"procedure extracted for {session_id}: title={procedure.title} | summary={procedure.summary}"
+    )
+    if getattr(procedure, "steps", None):
+        _daemon_log(f"procedure steps for {session_id}: {'; '.join(procedure.steps)}")
+    if getattr(procedure, "trigger_phrases", None):
+        _daemon_log(f"procedure triggers for {session_id}: {'; '.join(procedure.trigger_phrases)}")
+
+
+
+def _create_procedural_entry(conn, session: dict, text_sample: str | None = None):
+    """Generate and persist one structured procedural memory for a session."""
+    session_id = session["session_id"]
+    if text_sample is None:
+        text_sample = _session_text_sample(session)
+    if not text_sample:
+        return None
+
+    try:
+        procedure = extract_procedure_from_session_text(
+            text_sample,
+            source="daemon",
+            session_id=session_id,
+        )
+        updated_at = session.get("updated_at") or datetime.now(timezone.utc).isoformat()
+        save_extracted_procedure(
+            conn,
+            procedure,
+            session_id=session_id,
+            updated_at=updated_at,
+            source="daemon",
+            embed_fn=embed,
+        )
+        activity_log("daemon", "procedure", session=session_id, title=procedure.title)
+        _log_procedure_details(session_id, procedure)
+        return procedure
+    except Exception as exc:
+        error_log("daemon", f"procedural creation failed for {session_id}: {exc}", exc=exc)
+        return None
+
+
 def _process_session(conn, session: dict) -> bool:
-    """Process one session through the facts-then-episodic pipeline."""
+    """Process one session through the facts/episodic/procedural pipeline."""
     session_id = session["session_id"]
     _daemon_log(f"processing session {session_id}")
 
     text_sample = _session_text_sample(session)
     _extract_facts(conn, session, text_sample=text_sample)
     _create_episodic_entry(conn, session, text_sample=text_sample)
+    _create_procedural_entry(conn, session, text_sample=text_sample)
 
     mark_session_processed(conn, session_id)
     activity_log("daemon", "processed", session=session_id)

@@ -1,0 +1,19 @@
+{
+  "title_contains": [
+    "Cache",
+    "product page"
+  ],
+  "abstract_contains": [
+    "Redis",
+    "stale prices"
+  ],
+  "decisions_contains": [
+    "write path"
+  ],
+  "outcomes_contains": [
+    "Price changes are visible"
+  ],
+  "follow_ups_contains": [
+    "integration test"
+  ]
+}

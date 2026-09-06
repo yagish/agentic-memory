@@ -377,6 +377,44 @@ launchctl unload "$HOME/Library/LaunchAgents/com.memory.query.plist" 2>/dev/null
 launchctl load   "$HOME/Library/LaunchAgents/com.memory.query.plist"
 echo "  + Query server loaded on port 7748 (logs: ~/.memory/query.log)"
 
+# ── Step 10b: launchd — log rotation ─────────────────────────────────────────
+echo ""
+echo "Installing log rotation (daily copy-truncate, keep 7 days)..."
+chmod +x "$INSTALL_DIR/scripts/rotate-memory-logs.sh"
+cat > "$HOME/Library/LaunchAgents/com.memory.logrotate.plist" << PLIST_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.memory.logrotate</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>$INSTALL_DIR/scripts/rotate-memory-logs.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>MEMORY_LOG_RETENTION_DAYS</key>
+    <string>7</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>17</integer>
+  </dict>
+</dict>
+</plist>
+PLIST_EOF
+
+launchctl unload "$HOME/Library/LaunchAgents/com.memory.logrotate.plist" 2>/dev/null || true
+launchctl load   "$HOME/Library/LaunchAgents/com.memory.logrotate.plist"
+echo "  + Log rotation loaded (archives in ~/.memory/log-archive, keeps 7 days)"
+
 # ── Step 11: Final summary ────────────────────────────────────────────────────
 echo ""
 echo "================================================================"
@@ -388,10 +426,12 @@ echo "  Activity log:     $HOME/.memory/activity.log"
 echo "  Daemon log:       $HOME/.memory/daemon.log"
 echo "  Ingest log:       $HOME/.memory/ingest.log"
 echo "  Query log:        $HOME/.memory/query.log"
+echo "  Log archive:      $HOME/.memory/log-archive"
 echo ""
 echo "  Daemon:           running (auto-restarts on login)"
 echo "  Ingest server:    port 7747 — write endpoint for agents"
 echo "  Query server:     port 7748 — dashboard at http://localhost:7748"
+echo "  Log rotation:     daily at 03:17, keep 7 days"
 echo "  Default model:    $OLLAMA_MODEL"
 echo "================================================================"
 echo ""

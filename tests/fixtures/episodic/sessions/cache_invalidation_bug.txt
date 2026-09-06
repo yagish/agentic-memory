@@ -1,0 +1,4 @@
+User: The product page kept showing stale prices after edits.
+Assistant: We traced it to the Redis key never being deleted on admin updates.
+User: We decided to invalidate the product cache in the write path, and I deployed that fix.
+Assistant: Price changes are visible now. Next step add an integration test around admin edits.

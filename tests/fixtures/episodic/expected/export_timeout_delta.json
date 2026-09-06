@@ -1,0 +1,18 @@
+{
+  "title_contains": [
+    "export"
+  ],
+  "abstract_contains": [
+    "30 seconds",
+    "background job"
+  ],
+  "decisions_contains": [
+    "background job"
+  ],
+  "outcomes_contains": [
+    "emails a link"
+  ],
+  "follow_ups_contains": [
+    "idempotent"
+  ]
+}

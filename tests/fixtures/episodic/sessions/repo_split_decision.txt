@@ -1,0 +1,4 @@
+User: Elena asked if we should split the CLI out of the monorepo.
+Assistant: We decided not to split it yet because the shared test fixtures and release tooling are still too coupled.
+User: I documented that decision in an ADR so we can revisit it later.
+Assistant: Re-evaluate after the packaging cleanup lands.

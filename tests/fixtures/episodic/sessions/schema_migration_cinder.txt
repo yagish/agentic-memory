@@ -1,0 +1,4 @@
+User: We should not auto-migrate the search facts table at runtime anymore.
+Assistant: We chose a one-off external migration script that rebuilds semantic_content explicitly.
+User: I added scripts/migrate_cinder_semantic_text.py and updated the README command.
+Assistant: Next run it against the real database and verify embeddings were regenerated.

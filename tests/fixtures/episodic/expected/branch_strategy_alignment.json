@@ -1,0 +1,20 @@
+{
+  "title_contains": [
+    "Release"
+  ],
+  "abstract_contains": [
+    "short-lived release branch",
+    "release/2026-09"
+  ],
+  "participants_contains": [
+    "Dana",
+    "Priya"
+  ],
+  "decisions_contains": [
+    "short-lived release branch",
+    "cherry-picked"
+  ],
+  "follow_ups_contains": [
+    "release/2026-09"
+  ]
+}

@@ -1,0 +1,4 @@
+User: We cannot keep slipping the orders release for minor polish.
+Assistant: Agreed. The cutoff is Friday noon and anything after that goes to the next train.
+User: I posted the cutoff for release/ember in Slack and the PM acknowledged it.
+Assistant: Before then, verify the changelog is complete.

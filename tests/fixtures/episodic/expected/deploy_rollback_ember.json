@@ -1,0 +1,21 @@
+{
+  "title_contains": [
+    "deploy",
+    "rollback"
+  ],
+  "abstract_contains": [
+    "500s",
+    "SENDGRID_API_KEY"
+  ],
+  "decisions_contains": [
+    "startup guard"
+  ],
+  "outcomes_contains": [
+    "Rolled back",
+    "startup guard"
+  ],
+  "follow_ups_contains": [
+    "staging",
+    "release/ember"
+  ]
+}

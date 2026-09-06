@@ -26,7 +26,7 @@ class TestBuildWakeUpInjection(unittest.TestCase):
         )
         self.assertEqual(result, "")
 
-    def test_includes_only_episodic_and_fact_sections(self):
+    def test_includes_episodic_fact_and_procedural_sections(self):
         result = build_wake_up_injection(
             WakeUpContext(
                 {"id": "cs-1", "similarity": 0.98, "content": "Task: Fix auth middleware"},
@@ -42,7 +42,7 @@ class TestBuildWakeUpInjection(unittest.TestCase):
                     "similarity": 0.79,
                 }],
                 [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.97}],
-                [{"id": "proc-1", "title": "Deploy service", "steps": "1. Build\n2. Ship", "similarity": 0.86}],
+                [{"id": "proc-1", "title": "Deploy service", "summary": "Use this when releasing the auth service.", "steps": ["Build the image", "Ship to staging"], "similarity": 0.86}],
             )
         )
         self.assertTrue(result.startswith("[Memory context: "))
@@ -50,15 +50,16 @@ class TestBuildWakeUpInjection(unittest.TestCase):
         self.assertIn("Decision: Move token validation into shared middleware.", result)
         self.assertIn("Outcome: Login loop stopped reproducing.", result)
         self.assertIn("Follow-up: Add regression coverage.", result)
+        self.assertIn("Relevant how-to pattern: Deploy service. Use this when releasing the auth service.", result)
+        self.assertIn("Steps: Build the image; Ship to staging.", result)
         self.assertIn("Remembered fact: user.name = Yash.", result)
         self.assertNotIn("Relevant prior session", result)
         self.assertNotIn("Current task context", result)
         self.assertNotIn("Related prior session", result)
-        self.assertNotIn("Relevant how-to pattern", result)
 
 
 class TestRetrieveWakeUpContext(unittest.TestCase):
-    def test_retrieval_fetches_only_episodic_and_facts(self):
+    def test_retrieval_fetches_episodic_facts_and_procedural_memory(self):
         conn = MagicMock()
 
         with patch("memory.retrieval.retrieve_episodic_memories", return_value=[
@@ -67,7 +68,10 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
              patch("memory.retrieval.search_facts_semantic", return_value=[
                  {"id": "fact-1", "content": "user.name = Yash", "similarity": 0.45},
                  {"id": "fact-2", "content": "user.timezone = EST", "similarity": 0.24},
-             ]) as search_facts_semantic:
+             ]) as search_facts_semantic, \
+             patch("memory.retrieval.retrieve_procedural_memories", return_value=[
+                 {"id": "proc-1", "title": "Deploy service", "summary": "Use this when releasing the auth service.", "steps": ["Build the image"], "similarity": 0.88}
+             ]) as retrieve_procedural:
             context = retrieve_wake_up_context(
                 conn,
                 "how do i deploy the auth service?",
@@ -80,7 +84,7 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
         self.assertEqual(context.enrichment, [])
         self.assertEqual([item["id"] for item in context.episodic], ["ep-1"])
         self.assertEqual([item["id"] for item in context.facts], ["fact-1"])
-        self.assertEqual(context.procedural, [])
+        self.assertEqual([item["id"] for item in context.procedural], ["proc-1"])
         self.assertEqual(context.warnings, [])
         retrieve_episodic.assert_called_once_with(
             conn,
@@ -92,6 +96,15 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
             source="wake_up",
         )
         search_facts_semantic.assert_called_once_with(conn, [0.1, 0.2], limit=5)
+        retrieve_procedural.assert_called_once_with(
+            conn,
+            "how do i deploy the auth service?",
+            query_vector=[0.1, 0.2],
+            embed_fn=unittest.mock.ANY,
+            min_similarity=0.74,
+            limit=2,
+            source="wake_up",
+        )
 
     def test_fact_retrieval_returns_no_hits_when_semantic_search_misses(self):
         conn = MagicMock()
@@ -154,7 +167,8 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
         conn = MagicMock()
 
         with patch("memory.retrieval.retrieve_episodic_memories", side_effect=RuntimeError("episodic boom")), \
-             patch("memory.retrieval.search_facts_semantic", side_effect=RuntimeError("facts boom")):
+             patch("memory.retrieval.search_facts_semantic", side_effect=RuntimeError("facts boom")), \
+             patch("memory.retrieval.retrieve_procedural_memories", side_effect=RuntimeError("procedural boom")):
             context = retrieve_wake_up_context(
                 conn,
                 "how do i deploy?",
@@ -170,7 +184,7 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
         self.assertEqual(context.procedural, [])
         self.assertEqual(
             [warning.stage for warning in context.warnings],
-            ["episodic", "facts"],
+            ["episodic", "facts", "procedural"],
         )
 
 

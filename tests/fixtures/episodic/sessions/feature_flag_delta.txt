@@ -1,0 +1,4 @@
+User: Priya wants the new identity flow behind a feature flag until support is ready.
+Assistant: We agreed to launch it to 25 percent of employees first.
+User: I enabled the flag for internal accounts and support has rollback instructions.
+Assistant: Review the conversion numbers on Thursday.

@@ -1,0 +1,1 @@
+User: The repo name is memory-lab. The project goal is local-first memory. The default branch is main.

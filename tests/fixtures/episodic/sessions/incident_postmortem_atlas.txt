@@ -1,0 +1,4 @@
+User: Maya will own the postmortem for yesterday's checkout outage.
+Assistant: We agreed the report should focus on the slow database failover and the missing alert.
+User: I opened the doc and assigned Maya as the DRI.
+Assistant: Add the remediation timeline before Monday's review.

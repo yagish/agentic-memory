@@ -1,0 +1,4 @@
+User: Maya wants the new checkout flow behind a feature flag until support is ready.
+Assistant: We agreed to launch it to 10 percent of employees first.
+User: I enabled the flag for internal accounts and support has rollback instructions.
+Assistant: Review the conversion numbers on Monday.

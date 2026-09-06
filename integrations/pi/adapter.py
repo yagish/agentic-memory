@@ -90,6 +90,7 @@ def handle_recall(payload: dict, *, db_path: str = DB_PATH) -> dict:
             "action": outcome.action,
             "facts_count": len(context.facts),
             "episodic_count": len(context.episodic),
+            "procedural_count": len(context.procedural),
             "warnings": [warning.__dict__ for warning in context.warnings],
         }
         if outcome.answer:

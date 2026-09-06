@@ -1,0 +1,21 @@
+{
+  "title_contains": [
+    "Facts table",
+    "migration"
+  ],
+  "abstract_contains": [
+    "external migration script",
+    "semantic_content"
+  ],
+  "decisions_contains": [
+    "external migration script"
+  ],
+  "outcomes_contains": [
+    "migrate_facts_semantic_text.py",
+    "README"
+  ],
+  "follow_ups_contains": [
+    "real database",
+    "embeddings"
+  ]
+}

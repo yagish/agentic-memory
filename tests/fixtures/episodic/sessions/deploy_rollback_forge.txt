@@ -1,0 +1,4 @@
+User: We rolled back the catalog deploy after production started returning 500s.
+Assistant: The root cause was a missing REDIS_URL environment variable.
+User: I added a startup guard so production will fail fast next time.
+Assistant: Tomorrow verify the new guard in staging before redeploying release/forge.

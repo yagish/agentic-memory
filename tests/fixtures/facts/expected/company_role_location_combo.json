@@ -1,0 +1,17 @@
+[
+  {
+    "entity": "user",
+    "attribute": "company",
+    "value": "Stripe"
+  },
+  {
+    "entity": "user",
+    "attribute": "role",
+    "value": "Staff engineer"
+  },
+  {
+    "entity": "user",
+    "attribute": "location",
+    "value": "Dublin, Ireland"
+  }
+]

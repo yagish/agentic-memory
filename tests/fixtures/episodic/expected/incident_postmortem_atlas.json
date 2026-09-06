@@ -1,0 +1,23 @@
+{
+  "title_contains": [
+    "postmortem",
+    "checkout"
+  ],
+  "abstract_contains": [
+    "database failover",
+    "missing alert"
+  ],
+  "participants_contains": [
+    "Maya"
+  ],
+  "decisions_contains": [
+    "database failover"
+  ],
+  "outcomes_contains": [
+    "assigned"
+  ],
+  "follow_ups_contains": [
+    "remediation timeline",
+    "Monday"
+  ]
+}

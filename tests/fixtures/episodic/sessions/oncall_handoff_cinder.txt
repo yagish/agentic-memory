@@ -1,0 +1,4 @@
+User: Jenna is taking over on-call for search tonight.
+Assistant: We reviewed the open alerts and decided the disk warning can wait until morning, but the queue lag needs paging if it spikes again.
+User: I sent Jenna the dashboard links and the runbook.
+Assistant: Tomorrow confirm whether the queue alert threshold needs to be lowered.

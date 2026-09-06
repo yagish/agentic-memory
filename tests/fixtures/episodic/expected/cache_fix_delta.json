@@ -1,0 +1,19 @@
+{
+  "title_contains": [
+    "cache"
+  ],
+  "abstract_contains": [
+    "Redis",
+    "stale"
+  ],
+  "decisions_contains": [
+    "write path"
+  ],
+  "outcomes_contains": [
+    "deployed",
+    "visible"
+  ],
+  "follow_ups_contains": [
+    "integration test"
+  ]
+}

@@ -1,0 +1,3 @@
+User: We agreed to hotfix the API rate limiter by moving the burst limit from 20 to 60 requests per minute for internal traffic.
+Assistant: I shipped the config change and 429s dropped immediately.
+User: Good. Tomorrow add a dashboard panel so we can monitor the limiter before widening it further.

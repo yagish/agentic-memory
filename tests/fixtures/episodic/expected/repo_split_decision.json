@@ -1,0 +1,20 @@
+{
+  "title_contains": [
+    "CLI",
+    "monorepo"
+  ],
+  "abstract_contains": [
+    "shared test fixtures",
+    "release tooling"
+  ],
+  "participants_contains": [
+    "Elena"
+  ],
+  "decisions_contains": [
+    "Not split the CLI",
+    "release tooling"
+  ],
+  "follow_ups_contains": [
+    "packaging cleanup"
+  ]
+}

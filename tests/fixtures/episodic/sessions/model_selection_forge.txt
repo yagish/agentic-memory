@@ -1,0 +1,4 @@
+User: I want a stronger local model for catalog, but it cannot consume the whole laptop.
+Assistant: We chose qwen2.5:7b as the default instead of a larger model.
+User: I imported the GGUF into Ollama and generation is working.
+Assistant: Later we can benchmark quality before removing the smaller fallback model.

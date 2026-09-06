@@ -1,0 +1,4 @@
+User: Priya asked whether we should keep retrying failed card captures automatically.
+Assistant: We decided on one automatic retry after five minutes, then hand the order to support.
+User: I implemented that policy and support can now see the failed captures queue.
+Assistant: Next step add a metric for orders that still fail after the retry.

@@ -1,0 +1,21 @@
+{
+  "title_contains": [
+    "backfill",
+    "pause"
+  ],
+  "abstract_contains": [
+    "production traffic",
+    "manual runbook"
+  ],
+  "decisions_contains": [
+    "cron",
+    "disabled"
+  ],
+  "outcomes_contains": [
+    "paused"
+  ],
+  "follow_ups_contains": [
+    "maintenance window",
+    "queue depth"
+  ]
+}

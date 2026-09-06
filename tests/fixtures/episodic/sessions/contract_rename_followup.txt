@@ -1,0 +1,4 @@
+User: We renamed MemoryEvent to EpisodicMemoryRecord so the contract matches storage.
+Assistant: I updated the dataclass, imports, and the repository references.
+User: Great, the type errors are gone now.
+Assistant: Next session update the dashboard labels to use the new name too.

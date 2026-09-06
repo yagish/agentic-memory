@@ -14,6 +14,14 @@ from memory.ollama import is_ollama_running
 _FIXTURES_ROOT = Path(__file__).parent / "fixtures" / "episodic"
 
 
+class TestEpisodicFixtureInventory(unittest.TestCase):
+    def test_fixture_inventory_is_complete(self):
+        sessions = {path.stem for path in (_FIXTURES_ROOT / "sessions").glob("*.txt")}
+        expected = {path.stem for path in (_FIXTURES_ROOT / "expected").glob("*.json")}
+        self.assertEqual(sessions, expected)
+        self.assertGreaterEqual(len(sessions), 100)
+
+
 @unittest.skipUnless(
     os.environ.get("MEMORY_RUN_OLLAMA_TESTS") == "1" and is_ollama_running(),
     "Set MEMORY_RUN_OLLAMA_TESTS=1 and ensure Ollama is running for episodic extraction fixtures",
@@ -21,7 +29,7 @@ _FIXTURES_ROOT = Path(__file__).parent / "fixtures" / "episodic"
 class TestEpisodicExtractionFixtures(unittest.TestCase):
     def test_session_fixtures_extract_expected_episode_signals(self):
         cases = discover_episodic_fixture_cases(_FIXTURES_ROOT)
-        self.assertGreaterEqual(len(cases), 2)
+        self.assertGreaterEqual(len(cases), 100)
 
         for case_name in cases:
             with self.subTest(case=case_name):
@@ -36,6 +44,11 @@ class TestEpisodicExtractionFixtures(unittest.TestCase):
                     self.assertTrue(normalized_contains(episode.title, snippet))
                 for snippet in expected.get("abstract_contains", []):
                     self.assertTrue(normalized_contains(episode.abstract, snippet))
+                for snippet in expected.get("participants_contains", []):
+                    self.assertTrue(
+                        any(normalized_contains(item, snippet) for item in episode.participants),
+                        msg=f"missing participant snippet: {snippet}",
+                    )
                 for snippet in expected.get("decisions_contains", []):
                     self.assertTrue(
                         any(normalized_contains(item, snippet) for item in episode.decisions),

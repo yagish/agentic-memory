@@ -1,0 +1,4 @@
+User: The staging signup flow is failing because the default plan rows are missing.
+Assistant: We added the missing seed data and reran the migration.
+User: Signup works now in staging.
+Assistant: Tomorrow backfill the same plan rows in dev so local setup matches.

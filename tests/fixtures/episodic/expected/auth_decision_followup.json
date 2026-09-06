@@ -1,7 +1,19 @@
 {
-  "title_contains": ["auth", "middleware"],
-  "abstract_contains": ["login loop", "fixed"],
-  "decisions_contains": ["shared auth middleware"],
-  "outcomes_contains": ["login loop"],
-  "follow_ups_contains": ["regression tests"]
+  "title_contains": [
+    "Auth",
+    "middleware"
+  ],
+  "abstract_contains": [
+    "login handler",
+    "login loop"
+  ],
+  "decisions_contains": [
+    "shared auth middleware"
+  ],
+  "outcomes_contains": [
+    "Login loop"
+  ],
+  "follow_ups_contains": [
+    "regression tests"
+  ]
 }

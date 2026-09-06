@@ -1,0 +1,21 @@
+{
+  "title_contains": [
+    "docs",
+    "publish"
+  ],
+  "abstract_contains": [
+    "1Password",
+    "CI secrets"
+  ],
+  "decisions_contains": [
+    "1Password",
+    "CI secrets"
+  ],
+  "outcomes_contains": [
+    "publish passed"
+  ],
+  "follow_ups_contains": [
+    "rotation steps",
+    "Monday"
+  ]
+}

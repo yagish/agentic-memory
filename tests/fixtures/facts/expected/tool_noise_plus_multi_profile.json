@@ -1,0 +1,17 @@
+[
+  {
+    "entity": "user",
+    "attribute": "name",
+    "value": "Sam"
+  },
+  {
+    "entity": "user",
+    "attribute": "location",
+    "value": "Austin, TX"
+  },
+  {
+    "entity": "user",
+    "attribute": "terminal",
+    "value": "WezTerm"
+  }
+]

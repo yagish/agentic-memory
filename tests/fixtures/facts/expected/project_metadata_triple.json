@@ -1,0 +1,17 @@
+[
+  {
+    "entity": "repo",
+    "attribute": "name",
+    "value": "memory-lab"
+  },
+  {
+    "entity": "project",
+    "attribute": "goal",
+    "value": "local-first memory"
+  },
+  {
+    "entity": "repo",
+    "attribute": "default_branch",
+    "value": "main"
+  }
+]

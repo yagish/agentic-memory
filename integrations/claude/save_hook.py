@@ -36,7 +36,11 @@ def _setup_logging() -> None:
     dashboard can surface save-hook activity again.
     """
     handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
-    if os.environ.get("MEMORY_DISABLE_FILE_LOGS") != "1":
+    if (
+        os.environ.get("MEMORY_DISABLE_FILE_LOGS") != "1"
+        and not os.environ.get("PYTEST_CURRENT_TEST")
+        and "pytest" not in sys.modules
+    ):
         os.makedirs(os.path.dirname(SAVE_HOOK_LOG_PATH), exist_ok=True)
         handlers.append(logging.FileHandler(SAVE_HOOK_LOG_PATH))
 

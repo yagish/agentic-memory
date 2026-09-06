@@ -1,0 +1,22 @@
+{
+  "title_contains": [
+    "feature",
+    "flag"
+  ],
+  "abstract_contains": [
+    "25 percent",
+    "rollback instructions"
+  ],
+  "participants_contains": [
+    "Priya"
+  ],
+  "decisions_contains": [
+    "25 percent"
+  ],
+  "outcomes_contains": [
+    "internal accounts"
+  ],
+  "follow_ups_contains": [
+    "Thursday"
+  ]
+}

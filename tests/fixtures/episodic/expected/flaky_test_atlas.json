@@ -1,0 +1,20 @@
+{
+  "title_contains": [
+    "flaky",
+    "test"
+  ],
+  "abstract_contains": [
+    "CI",
+    "checkout"
+  ],
+  "decisions_contains": [
+    "test_atlas_retry"
+  ],
+  "outcomes_contains": [
+    "quarantined",
+    "green"
+  ],
+  "follow_ups_contains": [
+    "HTTP recordings"
+  ]
+}

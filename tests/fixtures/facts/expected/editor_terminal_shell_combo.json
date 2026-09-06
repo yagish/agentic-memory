@@ -1,0 +1,17 @@
+[
+  {
+    "entity": "user",
+    "attribute": "editor",
+    "value": "Helix"
+  },
+  {
+    "entity": "user",
+    "attribute": "terminal",
+    "value": "Ghostty"
+  },
+  {
+    "entity": "user",
+    "attribute": "shell",
+    "value": "zsh"
+  }
+]

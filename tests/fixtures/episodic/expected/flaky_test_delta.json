@@ -1,0 +1,20 @@
+{
+  "title_contains": [
+    "flaky",
+    "test"
+  ],
+  "abstract_contains": [
+    "CI",
+    "identity"
+  ],
+  "decisions_contains": [
+    "test_delta_retry"
+  ],
+  "outcomes_contains": [
+    "quarantined",
+    "green"
+  ],
+  "follow_ups_contains": [
+    "HTTP recordings"
+  ]
+}

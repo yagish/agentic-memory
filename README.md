@@ -6,7 +6,8 @@ Current runtime scope is intentionally small:
 - store full **sessions**
 - extract durable **facts**
 - extract **episodes** (episodic memory)
-- retrieve only **facts + episodes** during wake-up
+- extract durable **procedures** (procedural memory)
+- retrieve **facts + episodes + procedures** during wake-up
 
 Everything else from the older design was removed.
 
@@ -37,7 +38,7 @@ Everything else from the older design was removed.
 ### 3. Daemon
 `memory/daemon.py`
 - polls for unprocessed sessions
-- extracts facts, then episodes
+- extracts facts, then episodes, then procedures
 - marks sessions processed
 - `--once` forces one immediate extraction pass and skips the CPU gate
 - writes only `~/.memory/daemon.log`
@@ -52,7 +53,7 @@ Everything else from the older design was removed.
 - sessions view
 - facts view
 - episodes view
-- logs for daemon, facts, episodes
+- logs for daemon, facts, episodes, procedures
 
 ## Storage
 
@@ -60,6 +61,7 @@ Retained database tables:
 - `sessions`
 - `facts`
 - `episodic_memory`
+- `procedural_memory`
 
 Dropped on bootstrap/migration:
 - `session_vecs`
@@ -73,7 +75,6 @@ Dropped on bootstrap/migration:
 - `working_memory`
 - `compacted_sessions`
 - `response_cache`
-- `procedural_memory`
 
 Retained log files:
 - `~/.memory/daemon.log`
@@ -81,6 +82,7 @@ Retained log files:
 - `~/.memory/save_hook.log`
 - `~/.memory/facts.log`
 - `~/.memory/episodic.log`
+- `~/.memory/procedural.log`
 
 Unit tests suppress file-log writes.
 
@@ -169,10 +171,10 @@ pytest -q
 
 ## Notes
 
-- `WakeUpContext` still keeps some old fields for compatibility, but runtime retrieval only uses `episodic` and `facts`.
+- `WakeUpContext` still keeps some old fields for compatibility, but runtime retrieval uses `episodic`, `facts`, and `procedural` memory.
 - Model selection:
-  - `MEMORY_OLLAMA_MODEL` sets the model used for fact extraction, episodic extraction, fact rendering, and fact-answer compaction.
+  - `MEMORY_OLLAMA_MODEL` sets the model used for fact extraction, episodic extraction, procedural extraction, fact rendering, and fact-answer compaction.
   - Use one stronger local model here when you want prompt quality to do the filtering work instead of per-stage model splits.
 - `memory.db.log_retrieval()` is a compatibility no-op because retrieval-event storage was removed.
 - `integrations/common.py` holds the shared save/retrieve policy used by Claude and pi.
-- `dashboard.html` supports click-row details for Sessions, Facts, and Episodes.
+- `dashboard.html` supports click-row details for Sessions, Facts, and Episodes. Procedural storage exists in the runtime, but the dashboard UI has not been expanded for it yet.

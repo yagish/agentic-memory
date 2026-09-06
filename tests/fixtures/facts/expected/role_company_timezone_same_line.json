@@ -1,0 +1,17 @@
+[
+  {
+    "entity": "user",
+    "attribute": "role",
+    "value": "Principal engineer"
+  },
+  {
+    "entity": "user",
+    "attribute": "company",
+    "value": "Acme"
+  },
+  {
+    "entity": "user",
+    "attribute": "timezone",
+    "value": "MST"
+  }
+]

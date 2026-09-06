@@ -1,0 +1,4 @@
+User: Jenna wants the new search flow behind a feature flag until support is ready.
+Assistant: We agreed to launch it to 20 percent of employees first.
+User: I enabled the flag for internal accounts and support has rollback instructions.
+Assistant: Review the conversion numbers on Wednesday.

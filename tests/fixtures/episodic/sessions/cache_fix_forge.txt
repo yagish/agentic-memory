@@ -1,0 +1,4 @@
+User: The catalog page kept showing stale results after edits.
+Assistant: We traced it to the Redis key never being deleted on admin updates.
+User: We decided to invalidate the cache in the write path, and I deployed that fix.
+Assistant: Next step add an integration test around admin edits.

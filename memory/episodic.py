@@ -22,7 +22,7 @@ from memory.inference import (
 )
 
 
-_EPISODIC_PROMPT_VERSION = "episodic-v1"
+_EPISODIC_PROMPT_VERSION = "episodic-v2"
 _EPISODIC_LOG_PATH = os.path.expanduser("~/.memory/episodic.log")
 
 GenerationFn = Callable[[GenerationRequest], GenerationResult]
@@ -59,7 +59,10 @@ def _with_strict_json_retry(prompt: str) -> str:
     return (
         f"{prompt}\n"
         "Reminder: return only one JSON object. Do not use markdown fences. "
-        "Use arrays for participants, decisions, outcomes, and follow_ups."
+        "Use arrays for participants, decisions, outcomes, and follow_ups. "
+        "Preserve concrete names, branch names, env vars, flags, file names, model names, and numeric values when they are central to the episode. "
+        "Prefer concrete transcript wording over generic paraphrases. Include explicitly named people when they materially participated or were assigned ownership. "
+        "When the transcript states a concrete completed result like passed, green, fixed, works now, enabled, acknowledged, shipped, or added, keep that result in outcomes."
     )
 
 
@@ -85,17 +88,36 @@ Return exactly one JSON object with this shape:
 
 Rules:
 - Use the whole transcript, including user and assistant turns.
-- Focus on the main event, discussion, or decision from this session.
-- title: max 10 words, concrete and specific.
-- abstract: mention what happened and the current result/end state.
-- participants: only include explicitly named people; do not include generic roles like "user" or "assistant".
-- decisions: keep only explicit decisions or chosen approaches.
-- outcomes: keep concrete completed results or resolutions.
-- follow_ups: keep concrete next steps or unresolved tasks.
+- Focus on the single main event, discussion, or decision from this session.
+- Title requirements:
+  - max 10 words
+  - concrete and specific, not generic
+  - preserve key domain terms from the transcript when central, such as auth middleware, deploy rollback, feature flag, cache invalidation, migration script, or signup flow
+- Abstract requirements:
+  - 1-2 sentences
+  - mention the concrete problem/topic, the main action/decision, and the current result or end state
+  - preserve important literal details when central: names, branch names, env vars, flags, file names, model names, percentages, dates, and numeric thresholds
+  - prefer transcript wording over generic paraphrases
+- Participants:
+  - include only explicitly named people
+  - do not include generic roles like "user" or "assistant"
+  - include named people when they materially participated, requested the work, were assigned ownership, or received the handoff
+- Decisions:
+  - keep only explicit decisions or chosen approaches
+  - preserve concrete chosen details like exact thresholds, branches, models, policies, or architecture choices when stated
+- Outcomes:
+  - keep concrete completed results, fixes, shipped changes, or communicated outcomes
+  - include the actual result when stated, not a vague paraphrase
+  - prefer explicit completion/result phrases when present, such as passed, green, fixed, works now, enabled, acknowledged, shipped, or added
+- Follow-ups:
+  - keep concrete next steps or unresolved tasks
+  - preserve named environments, tests, timelines, and owners when stated
 - If a list has no items, return an empty array.
+- Never invent participants, decisions, outcomes, or follow-ups.
+- Never copy values from examples unless they appear in the transcript.
 - Return raw JSON only. No prose. No markdown fences.
 
-Example:
+Example 1:
 Transcript:
 User: We decided to move token validation into shared auth middleware.
 Assistant: I implemented the middleware and the login loop stopped.
@@ -110,6 +132,58 @@ Output:
   "outcomes": ["Login loop fixed"],
   "follow_ups": ["Add regression tests"],
   "confidence": 0.92
+}}
+
+Example 2:
+Transcript:
+User: Jenna will own the postmortem for yesterday's search outage.
+Assistant: We agreed the report should focus on the slow database failover and the missing alert.
+User: Add the remediation timeline before Friday's review.
+
+Output:
+{{
+  "title": "Search outage postmortem",
+  "abstract": "The session assigned Jenna to own the postmortem for the search outage and focused the report on the slow database failover and the missing alert. The remediation timeline still needs to be added before Friday's review.",
+  "participants": ["Jenna"],
+  "decisions": ["Focus the postmortem on the slow database failover and the missing alert"],
+  "outcomes": [],
+  "follow_ups": ["Add the remediation timeline before Friday's review"],
+  "confidence": 0.9
+}}
+
+Example 3:
+Transcript:
+User: We rolled back the API deploy after the service started returning 500s.
+Assistant: The root cause was a missing STRIPE_WEBHOOK_SECRET environment variable.
+User: We added a startup guard so production will fail fast next time.
+Assistant: Tomorrow verify the new guard in staging before redeploying.
+
+Output:
+{{
+  "title": "API deploy rollback",
+  "abstract": "The session rolled back the API deploy after 500s and identified a missing STRIPE_WEBHOOK_SECRET environment variable as the root cause. A startup guard was added, and it still needs staging verification before redeploying.",
+  "participants": [],
+  "decisions": ["Add a startup guard"],
+  "outcomes": ["Rolled back the API deploy", "Added a startup guard"],
+  "follow_ups": ["Verify the new guard in staging before redeploying"],
+  "confidence": 0.93
+}}
+
+Example 4:
+Transcript:
+User: Miguel wants the new checkout flow behind a feature flag until support is ready.
+Assistant: We agreed to launch it to 10 percent of employees first.
+User: I enabled the flag for internal accounts and support has the rollback instructions.
+
+Output:
+{{
+  "title": "Checkout feature flag rollout",
+  "abstract": "The session put the new checkout flow behind a feature flag and chose a 10 percent employee rollout. Miguel was the named stakeholder, and the flag was enabled for internal accounts with rollback instructions ready for support.",
+  "participants": ["Miguel"],
+  "decisions": ["Launch the new checkout flow to 10 percent of employees behind a feature flag"],
+  "outcomes": ["Enabled the flag for internal accounts", "Support has rollback instructions"],
+  "follow_ups": [],
+  "confidence": 0.9
 }}
 
 Transcript:

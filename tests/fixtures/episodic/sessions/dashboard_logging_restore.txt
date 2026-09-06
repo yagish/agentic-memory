@@ -1,0 +1,4 @@
+User: The dashboard stopped showing wake_up and save_hook logs.
+Assistant: We restored file logging for both hooks and added them back to the sidebar.
+User: Nice, the endpoints are returning those logs again.
+Assistant: We should add a dashboard test so this does not disappear a second time.

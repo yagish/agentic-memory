@@ -1,0 +1,23 @@
+{
+  "title_contains": [
+    "Card",
+    "retry"
+  ],
+  "abstract_contains": [
+    "automatic retry",
+    "support"
+  ],
+  "participants_contains": [
+    "Priya"
+  ],
+  "decisions_contains": [
+    "five minutes",
+    "support"
+  ],
+  "outcomes_contains": [
+    "failed captures queue"
+  ],
+  "follow_ups_contains": [
+    "metric"
+  ]
+}

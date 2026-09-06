@@ -1,0 +1,23 @@
+{
+  "title_contains": [
+    "Checkout",
+    "feature flag"
+  ],
+  "abstract_contains": [
+    "10 percent",
+    "rollback instructions"
+  ],
+  "participants_contains": [
+    "Miguel"
+  ],
+  "decisions_contains": [
+    "10 percent of employees"
+  ],
+  "outcomes_contains": [
+    "internal accounts",
+    "rollback instructions"
+  ],
+  "follow_ups_contains": [
+    "Monday"
+  ]
+}

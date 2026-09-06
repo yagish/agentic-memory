@@ -11,11 +11,13 @@ from memory.db import (
     init_db,
     insert_episodic,
     insert_fact,
+    insert_procedural,
     log_retrieval,
     open_db,
     search,
     search_episodic_semantic,
     search_facts_semantic,
+    search_procedural_semantic,
     semantic_search,
     upsert_session,
 )
@@ -45,8 +47,8 @@ class TestConnectionBootstrapSplit(unittest.TestCase):
                     row[0]
                     for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
                 }
-                self.assertTrue({"sessions", "facts", "episodic_memory"}.issubset(tables))
-                self.assertTrue({"sessions", "facts", "episodic_memory"}.issubset(tables))
+                self.assertTrue({"sessions", "facts", "episodic_memory", "procedural_memory"}.issubset(tables))
+                self.assertTrue({"sessions", "facts", "episodic_memory", "procedural_memory"}.issubset(tables))
             finally:
                 conn.close()
         finally:
@@ -236,6 +238,28 @@ class TestFactAndEpisodeStorage(unittest.TestCase):
         )
         results = search_episodic_semantic(self.conn, embed("login middleware bug"), limit=2)
         self.assertEqual(results[0]["title"], "Fixed login loop")
+
+    def test_semantic_procedural_search(self):
+        insert_procedural(
+            self.conn,
+            session_id="s1",
+            title="Web deploy workflow",
+            summary="Use this when deploying the web service.",
+            updated_at="2026-01-01T00:00:00Z",
+            details={"steps": ["Build the Docker image", "Run alembic upgrade"]},
+            embedding=embed("deploy web service docker alembic staging production"),
+        )
+        insert_procedural(
+            self.conn,
+            session_id="s2",
+            title="Invoice copy workflow",
+            summary="Use this when updating billing email copy.",
+            updated_at="2026-01-02T00:00:00Z",
+            details={"steps": ["Open the billing templates", "Edit the copy"]},
+            embedding=embed("billing email copy templates"),
+        )
+        results = search_procedural_semantic(self.conn, embed("how do i deploy the web service"), limit=2)
+        self.assertEqual(results[0]["title"], "Web deploy workflow")
 
 
 class TestCompatibilityNoops(unittest.TestCase):

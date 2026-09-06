@@ -1,0 +1,19 @@
+{
+  "title_contains": [
+    "Signup",
+    "fix"
+  ],
+  "abstract_contains": [
+    "default plan rows",
+    "staging"
+  ],
+  "decisions_contains": [
+    "seed data"
+  ],
+  "outcomes_contains": [
+    "Signup works in staging"
+  ],
+  "follow_ups_contains": [
+    "dev"
+  ]
+}

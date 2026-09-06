@@ -1,4 +1,4 @@
-"""Wake-up retrieval focused on episodic memory and facts.
+"""Wake-up retrieval focused on durable structured memories.
 
 Adapters should call these functions instead of assembling retrieval policy
 inline.
@@ -6,9 +6,9 @@ inline.
 Current runtime mode keeps only:
 - episodic memory
 - facts
+- procedural memory
 
-The extra fields on ``WakeUpContext`` remain for caller compatibility, but they
-are intentionally left empty.
+The extra fields on ``WakeUpContext`` remain for caller compatibility.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from typing import Any
 from memory.db import search_facts_semantic
 from memory.episodic_repository import list_recent_episodic_memories, retrieve_episodic_memories
 from memory.inference import GenerationRequest, InferenceError, embed_text, generate_text
+from memory.procedural_repository import retrieve_procedural_memories
 
 MemoryRow = dict[str, Any]
 
@@ -32,6 +33,8 @@ FACT_MIN_SIMILARITY = 0.38
 EPISODIC_LIMIT = 3
 EPISODIC_RECENT_LIMIT = 5
 FACT_LIMIT = 5
+PROCEDURAL_MIN_SIMILARITY = 0.74
+PROCEDURAL_LIMIT = 2
 _CONTEXT_COMPACTION_MODEL = None
 _CONTEXT_COMPACTION_TIMEOUT_SECONDS = 10
 
@@ -169,8 +172,25 @@ def _format_facts(facts: list[MemoryRow]) -> str:
     return " ".join(lines)
 
 
+def _format_procedural(procedural: list[MemoryRow]) -> str:
+    fragments: list[str] = []
+    for item in procedural[:2]:
+        title = _normalize_text(item.get("title", ""))
+        summary = _as_sentence(item.get("summary", ""))
+        steps = [_normalize_text(value) for value in item.get("steps", []) if _normalize_text(value)]
+        if title and summary:
+            fragments.append(f"Relevant how-to pattern: {title}. {summary}")
+        elif summary:
+            fragments.append(f"Relevant how-to pattern: {summary}")
+        elif title:
+            fragments.append(f"Relevant how-to pattern: {title}.")
+        if steps:
+            fragments.append(f"Steps: {'; '.join(steps[:4])}.")
+    return " ".join(fragments)
+
+
 def _build_context_body(context: WakeUpContext) -> str:
-    sections = [_format_episodic(context.episodic), _format_facts(context.facts)]
+    sections = [_format_episodic(context.episodic), _format_procedural(context.procedural), _format_facts(context.facts)]
     return _normalize_text(" ".join(section for section in sections if section))
 
 
@@ -194,7 +214,7 @@ def _compact_context_body(body: str, *, char_budget: int) -> str:
             GenerationRequest(
                 prompt=(
                     "Compress this memory context so it stays faithful, compact, and useful for the next turn. "
-                    "Keep names, decisions, outcomes, follow-ups, and concrete facts. "
+                    "Keep names, decisions, outcomes, follow-ups, concrete facts, and procedural steps. "
                     f"Return plain text only and stay under {target_budget} characters.\n\n"
                     f"Memory context:\n{normalized}\n\nCompressed context:"
                 ),
@@ -259,6 +279,40 @@ def _retrieve_facts(conn, prompt: str, prompt_vec, warnings: list[RetrievalWarni
         return []
 
 
+
+def _prompt_requests_procedural_help(prompt: str) -> bool:
+    normalized = prompt.lower().strip()
+    if normalized.startswith((
+        "how do i",
+        "how to",
+        "remind me how",
+        "what is the deploy process",
+        "what's the deploy process",
+    )):
+        return True
+    tokens = set(re.findall(r"[a-z0-9]+", normalized))
+    return bool(tokens & {"how", "steps", "workflow", "procedure", "process", "deploy", "release", "rollback", "restart", "setup", "configure", "install"})
+
+
+
+def _retrieve_procedural(conn, prompt: str, prompt_vec, embed_fn, warnings: list[RetrievalWarning]) -> list[MemoryRow]:
+    if not _prompt_requests_procedural_help(prompt):
+        return []
+    try:
+        return retrieve_procedural_memories(
+            conn,
+            prompt,
+            query_vector=prompt_vec,
+            embed_fn=embed_fn,
+            min_similarity=PROCEDURAL_MIN_SIMILARITY,
+            limit=PROCEDURAL_LIMIT,
+            source="wake_up",
+        )
+    except Exception as exc:
+        _append_warning(warnings, "procedural", exc)
+        return []
+
+
 def retrieve_wake_up_context(
     conn,
     prompt: str,
@@ -279,6 +333,7 @@ def retrieve_wake_up_context(
     if not episodic and _prompt_requests_recent_episode_summary(prompt):
         episodic = _retrieve_recent_episodic(conn, warnings)
     facts = _retrieve_facts(conn, prompt, prompt_vec, warnings)
+    procedural = _retrieve_procedural(conn, prompt, prompt_vec, embed_fn, warnings)
 
     return WakeUpContext(
         cache_hit=None,
@@ -286,6 +341,6 @@ def retrieve_wake_up_context(
         enrichment=[],
         episodic=episodic,
         facts=facts,
-        procedural=[],
+        procedural=procedural,
         warnings=warnings,
     )

@@ -1,0 +1,20 @@
+{
+  "title_contains": [
+    "API",
+    "rate limiter"
+  ],
+  "abstract_contains": [
+    "60 requests per minute",
+    "429 errors"
+  ],
+  "decisions_contains": [
+    "60 requests per minute",
+    "internal traffic"
+  ],
+  "outcomes_contains": [
+    "429 errors"
+  ],
+  "follow_ups_contains": [
+    "dashboard panel"
+  ]
+}

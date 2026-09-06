@@ -1,0 +1,60 @@
+import unittest
+
+from memory.inference import GenerationResult
+from memory.procedural import (
+    build_procedural_extraction_prompt,
+    extract_procedure_from_session_text,
+    procedure_to_semantic_core,
+)
+
+
+class TestProceduralExtractionHelpers(unittest.TestCase):
+    def test_extract_procedure_parses_wrapped_json_and_normalizes_lists(self):
+        def fake_generate(_request):
+            return GenerationResult(
+                text='''Here is the procedure:\n{\n  "title": " Web deploy workflow ",\n  "summary": " Deploy the web service through staging before production. ",\n  "steps": [" Build the Docker image ", "Run alembic upgrade", "Build the Docker image"],\n  "trigger_phrases": [" how do i deploy the web service ", "deploy workflow", "deploy workflow"],\n  "tools": [" Docker ", "alembic", "Docker"],\n  "confidence": 0.93\n}\n''',
+                model="fake-model",
+            )
+
+        procedure = extract_procedure_from_session_text(
+            "User: The deploy workflow is build the Docker image, run alembic upgrade, then roll out in staging before production.",
+            generate_fn=fake_generate,
+            source="test-harness",
+            session_id="session-123",
+        )
+
+        self.assertEqual(
+            procedure_to_semantic_core(procedure),
+            {
+                "title": "Web deploy workflow",
+                "summary": "Deploy the web service through staging before production.",
+                "steps": ["Build the Docker image", "Run alembic upgrade"],
+                "trigger_phrases": ["how do i deploy the web service", "deploy workflow"],
+                "tools": ["Docker", "alembic"],
+            },
+        )
+        self.assertEqual(procedure.confidence, 0.93)
+
+    def test_prompt_includes_transcript_and_output_shape(self):
+        prompt = build_procedural_extraction_prompt(
+            "User: Deploy by building the image, then run alembic upgrade.\nAssistant: Verify staging before production."
+        )
+
+        self.assertIn("User: Deploy by building the image, then run alembic upgrade.", prompt)
+        self.assertIn("Assistant: Verify staging before production.", prompt)
+        self.assertIn('"steps": ["ordered repeatable steps"]', prompt)
+        self.assertIn("Return only the JSON object.", prompt)
+
+    def test_prompt_pushes_repeatable_project_specific_workflows(self):
+        prompt = build_procedural_extraction_prompt(
+            "User: When the checkout flag misbehaves, disable it, clear the edge cache, then retry with an employee account."
+        )
+
+        self.assertIn("durable repeatable how-to, workflow, checklist, or operating pattern", prompt)
+        self.assertIn("Keep exact literals when central: commands, flags, env vars, file names, branch names, service names, rollout percentages, and environments.", prompt)
+        self.assertIn("Prefer project-specific workflows over generic advice.", prompt)
+        self.assertIn("Do not invent missing steps, tools, or trigger phrases.", prompt)
+
+
+if __name__ == "__main__":
+    unittest.main()

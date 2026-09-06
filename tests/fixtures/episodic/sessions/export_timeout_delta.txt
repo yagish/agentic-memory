@@ -1,0 +1,4 @@
+User: Large identity exports were timing out after 30 seconds.
+Assistant: We switched the export endpoint to enqueue a background job instead of streaming synchronously.
+User: The export now finishes and emails a link when it is ready.
+Assistant: Tomorrow verify that retries are idempotent before we announce it.

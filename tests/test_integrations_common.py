@@ -57,7 +57,7 @@ class TestDecidePromptMemoryAction(unittest.TestCase):
             [],
             [{"id": "ep-1", "title": "Resolved auth bug", "abstract": "Fixed the login loop.", "similarity": 0.91}],
             [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.99}],
-            [],
+            [{"id": "proc-1", "title": "Deploy service", "summary": "Use this when releasing auth.", "steps": ["Build the image"], "similarity": 0.87}],
         )
 
         outcome = decide_prompt_memory_action("continue fixing auth", context)
@@ -65,6 +65,7 @@ class TestDecidePromptMemoryAction(unittest.TestCase):
         self.assertEqual(outcome.action, "inject")
         self.assertEqual(outcome.answer, "")
         self.assertIn("Recent related episode: Resolved auth bug. Fixed the login loop.", outcome.injection)
+        self.assertIn("Relevant how-to pattern: Deploy service. Use this when releasing auth.", outcome.injection)
         self.assertIn("Remembered fact: user.name = Yash.", outcome.injection)
 
 

@@ -1,0 +1,4 @@
+User: We cannot keep slipping the catalog release for minor polish.
+Assistant: Agreed. The cutoff is Saturday noon and anything after that goes to the next train.
+User: I posted the cutoff for release/forge in Slack and the PM acknowledged it.
+Assistant: Before then, verify the changelog is complete.

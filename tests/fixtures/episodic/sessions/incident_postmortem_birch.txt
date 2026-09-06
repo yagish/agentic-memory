@@ -1,0 +1,4 @@
+User: Ravi will own the postmortem for yesterday's billing outage.
+Assistant: We agreed the report should focus on the slow database failover and the missing alert.
+User: I opened the doc and assigned Ravi as the DRI.
+Assistant: Add the remediation timeline before Tuesday's review.

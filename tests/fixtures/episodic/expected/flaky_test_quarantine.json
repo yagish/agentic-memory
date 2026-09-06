@@ -1,0 +1,20 @@
+{
+  "title_contains": [
+    "Quarantine",
+    "payment"
+  ],
+  "abstract_contains": [
+    "payments integration suite",
+    "CI"
+  ],
+  "decisions_contains": [
+    "test_payment_retry"
+  ],
+  "outcomes_contains": [
+    "quarantined",
+    "Pipeline is green"
+  ],
+  "follow_ups_contains": [
+    "HTTP recordings"
+  ]
+}

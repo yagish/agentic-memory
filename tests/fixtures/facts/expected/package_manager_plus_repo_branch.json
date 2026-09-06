@@ -1,0 +1,12 @@
+[
+  {
+    "entity": "user",
+    "attribute": "package_manager",
+    "value": "pnpm"
+  },
+  {
+    "entity": "repo",
+    "attribute": "default_branch",
+    "value": "trunk"
+  }
+]

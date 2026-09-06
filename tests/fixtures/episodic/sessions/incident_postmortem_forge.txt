@@ -1,0 +1,4 @@
+User: Elena will own the postmortem for yesterday's catalog outage.
+Assistant: We agreed the report should focus on the slow database failover and the missing alert.
+User: I opened the doc and assigned Elena as the DRI.
+Assistant: Add the remediation timeline before Saturday's review.
