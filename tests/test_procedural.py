@@ -31,7 +31,7 @@ class TestProceduralExtractionHelpers(unittest.TestCase):
                 "summary": "Deploy the web service through staging before production.",
                 "steps": ["Build the Docker image", "Run alembic upgrade"],
                 "trigger_phrases": ["how do i deploy the web service", "deploy workflow"],
-                "tools": ["Docker", "alembic"],
+                "tools": ["Docker", "alembic", "staging", "production"],
             },
         )
         self.assertEqual(procedure.confidence, 0.93)
@@ -52,6 +52,35 @@ class TestProceduralExtractionHelpers(unittest.TestCase):
 
         self.assertIsNone(procedure)
 
+    def test_parse_repairs_unescaped_quotes_inside_json_strings(self):
+        procedure = parse_extracted_procedure(
+            '''{
+  "title": "Admin-web flaky test triage workflow",
+  "summary": "Use this flaky test triage workflow for admin-web.",
+  "steps": ["Rerun the suite with PYTEST_ADDOPTS="-x"", "File the Jira ticket"],
+  "trigger_phrases": ["flaky test triage workflow for admin-web"],
+  "tools": ["PYTEST_ADDOPTS="-x"", "Jira"],
+  "confidence": 0.95
+}'''
+        )
+
+        self.assertEqual(procedure.steps[0], 'Rerun the suite with PYTEST_ADDOPTS="-x"')
+        self.assertEqual(procedure.tools[0], 'PYTEST_ADDOPTS="-x"')
+
+    def test_parse_backfills_stage_literals_into_tools(self):
+        procedure = parse_extracted_procedure(
+            '''{
+  "title": "Docs-site release cutoff checklist",
+  "summary": "Use this release cutoff checklist for docs-site.",
+  "steps": ["Run smoke tests in preview"],
+  "trigger_phrases": ["release cutoff checklist for docs-site"],
+  "tools": ["release/delta", "Slack"],
+  "confidence": 0.95
+}'''
+        )
+
+        self.assertIn("preview", procedure.tools)
+
     def test_prompt_includes_transcript_and_output_shape(self):
         prompt = build_procedural_extraction_prompt(
             "User: Deploy by building the image, then run alembic upgrade.\nAssistant: Verify staging before production."
@@ -68,8 +97,8 @@ class TestProceduralExtractionHelpers(unittest.TestCase):
         )
 
         self.assertIn("durable repeatable how-to, workflow, checklist, or operating pattern", prompt)
-        self.assertIn("Keep exact literals when central: commands, flags, env vars, file names, branch names, service names, rollout percentages, and environments.", prompt)
         self.assertIn("Prefer project-specific workflows over generic advice.", prompt)
+        self.assertIn("Do not change the spelling or casing of env vars", prompt)
         self.assertIn("Do not invent missing steps, tools, or trigger phrases.", prompt)
 
 

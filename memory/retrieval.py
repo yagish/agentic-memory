@@ -60,19 +60,6 @@ class WakeUpContext:
     warnings: list[RetrievalWarning] = field(default_factory=list)
 
 
-def build_fact_query(prompt: str) -> str:
-    """Build a punctuation-safe FTS query for fact lookup."""
-    tokens = re.findall(r"[a-z0-9]+", prompt.lower())
-    keywords = [token for token in tokens if len(token) > 2 or token in {"my"}]
-
-    deduped: list[str] = []
-    for token in keywords:
-        if token not in deduped:
-            deduped.append(token)
-
-    return " OR ".join(deduped)
-
-
 def _normalize_text(content: str) -> str:
     return re.sub(r"\s+", " ", content).strip()
 

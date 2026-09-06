@@ -3,20 +3,9 @@ from unittest.mock import MagicMock, patch
 
 from memory.retrieval import (
     WakeUpContext,
-    build_fact_query,
     build_wake_up_injection,
     retrieve_wake_up_context,
 )
-
-
-class TestBuildFactQuery(unittest.TestCase):
-    def test_strips_punctuation_and_dedupes_terms(self):
-        result = build_fact_query("What is my name, my role, and my name?")
-        self.assertEqual(result, "what OR my OR name OR role OR and")
-
-    def test_returns_empty_when_no_meaningful_terms(self):
-        result = build_fact_query("?!")
-        self.assertEqual(result, "")
 
 
 class TestBuildWakeUpInjection(unittest.TestCase):

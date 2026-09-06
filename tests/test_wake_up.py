@@ -9,19 +9,9 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from integrations.claude.wake_up import _build_fact_query, _build_injection, main
+from integrations.claude.wake_up import _build_injection, main
 from memory.retrieval import WakeUpContext
 import integrations.claude.wake_up as _wu
-
-
-class TestBuildFactQuery(unittest.TestCase):
-    def test_strips_punctuation_and_dedupes_terms(self):
-        result = _build_fact_query("What is my name, my role, and my name?")
-        self.assertEqual(result, "what OR my OR name OR role OR and")
-
-    def test_returns_empty_when_no_meaningful_terms(self):
-        result = _build_fact_query("?!")
-        self.assertEqual(result, "")
 
 
 class TestBuildInjection(unittest.TestCase):
@@ -194,7 +184,6 @@ class TestMainIntegration(unittest.TestCase):
                 main()
 
         logged_messages = [call.args[0] for call in log_info.call_args_list]
-        self.assertTrue(any("fact lookup query_terms='what OR my OR name OR and OR where OR live'" in msg for msg in logged_messages))
         self.assertTrue(any('fact lookup results=[{"content": "user.name = Yash"' in msg for msg in logged_messages))
         self.assertTrue(any('fact renderer input=["user.name = Yash", "user.location = Seattle"]' in msg for msg in logged_messages))
         self.assertTrue(any("fact renderer output='Your name is Yash and you live in Seattle.'" in msg for msg in logged_messages))

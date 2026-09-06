@@ -26,7 +26,6 @@ from integrations.common import (
 from memory.db import log_retrieval
 from memory.logger import activity_log
 from memory.debug import enable_debug
-from memory.retrieval import build_fact_query as _build_fact_query
 from memory.retrieval import build_wake_up_injection as _build_injection
 
 DB_PATH = DEFAULT_DB_PATH
@@ -137,10 +136,7 @@ def _log_context_warnings(context) -> None:
         _log_error(f"{warning.stage} failed: {warning.message}")
 
 
-def _log_fact_lookup_details(request: HookRequest, context) -> None:
-    query_terms = _build_fact_query(request.prompt)
-    _log_info(f"fact lookup query_terms={query_terms!r}")
-
+def _log_fact_lookup_details(_request: HookRequest, context) -> None:
     results = []
     for fact in context.facts:
         results.append({
