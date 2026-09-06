@@ -1,4 +1,4 @@
-# test_save_hook.py — tests for the Stop hook's core logic (hooks/save_hook.py).
+# test_save_hook.py — tests for the Claude Stop-hook adapter.
 #
 # Run with:  python3 -m unittest tests.test_save_hook -v
 #
@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 
-from hooks.save_hook import parse_transcript, save_session
+from integrations.claude.save_hook import parse_transcript, save_session
 from memory.db import init_db
 
 
@@ -229,7 +229,7 @@ class TestSaveSession(unittest.TestCase):
     def _run_save(self, session_id="sess-abc"):
         """Helper: call save_session with a payload pointing at the temp files."""
         # Monkey-patch the DB_PATH so the hook writes to our temp DB, not ~/.memory/memory.db
-        import hooks.save_hook as hook_module
+        import integrations.claude.save_hook as hook_module
         original_db_path = hook_module.DB_PATH
         hook_module.DB_PATH = self.tmp_db.name
         try:

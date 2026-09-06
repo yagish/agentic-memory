@@ -1,0 +1,2 @@
+User: The project status is prototype.
+User: Fix auth middleware.

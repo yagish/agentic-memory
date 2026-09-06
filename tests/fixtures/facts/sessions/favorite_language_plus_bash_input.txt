@@ -1,0 +1,2 @@
+User: Python is my favorite language.
+User: <bash-input>git status</bash-input>

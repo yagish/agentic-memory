@@ -1,0 +1,2 @@
+User: <bash-input>pwd</bash-input>
+User: My timezone is EST.

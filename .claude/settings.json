@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /Users/ys68052/work/agentic-memory/hooks/save_hook.py"
+            "command": "python3 /Users/ys68052/work/agentic-memory/integrations/claude/save_hook.py"
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /Users/ys68052/work/agentic-memory/hooks/wake_up.py"
+            "command": "python3 /Users/ys68052/work/agentic-memory/integrations/claude/wake_up.py"
           }
         ]
       }

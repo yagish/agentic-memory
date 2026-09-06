@@ -1,0 +1,2 @@
+User: <tool-input>git status</tool-input>
+User: I prefer concise answers.

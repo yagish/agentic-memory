@@ -1,0 +1,3 @@
+[
+  {"entity": "user", "attribute": "package_manager", "value": "uv"}
+]

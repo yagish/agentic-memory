@@ -1,0 +1,2 @@
+User: <bash-stdout>/Users/yash/work/agentic-memory</bash-stdout>
+User: Can you debug this failing test?

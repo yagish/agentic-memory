@@ -9,9 +9,9 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from hooks.wake_up import _build_fact_query, _build_injection, main
+from integrations.claude.wake_up import _build_fact_query, _build_injection, main
 from memory.retrieval import WakeUpContext
-import hooks.wake_up as _wu
+import integrations.claude.wake_up as _wu
 
 
 class TestBuildFactQuery(unittest.TestCase):
@@ -57,12 +57,14 @@ class TestMainIntegration(unittest.TestCase):
         session_id="test-sess",
         context=None,
         first_message=True,
+        outcome=None,
     ):
         payload = json.dumps({"session_id": session_id, "prompt": prompt})
         stdout = io.StringIO()
         stderr = io.StringIO()
         conn = MagicMock()
         retrieval_context = context or WakeUpContext(None, None, [], [], [], [])
+        memory_outcome = outcome or type("Outcome", (), {"action": "noop", "answer": "", "injection": ""})()
 
         exit_code = None
         with patch("sys.stdin", io.StringIO(payload)), \
@@ -70,10 +72,10 @@ class TestMainIntegration(unittest.TestCase):
              patch("sys.stderr", stderr), \
              patch("sys.exit", side_effect=lambda code=0: (_ for _ in ()).throw(SystemExit(code))), \
              patch.object(_wu, "DB_PATH", "/fake/test.db"), \
-             patch("os.path.exists", return_value=True), \
-             patch.object(_wu, "open_db", return_value=conn), \
+             patch.object(_wu, "_open_connection", return_value=conn), \
              patch.object(_wu, "_is_first_message", return_value=first_message), \
-             patch.object(_wu, "retrieve_wake_up_context", return_value=retrieval_context) as retrieve_context, \
+             patch.object(_wu, "retrieve_prompt_memory", return_value=retrieval_context) as retrieve_context, \
+             patch.object(_wu, "decide_prompt_memory_action", return_value=memory_outcome) as decide_action, \
              patch.object(_wu, "log_retrieval") as log_retrieval, \
              patch.object(_wu, "activity_log"):
             with self.assertRaises(SystemExit) as raised:
@@ -87,6 +89,7 @@ class TestMainIntegration(unittest.TestCase):
             "conn": conn,
             "retrieve_context": retrieve_context,
             "log_retrieval": log_retrieval,
+            "decide_action": decide_action,
         }
 
     def test_no_memory_found_allows_prompt(self):
@@ -97,19 +100,19 @@ class TestMainIntegration(unittest.TestCase):
         result["conn"].close.assert_called_once()
 
     def test_fact_hit_returns_documented_block_json_when_only_facts_match(self):
-        with patch.object(_wu, "render_fact_answer", return_value="Your name is Yash.") as render_fact_answer:
-            result = self._run_main(
-                prompt="what is my name?",
-                context=WakeUpContext(
-                    None,
-                    None,
-                    [],
-                    [],
-                    [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.99}],
-                    [],
-                ),
-                first_message=False,
-            )
+        result = self._run_main(
+            prompt="what is my name?",
+            context=WakeUpContext(
+                None,
+                None,
+                [],
+                [],
+                [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.99}],
+                [],
+            ),
+            first_message=False,
+            outcome=type("Outcome", (), {"action": "answer", "answer": "Your name is Yash.", "injection": ""})(),
+        )
         self.assertEqual(result["stderr"], "")
         payload = json.loads(result["stdout"])
         self.assertEqual(
@@ -121,7 +124,7 @@ class TestMainIntegration(unittest.TestCase):
             },
         )
         self.assertEqual(result["exit_code"], 0)
-        render_fact_answer.assert_called_once_with("what is my name?", ["user.name = Yash"])
+        result["decide_action"].assert_called_once()
         result["retrieve_context"].assert_called_once_with(
             result["conn"],
             "what is my name?",
@@ -135,22 +138,21 @@ class TestMainIntegration(unittest.TestCase):
         )
 
     def test_fact_hit_with_episodic_context_allows_prompt(self):
-        with patch.object(_wu, "render_fact_answer") as render_fact_answer:
-            result = self._run_main(
-                prompt="continue fixing auth",
-                context=WakeUpContext(
-                    None,
-                    None,
-                    [],
-                    [{"id": "ep-1", "title": "Resolved auth bug", "abstract": "Fixed the login loop.", "similarity": 0.79}],
-                    [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.99}],
-                    [],
-                ),
-                first_message=False,
-            )
+        result = self._run_main(
+            prompt="continue fixing auth",
+            context=WakeUpContext(
+                None,
+                None,
+                [],
+                [{"id": "ep-1", "title": "Resolved auth bug", "abstract": "Fixed the login loop.", "similarity": 0.79}],
+                [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.99}],
+                [],
+            ),
+            first_message=False,
+            outcome=type("Outcome", (), {"action": "inject", "answer": "", "injection": "[Memory context: foo]"})(),
+        )
 
         self.assertEqual(json.loads(result["stdout"]), {})
-        render_fact_answer.assert_not_called()
         result["log_retrieval"].assert_called_once_with(
             result["conn"],
             "wake_up_context_found",
@@ -180,11 +182,10 @@ class TestMainIntegration(unittest.TestCase):
              patch("sys.stderr", stderr), \
              patch("sys.exit", side_effect=lambda code=0: (_ for _ in ()).throw(SystemExit(code))), \
              patch.object(_wu, "DB_PATH", "/fake/test.db"), \
-             patch("os.path.exists", return_value=True), \
-             patch.object(_wu, "open_db", return_value=conn), \
+             patch.object(_wu, "_open_connection", return_value=conn), \
              patch.object(_wu, "_is_first_message", return_value=False), \
-             patch.object(_wu, "retrieve_wake_up_context", return_value=retrieval_context), \
-             patch.object(_wu, "render_fact_answer", return_value="Your name is Yash and you live in Seattle."), \
+             patch.object(_wu, "retrieve_prompt_memory", return_value=retrieval_context), \
+             patch.object(_wu, "decide_prompt_memory_action", return_value=type("Outcome", (), {"action": "answer", "answer": "Your name is Yash and you live in Seattle.", "injection": ""})()), \
              patch.object(_wu, "log_retrieval"), \
              patch.object(_wu, "activity_log"), \
              patch.object(_wu, "_log_info") as log_info:

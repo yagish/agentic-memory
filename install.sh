@@ -36,8 +36,12 @@ if os.path.exists(SETTINGS_PATH):
         return removed
     r1 = remove_hook("Stop", f"python3 {INSTALL_DIR}/hooks/save_hook.py")
     r1 += remove_hook("Stop", f"{PYTHON3_EXEC} {INSTALL_DIR}/hooks/save_hook.py")
+    r1 += remove_hook("Stop", f"python3 {INSTALL_DIR}/integrations/claude/save_hook.py")
+    r1 += remove_hook("Stop", f"{PYTHON3_EXEC} {INSTALL_DIR}/integrations/claude/save_hook.py")
     r2 = remove_hook("UserPromptSubmit", f"python3 {INSTALL_DIR}/hooks/wake_up.py")
     r2 += remove_hook("UserPromptSubmit", f"{PYTHON3_EXEC} {INSTALL_DIR}/hooks/wake_up.py")
+    r2 += remove_hook("UserPromptSubmit", f"python3 {INSTALL_DIR}/integrations/claude/wake_up.py")
+    r2 += remove_hook("UserPromptSubmit", f"{PYTHON3_EXEC} {INSTALL_DIR}/integrations/claude/wake_up.py")
     with open(SETTINGS_PATH, "w") as f:
         json.dump(settings, f, indent=2)
     print(f"  - Removed Stop hook: {r1} entr{'y' if r1==1 else 'ies'}")
@@ -103,10 +107,11 @@ print("  + Dependencies installed and import-verified")
 PYEOF
 
 # ── Step 3: Ollama model ─────────────────────────────────────────────────────
-# Default: qwen2.5:3b downloaded from HuggingFace (avoids ollama registry which
-# may be blocked by corporate proxies). Override via MEMORY_OLLAMA_MODEL env var.
-OLLAMA_MODEL="${MEMORY_OLLAMA_MODEL:-qwen2.5:3b}"
-HF_GGUF_URL="${MEMORY_HF_GGUF_URL:-https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf}"
+# Default: qwen2.5:7b. Try the Ollama registry first, then fall back to a
+# single-file GGUF from HuggingFace if the registry is flaky or blocked.
+# Override via MEMORY_OLLAMA_MODEL / MEMORY_HF_GGUF_URL.
+OLLAMA_MODEL="${MEMORY_OLLAMA_MODEL:-qwen2.5:7b}"
+HF_GGUF_URL="${MEMORY_HF_GGUF_URL:-https://huggingface.co/lmstudio-community/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf}"
 MODELS_DIR="$HOME/.memory/models"
 GGUF_FILE="$MODELS_DIR/$(basename "$HF_GGUF_URL")"
 
@@ -137,7 +142,7 @@ else
         if [ -f "$GGUF_FILE" ]; then
             echo "  = GGUF already downloaded: $GGUF_FILE"
         else
-            echo "  Downloading $(basename "$HF_GGUF_URL") (~2 GB) ..."
+            echo "  Downloading $(basename "$HF_GGUF_URL") (~5 GB) ..."
             if curl -L --progress-bar -o "$GGUF_FILE" "$HF_GGUF_URL"; then
                 echo "  + Downloaded to $GGUF_FILE"
             else
@@ -225,8 +230,8 @@ def add_hook(event_name, command):
                 return False
     entries.append({"matcher": "", "hooks": [{"type": "command", "command": command}]})
     return True
-save_cmd = f"{PYTHON3_EXEC} {INSTALL_DIR}/hooks/save_hook.py"
-wake_cmd = f"{PYTHON3_EXEC} {INSTALL_DIR}/hooks/wake_up.py"
+save_cmd = f"{PYTHON3_EXEC} {INSTALL_DIR}/integrations/claude/save_hook.py"
+wake_cmd = f"{PYTHON3_EXEC} {INSTALL_DIR}/integrations/claude/wake_up.py"
 added_stop = add_hook("Stop", save_cmd)
 added_wake = add_hook("UserPromptSubmit", wake_cmd)
 with open(SETTINGS_PATH, "w") as f:
@@ -270,6 +275,8 @@ cat > "$HOME/Library/LaunchAgents/com.memory.daemon.plist" << PLIST_EOF
     <string>$PYTHON_USER_SITE</string>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>MEMORY_OLLAMA_MODEL</key>
+    <string>$OLLAMA_MODEL</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -310,6 +317,8 @@ cat > "$HOME/Library/LaunchAgents/com.memory.ingest.plist" << PLIST_EOF
     <string>$PYTHON_USER_SITE</string>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>MEMORY_OLLAMA_MODEL</key>
+    <string>$OLLAMA_MODEL</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -349,6 +358,8 @@ cat > "$HOME/Library/LaunchAgents/com.memory.query.plist" << PLIST_EOF
     <string>$PYTHON_USER_SITE</string>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>MEMORY_OLLAMA_MODEL</key>
+    <string>$OLLAMA_MODEL</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -381,6 +392,7 @@ echo ""
 echo "  Daemon:           running (auto-restarts on login)"
 echo "  Ingest server:    port 7747 — write endpoint for agents"
 echo "  Query server:     port 7748 — dashboard at http://localhost:7748"
+echo "  Default model:    $OLLAMA_MODEL"
 echo "================================================================"
 echo ""
 echo "One step remaining:"

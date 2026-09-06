@@ -16,7 +16,9 @@ from fastapi.responses import HTMLResponse
 import uvicorn
 
 from memory.db import bootstrap_db, open_db
+from memory.fact_text import build_canonical_fact_content
 from memory.debug import enable_debug
+from memory.ollama import is_ollama_running, start_ollama_if_needed
 
 
 DB_PATH = os.path.expanduser("~/.memory/memory.db")
@@ -29,6 +31,16 @@ _LOG_SOURCES: dict[str, dict[str, object]] = {
         "label": "Daemon",
         "description": "Background extraction log",
         "paths": [os.path.expanduser("~/.memory/daemon.log")],
+    },
+    "wake_up": {
+        "label": "Wake Up",
+        "description": "Claude wake-up recall log",
+        "paths": [os.path.expanduser("~/.memory/wake_up.log")],
+    },
+    "save_hook": {
+        "label": "Save Hook",
+        "description": "Claude save-hook ingest log",
+        "paths": [os.path.expanduser("~/.memory/save_hook.log")],
     },
     "facts": {
         "label": "Facts",
@@ -68,17 +80,30 @@ def _check_daemon() -> tuple[bool, int | None]:
     return False, None
 
 
-def _check_ollama() -> tuple[bool, str | None]:
-    for path in ("/api/ps", "/api/tags"):
-        try:
-            with urllib.request.urlopen(f"http://localhost:11434{path}", timeout=2) as response:
-                if response.status == 200:
-                    models = json.loads(response.read()).get("models", [])
-                    model = models[0].get("name") if models else None
-                    return True, model
-        except Exception:
-            pass
-    return False, None
+def _check_ollama() -> tuple[bool, str | None, list[str]]:
+    active_model: str | None = None
+    installed_models: list[str] = []
+
+    try:
+        with urllib.request.urlopen("http://localhost:11434/api/ps", timeout=2) as response:
+            if response.status == 200:
+                models = json.loads(response.read()).get("models", [])
+                active_model = models[0].get("name") if models else None
+    except Exception:
+        pass
+
+    try:
+        with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2) as response:
+            if response.status == 200:
+                models = json.loads(response.read()).get("models", [])
+                installed_models = [model.get("name") for model in models if model.get("name")]
+    except Exception:
+        pass
+
+    running = is_ollama_running()
+    if running and active_model is None and installed_models:
+        active_model = installed_models[0]
+    return running, active_model, installed_models
 
 
 def _resolve_log_path(name: str) -> str | None:
@@ -147,7 +172,7 @@ def dashboard() -> HTMLResponse:
 @ui_router.get("/services")
 def get_services() -> dict:
     daemon_running, daemon_pid = _check_daemon()
-    ollama_running, ollama_model = _check_ollama()
+    ollama_running, ollama_model, ollama_installed_models = _check_ollama()
     last_run_iso, facts_extracted_total = _parse_daemon_log()
 
     total_sessions = 0
@@ -165,6 +190,9 @@ def get_services() -> dict:
     except Exception:
         pass
 
+    default_model = os.environ.get("MEMORY_OLLAMA_MODEL", "qwen2.5:7b")
+    only_small_model_installed = ollama_installed_models == ["qwen2.5:3b"]
+
     return {
         "daemon": {
             "running": daemon_running,
@@ -175,6 +203,13 @@ def get_services() -> dict:
         "ollama": {
             "running": ollama_running,
             "model": ollama_model,
+            "installed_models": ollama_installed_models,
+            "default_model": default_model,
+            "only_small_model_installed": only_small_model_installed,
+            "warning": "Only qwen2.5:3b is installed; consider pulling qwen2.5:7b for stronger extraction and rendering." if only_small_model_installed else None,
+            "pull_recommendation": "ollama pull qwen2.5:7b",
+            "start_command": "ollama serve",
+            "start_endpoint": "/ops/ollama/start",
         },
         "logs": _list_logs(),
         "memory": {
@@ -334,7 +369,7 @@ def get_memory_facts() -> dict:
         conn = open_db(DB_PATH)
         try:
             for row in conn.execute(
-                "SELECT id, content, tags, source, session_id, created_at, updated_at FROM facts ORDER BY created_at DESC"
+                "SELECT id, semantic_content, entity, attribute, value, tags, source, session_id, created_at, updated_at FROM facts ORDER BY created_at DESC"
             ).fetchall():
                 try:
                     tags = json.loads(row["tags"]) if row["tags"] else []
@@ -343,7 +378,11 @@ def get_memory_facts() -> dict:
                 rows.append(
                     {
                         "id": row["id"],
-                        "content": row["content"],
+                        "content": build_canonical_fact_content(row["entity"], row["attribute"], row["value"]),
+                        "semantic_content": row["semantic_content"],
+                        "entity": row["entity"],
+                        "attribute": row["attribute"],
+                        "value": row["value"],
                         "tags": tags,
                         "source": row["source"],
                         "session_id": row["session_id"],
@@ -393,6 +432,21 @@ def get_memory_episodes() -> dict:
     except Exception:
         pass
     return {"episodes": rows, "episodic": rows, "total": len(rows)}
+
+
+@ops_router.post("/ops/ollama/start")
+def start_ollama() -> dict:
+    proc = start_ollama_if_needed()
+    running, model, installed_models = _check_ollama()
+    return {
+        "ok": running,
+        "running": running,
+        "model": model,
+        "installed_models": installed_models,
+        "default_model": os.environ.get("MEMORY_OLLAMA_MODEL", "qwen2.5:7b"),
+        "started_here": proc is not None,
+        "start_command": "ollama serve",
+    }
 
 
 @ops_router.get("/logs/{service}")

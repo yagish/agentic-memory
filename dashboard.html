@@ -34,6 +34,11 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
 .tiles-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px}
 .tile{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px}
 .tile-value{font-size:22px;font-weight:600}.tile-label{font-size:10px;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:.07em}
+.tile-sub{font-size:12px;color:var(--muted);margin-top:6px;word-break:break-word}
+.tile-actions{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap}
+.action-btn,.action-link{appearance:none;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;font-size:12px;padding:6px 10px;text-decoration:none}
+.action-btn:hover,.action-link:hover{border-color:var(--accent);color:var(--text)}
+.action-btn[disabled]{opacity:.6;cursor:default}
 .charts-row{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px}
 .chart-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px 8px}
 .chart-title{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px}
@@ -61,10 +66,23 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
 <div id="app">
   <aside id="sidebar">
     <div class="sidebar-title">Agentic Memory <small>Dashboard</small></div>
+    <div class="sidebar-section">Runtime</div>
+    <div class="svc-item" id="svc-ollama-runtime">
+      <span class="svc-dot" id="dot-ollama"></span>
+      <div class="svc-body"><div class="svc-name">Ollama</div><div class="svc-desc" id="svc-desc-ollama">Checking status…</div></div>
+    </div>
     <div class="sidebar-section">Logs</div>
     <div class="svc-item" id="svc-daemon" onclick="selectLog('daemon')">
       <span class="svc-dot" id="dot-daemon"></span>
       <div class="svc-body"><div class="svc-name">Daemon</div><div class="svc-desc">Background extraction log</div></div>
+    </div>
+    <div class="svc-item" id="svc-wake_up" onclick="selectLog('wake_up')">
+      <span class="svc-dot" id="dot-wake_up"></span>
+      <div class="svc-body"><div class="svc-name">Wake Up</div><div class="svc-desc">Claude wake-up recall log</div></div>
+    </div>
+    <div class="svc-item" id="svc-save_hook" onclick="selectLog('save_hook')">
+      <span class="svc-dot" id="dot-save_hook"></span>
+      <div class="svc-body"><div class="svc-name">Save Hook</div><div class="svc-desc">Claude save-hook ingest log</div></div>
     </div>
     <div class="svc-item" id="svc-facts" onclick="selectLog('facts')">
       <span class="svc-dot" id="dot-facts"></span>
@@ -103,6 +121,18 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
           <div class="tile"><div class="tile-value" id="t-facts">—</div><div class="tile-label">Facts</div></div>
           <div class="tile"><div class="tile-value" id="t-episodes">—</div><div class="tile-label">Episodes</div></div>
           <div class="tile"><div class="tile-value" id="t-dbsize">—</div><div class="tile-label">DB Size</div></div>
+          <div class="tile">
+            <div class="tile-value" id="t-ollama">—</div>
+            <div class="tile-label">Ollama</div>
+            <div class="tile-sub" id="t-ollama-model">Checking status…</div>
+            <div class="tile-sub" id="t-ollama-default-model">Default model: —</div>
+            <div class="tile-sub" id="t-ollama-installed-models">Installed models: —</div>
+            <div class="tile-sub" id="t-ollama-warning"></div>
+            <div class="tile-actions">
+              <button class="action-btn" id="btn-start-ollama" onclick="startOllama()">Start Ollama</button>
+              <span class="mono" id="ollama-command">ollama serve</span>
+            </div>
+          </div>
         </div>
         <div class="charts-row">
           <div class="chart-card"><div class="chart-title">Sessions per Day</div><div id="ch-sessions"></div></div>
@@ -110,7 +140,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
           <div class="chart-card"><div class="chart-title">Episodes per Day</div><div id="ch-episodes"></div></div>
         </div>
         <div class="overview-copy">
-          This dashboard is intentionally trimmed down. The database keeps only <strong>sessions</strong>, <strong>facts</strong>, and <strong>episodes</strong>. The visible logs are only <strong>daemon</strong>, <strong>facts</strong>, and <strong>episodes</strong>. Click any row in a database tab to inspect its full details in the panel below the table.
+          This dashboard is intentionally trimmed down. The database keeps only <strong>sessions</strong>, <strong>facts</strong>, and <strong>episodes</strong>. The visible logs are <strong>daemon</strong>, <strong>wake up</strong>, <strong>save hook</strong>, <strong>facts</strong>, and <strong>episodes</strong>. Ollama status is shown above, and the <strong>Start Ollama</strong> button calls the local dashboard endpoint if the server is down. Click any row in a database tab to inspect its full details in the panel below the table.
         </div>
       </div>
 
@@ -130,7 +160,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
       <div class="panel" id="panel-facts" hidden>
         <input class="tbl-search" id="srch-facts" type="text" placeholder="Filter facts…" oninput="renderFacts()">
         <table class="dtbl">
-          <thead><tr><th>Content</th><th>Tags</th><th>Source</th><th>Date</th></tr></thead>
+          <thead><tr><th>Canonical</th><th>Semantic</th><th>Tags</th><th>Source</th><th>Date</th></tr></thead>
           <tbody id="tb-facts"><tr><td colspan="4" class="tbl-loading">Loading…</td></tr></tbody>
         </table>
         <div class="tbl-meta" id="meta-facts"></div>
@@ -188,10 +218,23 @@ async function loadServices() {
     const logs = d.logs || [];
     logs.forEach(log => setDot(log.name, !!log.exists));
     const mem = d.memory || {};
+    const ollama = d.ollama || {};
     set('t-sessions', fmt(mem.total_sessions));
     set('t-facts', fmt(mem.total_facts));
     set('t-episodes', fmt(mem.total_episodes));
     set('t-dbsize', fmtBytes(mem.db_size_bytes));
+    setDot('ollama', !!ollama.running);
+    set('t-ollama', ollama.running ? 'Running' : 'Stopped');
+    set('t-ollama-model', ollama.model ? `Active model: ${ollama.model}` : 'No active model detected');
+    set('t-ollama-default-model', `Default model: ${ollama.default_model || 'qwen2.5:7b'}`);
+    set('t-ollama-installed-models', `Installed models: ${(ollama.installed_models || []).join(', ') || 'none detected'}`);
+    set('t-ollama-warning', ollama.warning || '');
+    set('svc-desc-ollama', ollama.running
+      ? (ollama.model ? `Running · ${ollama.model}` : 'Running')
+      : 'Stopped · click Start Ollama or run ollama serve');
+    set('ollama-command', ollama.start_command || 'ollama serve');
+    const startBtn = document.getElementById('btn-start-ollama');
+    if (startBtn) startBtn.disabled = !!ollama.running;
     const now = new Date().toLocaleTimeString();
     set('tab-updated', 'updated ' + now);
     set('sidebar-note', 'Updated ' + now);
@@ -202,6 +245,21 @@ function setDot(name, ok) {
   const el = document.getElementById('dot-' + name);
   if (!el) return;
   el.className = 'svc-dot ' + (ok ? 'up' : 'down');
+}
+
+async function startOllama() {
+  const btn = document.getElementById('btn-start-ollama');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Starting…';
+  }
+  try {
+    await fetch(BASE + '/ops/ollama/start', { method: 'POST' });
+  } catch (_) {
+  } finally {
+    if (btn) btn.textContent = 'Start Ollama';
+    await loadServices();
+  }
 }
 
 function switchTab(name) {
@@ -404,8 +462,8 @@ function renderFacts() {
   const tb = document.getElementById('tb-facts');
   if (!tb) return;
   tb.innerHTML = _filteredFacts.length
-    ? _filteredFacts.map((row, i) => `<tr class="clickable-row ${row.id === _selectedFactId ? 'active' : ''}" onclick="showFactDetail(${i})"><td>${esc(trunc(row.content, 160))}</td><td>${(row.tags || []).slice(0, 4).map(tag => `<span class="pill">${esc(tag)}</span>`).join('')}</td><td class="mono">${esc(row.source || '')}</td><td style="white-space:nowrap">${fmtDate(row.created_at)}</td></tr>`).join('')
-    : '<tr><td colspan="4" class="tbl-loading">No facts found.</td></tr>';
+    ? _filteredFacts.map((row, i) => `<tr class="clickable-row ${row.id === _selectedFactId ? 'active' : ''}" onclick="showFactDetail(${i})"><td>${esc(trunc(row.content, 120))}</td><td>${esc(trunc(row.semantic_content || '—', 120))}</td><td>${(row.tags || []).slice(0, 4).map(tag => `<span class="pill">${esc(tag)}</span>`).join('')}</td><td class="mono">${esc(row.source || '')}</td><td style="white-space:nowrap">${fmtDate(row.created_at)}</td></tr>`).join('')
+    : '<tr><td colspan="5" class="tbl-loading">No facts found.</td></tr>';
   set('meta-facts', `${_filteredFacts.length} of ${_rawFacts.length} facts`);
 }
 
@@ -418,7 +476,7 @@ function showFactDetail(index) {
   const title = document.getElementById('fact-detail-title');
   const body = document.getElementById('fact-detail-body');
   title.textContent = `Fact ${shortId(row.id)} — ${fmtDate(row.created_at)}`;
-  body.innerHTML = `<div class="detail-grid"><div class="detail-label">Fact ID</div><div class="detail-value mono">${esc(row.id || '')}</div><div class="detail-label">Session ID</div><div class="detail-value mono">${esc(row.session_id || '—')}</div><div class="detail-label">Source</div><div class="detail-value">${esc(row.source || '—')}</div><div class="detail-label">Created</div><div class="detail-value">${esc(fmtDate(row.created_at))}</div><div class="detail-label">Updated</div><div class="detail-value">${esc(fmtDate(row.updated_at))}</div><div class="detail-label">Tags</div><div class="detail-value">${(row.tags || []).length ? row.tags.map(tag => `<span class="pill">${esc(tag)}</span>`).join('') : '—'}</div><div class="detail-label">Content</div><div class="detail-value">${esc(row.content || '')}</div></div>`;
+  body.innerHTML = `<div class="detail-grid"><div class="detail-label">Fact ID</div><div class="detail-value mono">${esc(row.id || '')}</div><div class="detail-label">Session ID</div><div class="detail-value mono">${esc(row.session_id || '—')}</div><div class="detail-label">Source</div><div class="detail-value">${esc(row.source || '—')}</div><div class="detail-label">Created</div><div class="detail-value">${esc(fmtDate(row.created_at))}</div><div class="detail-label">Updated</div><div class="detail-value">${esc(fmtDate(row.updated_at))}</div><div class="detail-label">Entity</div><div class="detail-value">${esc(row.entity || '—')}</div><div class="detail-label">Attribute</div><div class="detail-value">${esc(row.attribute || '—')}</div><div class="detail-label">Value</div><div class="detail-value">${esc(row.value || '—')}</div><div class="detail-label">Tags</div><div class="detail-value">${(row.tags || []).length ? row.tags.map(tag => `<span class="pill">${esc(tag)}</span>`).join('') : '—'}</div><div class="detail-label">Canonical</div><div class="detail-value">${esc(row.content || '')}</div><div class="detail-label">Semantic</div><div class="detail-value">${esc(row.semantic_content || '—')}</div></div>`;
   box.style.display = 'block';
   box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
@@ -479,7 +537,7 @@ function esc(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt
 function fmt(n) { return n == null ? '—' : n.toLocaleString(); }
 function fmtBytes(b) { if (!b) return '—'; if (b >= 1073741824) return (b / 1073741824).toFixed(1) + ' GB'; if (b >= 1048576) return (b / 1048576).toFixed(1) + ' MB'; if (b >= 1024) return (b / 1024).toFixed(1) + ' KB'; return b + ' B'; }
 function fmtDate(iso) { if (!iso) return '—'; try { return new Date(iso).toLocaleString(undefined, { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }); } catch (_) { return String(iso).slice(0, 16); } }
-function svcLabel(s) { return { daemon:'Daemon', facts:'Facts', episodic:'Episodes' }[s] || s; }
+function svcLabel(s) { return { daemon:'Daemon', wake_up:'Wake Up', save_hook:'Save Hook', facts:'Facts', episodic:'Episodes' }[s] || s; }
 </script>
 </body>
 </html>

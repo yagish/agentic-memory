@@ -17,7 +17,7 @@ from memory.vectors import embed as _embed_text
 
 
 _OLLAMA_URL = "http://localhost:11434/api/generate"
-_DEFAULT_MODEL = os.environ.get("MEMORY_OLLAMA_MODEL", "qwen2.5:3b")
+_DEFAULT_MODEL = os.environ.get("MEMORY_OLLAMA_MODEL", "qwen2.5:7b")
 _DEFAULT_TIMEOUT = 120
 
 

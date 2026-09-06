@@ -7,7 +7,6 @@ The retained persistent tables are:
 
 Older storage concerns (chunks, retrievals, working memory, compaction,
 procedural memory, compression, clustering, response cache) were removed.
-A few compatibility helpers remain where lightweight support is still useful.
 """
 
 from __future__ import annotations
@@ -18,6 +17,7 @@ import sqlite3
 import uuid
 from datetime import datetime, timezone
 
+from memory.fact_text import build_canonical_fact_content, build_semantic_fact_text
 from memory.vectors import cosine_distance, embed, pack_vector
 
 
@@ -34,14 +34,17 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 CREATE TABLE IF NOT EXISTS facts (
-  id         TEXT PRIMARY KEY,
-  content    TEXT NOT NULL,
-  tags       TEXT,
-  source     TEXT,
-  session_id TEXT,
-  created_at TEXT,
-  updated_at TEXT,
-  embedding  BLOB
+  id               TEXT PRIMARY KEY,
+  entity           TEXT NOT NULL,
+  attribute        TEXT NOT NULL,
+  value            TEXT NOT NULL,
+  semantic_content TEXT NOT NULL,
+  tags             TEXT,
+  source           TEXT,
+  session_id       TEXT,
+  created_at       TEXT,
+  updated_at       TEXT,
+  embedding        BLOB
 );
 
 CREATE TABLE IF NOT EXISTS episodic_memory (
@@ -57,9 +60,9 @@ CREATE TABLE IF NOT EXISTS episodic_memory (
 
 
 
-
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
 
 
 def _json_loads(value: str | None, fallback):
@@ -71,6 +74,7 @@ def _json_loads(value: str | None, fallback):
         return fallback
 
 
+
 def _session_text_from_turns(turns: list[dict]) -> str:
     parts: list[str] = []
     for turn in turns:
@@ -79,6 +83,7 @@ def _session_text_from_turns(turns: list[dict]) -> str:
         if isinstance(content, str) and content.strip():
             parts.append(f"{role}: {content}")
     return "\n".join(parts)
+
 
 
 def open_db(path: str) -> sqlite3.Connection:
@@ -94,9 +99,32 @@ def open_db(path: str) -> sqlite3.Connection:
     return conn
 
 
+
+def _fact_payload(
+    *,
+    entity: str | None,
+    attribute: str | None,
+    value: str | None,
+    semantic_content: str | None,
+) -> tuple[str, str, str, str]:
+    if not entity or not attribute or value is None:
+        raise ValueError("fact requires entity, attribute, and value")
+    semantic = (semantic_content or build_semantic_fact_text(entity, attribute, value)).strip()
+    return entity, attribute, value.strip(), semantic
+
+
+
+def _fact_dict_from_row(row: sqlite3.Row | dict) -> dict:
+    data = dict(row)
+    data["content"] = build_canonical_fact_content(data["entity"], data["attribute"], data["value"])
+    return data
+
+
+
 def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA)
     conn.commit()
+
 
 
 def bootstrap_db(path: str) -> sqlite3.Connection:
@@ -113,13 +141,16 @@ def bootstrap_db(path: str) -> sqlite3.Connection:
     return conn
 
 
+
 def init_db(path: str) -> sqlite3.Connection:
     return bootstrap_db(path)
+
 
 
 def log_retrieval(conn: sqlite3.Connection, tool: str, query: str | None, result_size: int) -> None:
     """Backward-compatible no-op after retrieval logging removal."""
     del conn, tool, query, result_size
+
 
 
 def upsert_session(
@@ -156,6 +187,7 @@ def upsert_session(
     conn.commit()
 
 
+
 def search(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict]:
     rows = conn.execute(
         """
@@ -168,6 +200,7 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict]:
         (f"%{query}%", limit),
     ).fetchall()
     return [dict(row) for row in rows]
+
 
 
 def semantic_search(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict]:
@@ -194,6 +227,7 @@ def semantic_search(conn: sqlite3.Connection, query: str, limit: int = 10) -> li
     return scored[:limit]
 
 
+
 def hybrid_search(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict]:
     keyword_rows = search(conn, query, limit=limit)
     seen = {row["session_id"] for row in keyword_rows}
@@ -201,58 +235,89 @@ def hybrid_search(conn: sqlite3.Connection, query: str, limit: int = 10) -> list
     return (keyword_rows + semantic_rows)[:limit]
 
 
+
 def insert_fact(
     conn: sqlite3.Connection,
-    content: str,
+    *,
+    entity: str,
+    attribute: str,
+    value: str,
+    semantic_content: str | None = None,
     tags: list[str] | None = None,
     source: str = "manual",
     session_id: str | None = None,
 ) -> str:
     fact_id = str(uuid.uuid4())
     now = _utc_now()
+
+    entity, attribute, value, semantic_content = _fact_payload(
+        entity=entity,
+        attribute=attribute,
+        value=value,
+        semantic_content=semantic_content,
+    )
+
     embedding_blob = None
     try:
-        embedding_blob = pack_vector(embed(content))
+        embedding_blob = pack_vector(embed(semantic_content))
     except Exception:
         pass
     conn.execute(
         """
-        INSERT INTO facts (id, content, tags, source, session_id, created_at, updated_at, embedding)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO facts (id, entity, attribute, value, semantic_content, tags, source, session_id, created_at, updated_at, embedding)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (fact_id, content, json.dumps(tags or []), source, session_id, now, now, embedding_blob),
+        (fact_id, entity, attribute, value, semantic_content, json.dumps(tags or []), source, session_id, now, now, embedding_blob),
     )
     conn.commit()
     return fact_id
 
 
+
 def update_fact(
     conn: sqlite3.Connection,
     fact_id: str,
-    content: str | None = None,
+    *,
+    entity: str | None = None,
+    attribute: str | None = None,
+    value: str | None = None,
+    semantic_content: str | None = None,
     tags: list[str] | None = None,
 ) -> bool:
     now = _utc_now()
-    existing = conn.execute("SELECT content, tags FROM facts WHERE id = ?", (fact_id,)).fetchone()
+    existing = conn.execute("SELECT entity, attribute, value, semantic_content, tags FROM facts WHERE id = ?", (fact_id,)).fetchone()
     if existing is None:
         return False
-    new_content = existing["content"] if content is None else content
+
+    entity = existing["entity"] if entity is None else entity
+    attribute = existing["attribute"] if attribute is None else attribute
+    value = existing["value"] if value is None else value
+    semantic_content = existing["semantic_content"] if semantic_content is None else semantic_content
+
+    entity, attribute, value, semantic_content = _fact_payload(
+        entity=entity,
+        attribute=attribute,
+        value=value,
+        semantic_content=semantic_content,
+    )
     new_tags = _json_loads(existing["tags"], []) if tags is None else tags
+
     embedding_blob = None
     try:
-        embedding_blob = pack_vector(embed(new_content))
+        embedding_blob = pack_vector(embed(semantic_content))
     except Exception:
         pass
     conn.execute(
         """
         UPDATE facts
-        SET content = ?, tags = ?, updated_at = ?, embedding = ?
+        SET entity = ?, attribute = ?, value = ?, semantic_content = ?, tags = ?, updated_at = ?, embedding = ?
         WHERE id = ?
         """,
-        (new_content, json.dumps(new_tags), now, embedding_blob, fact_id),
+        (entity, attribute, value, semantic_content, json.dumps(new_tags), now, embedding_blob, fact_id),
     )
     conn.commit()
     return True
+
 
 
 def delete_fact(conn: sqlite3.Connection, fact_id: str) -> bool:
@@ -261,10 +326,11 @@ def delete_fact(conn: sqlite3.Connection, fact_id: str) -> bool:
     return cursor.rowcount > 0
 
 
+
 def list_facts(conn: sqlite3.Connection, limit: int = 100) -> list[dict]:
     rows = conn.execute(
         """
-        SELECT id, content, tags, source, session_id, created_at, updated_at
+        SELECT id, entity, attribute, value, semantic_content, tags, source, session_id, created_at, updated_at
         FROM facts
         ORDER BY updated_at DESC
         LIMIT ?
@@ -273,20 +339,21 @@ def list_facts(conn: sqlite3.Connection, limit: int = 100) -> list[dict]:
     ).fetchall()
     return [
         {
-            **dict(row),
+            **_fact_dict_from_row(row),
             "tags": _json_loads(row["tags"], []),
         }
         for row in rows
     ]
 
 
+
 def search_facts(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict]:
     rows = conn.execute(
         """
-        SELECT id, content, tags, source, session_id, created_at, updated_at,
-               substr(content, 1, 120) AS snippet
+        SELECT id, entity, attribute, value, semantic_content, tags, source, session_id, created_at, updated_at,
+               substr(semantic_content, 1, 120) AS snippet
         FROM facts
-        WHERE content LIKE ?
+        WHERE semantic_content LIKE ?
         ORDER BY updated_at DESC
         LIMIT ?
         """,
@@ -294,16 +361,17 @@ def search_facts(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[
     ).fetchall()
     return [
         {
-            **dict(row),
+            **_fact_dict_from_row(row),
             "tags": _json_loads(row["tags"], []),
         }
         for row in rows
     ]
 
 
+
 def search_facts_semantic(conn: sqlite3.Connection, query_vector: list[float], limit: int = 5) -> list[dict]:
     rows = conn.execute(
-        "SELECT id, content, tags, source, session_id, created_at, updated_at, embedding FROM facts WHERE embedding IS NOT NULL"
+        "SELECT id, entity, attribute, value, semantic_content, tags, source, session_id, created_at, updated_at, embedding FROM facts WHERE embedding IS NOT NULL"
     ).fetchall()
     scored: list[dict] = []
     for row in rows:
@@ -311,7 +379,11 @@ def search_facts_semantic(conn: sqlite3.Connection, query_vector: list[float], l
         scored.append(
             {
                 "id": row["id"],
-                "content": row["content"],
+                "content": build_canonical_fact_content(row["entity"], row["attribute"], row["value"]),
+                "semantic_content": row["semantic_content"],
+                "entity": row["entity"],
+                "attribute": row["attribute"],
+                "value": row["value"],
                 "tags": _json_loads(row["tags"], []),
                 "source": row["source"],
                 "session_id": row["session_id"],
@@ -322,6 +394,7 @@ def search_facts_semantic(conn: sqlite3.Connection, query_vector: list[float], l
         )
     scored.sort(key=lambda item: item["similarity"], reverse=True)
     return scored[:limit]
+
 
 
 def get_unprocessed_sessions(conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
@@ -338,12 +411,14 @@ def get_unprocessed_sessions(conn: sqlite3.Connection, limit: int = 10) -> list[
     return [dict(row) for row in rows]
 
 
+
 def get_session_by_id(conn: sqlite3.Connection, session_id: str) -> dict | None:
     row = conn.execute(
         "SELECT session_id, agent, started_at, updated_at, turn_count, transcript, metadata, daemon_processed_at FROM sessions WHERE session_id = ?",
         (session_id,),
     ).fetchone()
     return dict(row) if row else None
+
 
 
 def get_latest_session(conn: sqlite3.Connection) -> dict | None:
@@ -353,12 +428,14 @@ def get_latest_session(conn: sqlite3.Connection) -> dict | None:
     return dict(row) if row else None
 
 
+
 def mark_session_processed(conn: sqlite3.Connection, session_id: str) -> None:
     conn.execute(
         "UPDATE sessions SET daemon_processed_at = ? WHERE session_id = ?",
         (_utc_now(), session_id),
     )
     conn.commit()
+
 
 
 def insert_episodic(
@@ -391,6 +468,38 @@ def insert_episodic(
     return ep_id
 
 
+
+def _episodic_row_to_memory_row(row: sqlite3.Row, *, similarity: float | None = None) -> dict:
+    details = _json_loads(row["details"], {})
+    payload = {
+        "id": row["id"],
+        "session_id": row["session_id"],
+        "title": row["title"],
+        "abstract": row["abstract"],
+        "happened_at": row["happened_at"],
+        "participants": details.get("participants", []),
+        "decisions": details.get("decisions", []),
+        "outcomes": details.get("outcomes", []),
+        "follow_ups": details.get("follow_ups", []),
+        "confidence": details.get("confidence"),
+        "source_quote": details.get("source_quote"),
+        "source": details.get("source"),
+    }
+    if similarity is not None:
+        payload["similarity"] = round(similarity, 4)
+    return payload
+
+
+
+def list_recent_episodic(conn: sqlite3.Connection, limit: int = 5) -> list[dict]:
+    rows = conn.execute(
+        "SELECT id, session_id, title, abstract, happened_at, details FROM episodic_memory ORDER BY happened_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [_episodic_row_to_memory_row(row) for row in rows]
+
+
+
 def search_episodic_semantic(conn: sqlite3.Connection, query_vector: list[float], limit: int = 3) -> list[dict]:
     rows = conn.execute(
         "SELECT id, session_id, title, abstract, happened_at, details, embedding FROM episodic_memory WHERE embedding IS NOT NULL"
@@ -398,23 +507,6 @@ def search_episodic_semantic(conn: sqlite3.Connection, query_vector: list[float]
     scored: list[dict] = []
     for row in rows:
         distance = cosine_distance(query_vector, bytes(row["embedding"]))
-        details = _json_loads(row["details"], {})
-        scored.append(
-            {
-                "id": row["id"],
-                "session_id": row["session_id"],
-                "title": row["title"],
-                "abstract": row["abstract"],
-                "happened_at": row["happened_at"],
-                "participants": details.get("participants", []),
-                "decisions": details.get("decisions", []),
-                "outcomes": details.get("outcomes", []),
-                "follow_ups": details.get("follow_ups", []),
-                "confidence": details.get("confidence"),
-                "source_quote": details.get("source_quote"),
-                "source": details.get("source"),
-                "similarity": round(1.0 - distance, 4),
-            }
-        )
+        scored.append(_episodic_row_to_memory_row(row, similarity=1.0 - distance))
     scored.sort(key=lambda item: item["similarity"], reverse=True)
     return scored[:limit]

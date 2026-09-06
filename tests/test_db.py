@@ -3,6 +3,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from memory.db import (
     bootstrap_db,
@@ -19,6 +20,7 @@ from memory.db import (
     upsert_session,
 )
 from memory.vectors import embed
+from scripts.migrate_facts_semantic_text import migrate_fact_schema
 
 
 class TestConnectionBootstrapSplit(unittest.TestCase):
@@ -47,6 +49,58 @@ class TestConnectionBootstrapSplit(unittest.TestCase):
                 self.assertTrue({"sessions", "facts", "episodic_memory"}.issubset(tables))
             finally:
                 conn.close()
+        finally:
+            os.unlink(path)
+
+
+class TestFactsSchemaMigration(unittest.TestCase):
+    @patch("scripts.migrate_facts_semantic_text.generate_semantic_fact_text", return_value="My name is Yash. What's my name? Yash.")
+    def test_external_migration_rebuilds_facts_without_content_column(self, _mock_semantic_text):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+            path = tmp.name
+        try:
+            conn = sqlite3.connect(path)
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE facts (
+                  id TEXT PRIMARY KEY,
+                  content TEXT NOT NULL,
+                  tags TEXT,
+                  source TEXT,
+                  session_id TEXT,
+                  created_at TEXT,
+                  updated_at TEXT,
+                  embedding BLOB
+                );
+                """
+            )
+            conn.execute(
+                "INSERT INTO facts (id, content, tags, source, session_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("fact-1", "user.name = Yash", "[]", "manual", "s1", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
+            )
+            conn.commit()
+            conn.close()
+
+            migrate_fact_schema(path)
+
+            conn = sqlite3.connect(path)
+            conn.row_factory = sqlite3.Row
+            columns = [r[1] for r in conn.execute("PRAGMA table_info(facts)").fetchall()]
+            self.assertEqual(
+                columns,
+                ["id", "entity", "attribute", "value", "semantic_content", "tags", "source", "session_id", "created_at", "updated_at", "embedding"],
+            )
+            row = conn.execute(
+                "SELECT semantic_content, entity, attribute, value, embedding FROM facts WHERE id = ?",
+                ("fact-1",),
+            ).fetchone()
+            self.assertEqual(row["semantic_content"], "My name is Yash. What's my name? Yash.")
+            self.assertEqual(row["entity"], "user")
+            self.assertEqual(row["attribute"], "name")
+            self.assertEqual(row["value"], "Yash")
+            self.assertIsNotNone(row["embedding"])
+            conn.close()
         finally:
             os.unlink(path)
 
@@ -119,10 +173,48 @@ class TestFactAndEpisodeStorage(unittest.TestCase):
         self.conn.close()
 
     def test_semantic_fact_search(self):
-        insert_fact(self.conn, "user.name = Yash", tags=["identity"], session_id="s1")
-        insert_fact(self.conn, "project.language = Python", tags=["project"], session_id="s1")
-        results = search_facts_semantic(self.conn, embed("what is the user's name"), limit=2)
+        insert_fact(
+            self.conn,
+            entity="user",
+            attribute="name",
+            value="Yash",
+            semantic_content="My name is Yash. What's my name? Yash.",
+            tags=["identity"],
+            session_id="s1",
+        )
+        insert_fact(
+            self.conn,
+            entity="project",
+            attribute="language",
+            value="Python",
+            semantic_content="The project's language is Python.",
+            tags=["project"],
+            session_id="s1",
+        )
+        results = search_facts_semantic(self.conn, embed("what is my name"), limit=2)
         self.assertEqual(results[0]["content"], "user.name = Yash")
+        self.assertEqual(results[0]["semantic_content"], "My name is Yash. What's my name? Yash.")
+        self.assertGreaterEqual(results[0]["similarity"], 0.38)
+        self.assertEqual(results[0]["entity"], "user")
+        self.assertEqual(results[0]["attribute"], "name")
+        self.assertEqual(results[0]["value"], "Yash")
+
+    def test_semantic_fact_search_handles_natural_language_queries_without_low_threshold(self):
+        insert_fact(self.conn, entity="user", attribute="name", value="Yash", semantic_content="My name is Yash. What's my name? Yash.", session_id="s1")
+        insert_fact(self.conn, entity="user", attribute="location", value="West Chester, OH", semantic_content="I live in West Chester, OH. Where do I live? West Chester, OH.", session_id="s1")
+        insert_fact(self.conn, entity="user", attribute="company", value="Kroger", semantic_content="I work at Kroger. What company do I work at? Kroger.", session_id="s1")
+
+        cases = [
+            ("whats my name", "user.name = Yash"),
+            ("where do i live", "user.location = West Chester, OH"),
+            ("what company do i work at", "user.company = Kroger"),
+        ]
+
+        for query, expected_content in cases:
+            with self.subTest(query=query):
+                results = search_facts_semantic(self.conn, embed(query), limit=3)
+                self.assertEqual(results[0]["content"], expected_content)
+                self.assertGreaterEqual(results[0]["similarity"], 0.38)
 
     def test_semantic_episode_search(self):
         insert_episodic(

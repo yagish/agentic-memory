@@ -1,0 +1,2 @@
+User: My terminal is iTerm2.
+User: Use --once as a force flag.

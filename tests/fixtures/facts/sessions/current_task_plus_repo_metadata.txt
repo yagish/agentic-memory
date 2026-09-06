@@ -1,0 +1,2 @@
+User: My current task is fixing auth middleware.
+User: The default branch is main.

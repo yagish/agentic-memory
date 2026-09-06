@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
@@ -22,7 +23,15 @@ from memory.inference import (
 
 
 # Keep prompt version explicit so future prompt changes can be tracked in tests.
-_FACT_PROMPT_VERSION = "facts-v3"
+_FACT_PROMPT_VERSION = "facts-v6"
+
+_TOOL_TRACE_RE = re.compile(r"^<(?:bash|tool)-?(?:input|stdout|stderr)[^>]*>[\s\S]*</(?:bash|tool)-?(?:input|stdout|stderr)>$", re.IGNORECASE)
+_COMMAND_LIKE_RE = re.compile(
+    r"^(?:pwd|ls|cd|git|python|python3|pip|pip3|pytest|uv|npm|pnpm|yarn|node|docker|kubectl|make|cat|grep|rg|find)\b",
+    re.IGNORECASE,
+)
+_MACHINE_ENTITIES = {"shell", "bash", "tool", "command"}
+_MACHINE_ATTRIBUTES = {"command", "stdin", "stdout", "stderr", "input", "output"}
 
 
 # Seam so tests can inject a fake model call while production uses Ollama.
@@ -69,20 +78,18 @@ def _with_strict_json_retry(prompt: str) -> str:
     """Append a stricter reminder for one retry after a bad/ambiguous response."""
     return (
         f"{prompt}\n"
-        "Reminder: output only a JSON array. Extract only stable user profile facts, "
-        "stable user preferences, and clearly stated durable project metadata. "
-        "Do not emit request/action facts. Never convert code-edit instructions, "
-        "file names, function names, CLI flags, bug reports, or current-session tasks into facts. "
-        "If unsure, return []."
+        "Reminder: output only a JSON array. Keep only durable facts likely to remain useful in future sessions. "
+        "Do not emit commands, requests, questions, tasks, bug reports, one-off instructions, tool traces, "
+        "or current-session work items. If the transcript does not contain a clearly durable fact, return []."
     )
 
 
-def _extract_user_lines(session_text: str) -> list[str]:
-    """Return only user-authored lines when speaker prefixes are present.
+def _is_tool_trace_line(line: str) -> bool:
+    return bool(_TOOL_TRACE_RE.fullmatch(line.strip()))
 
-    If fixtures omit speaker prefixes entirely, we fall back to treating the
-    whole text block as user-authored so the extractor still has usable input.
-    """
+
+def _extract_user_lines(session_text: str) -> list[str]:
+    """Return only user-authored lines when speaker prefixes are present."""
     user_lines: list[str] = []
     for raw_line in session_text.splitlines():
         line = raw_line.strip()
@@ -96,6 +103,21 @@ def _extract_user_lines(session_text: str) -> list[str]:
     if user_lines:
         return user_lines
     return [line.strip() for line in session_text.splitlines() if line.strip()]
+
+
+def _fact_is_machine_garbage(fact: ExtractedFact) -> bool:
+    if fact.source_quote and _is_tool_trace_line(fact.source_quote):
+        return True
+    if fact.entity in _MACHINE_ENTITIES and fact.attribute in _MACHINE_ATTRIBUTES:
+        return True
+    if fact.attribute in _MACHINE_ATTRIBUTES and _COMMAND_LIKE_RE.match(fact.value):
+        return True
+    return False
+
+
+def _sanitize_extracted_facts(facts: Iterable[ExtractedFact]) -> list[ExtractedFact]:
+    sanitized = [fact for fact in facts if not _fact_is_machine_garbage(fact)]
+    return normalize_extracted_facts(sanitized)
 
 
 def build_fact_extraction_prompt(session_text: str) -> str:
@@ -115,9 +137,10 @@ Prompt version: {_FACT_PROMPT_VERSION}
 
 Definition of a valid fact:
 - A fact is stable, reusable knowledge that will likely still be useful in future sessions.
+- Prefer facts that are likely to remain true across future conversations, not just this session.
 - Most valid facts are about the user: identity, role, company, timezone, location, editor, shell, package manager, terminal, and stable preferences.
-- A stable preference includes recurring user preferences such as response style, tooling preference, or workflow preference when the user states them explicitly.
-- Only extract non-user facts when the user explicitly states durable project metadata such as repo name or default branch.
+- A stable preference includes recurring user preferences such as response style, tooling preference, workflow preference, or favorite/preferred programming language when the user states them explicitly.
+- Non-user facts are rarer; keep them only when the user explicitly states durable repo or project metadata.
 
 Rules:
 - Extract facts from USER messages only.
@@ -128,13 +151,18 @@ Rules:
 - Use concise, normalized, stable entity names.
 - Use snake_case for attributes.
 - For personal profile facts and user preferences, prefer entity "user".
+- A durable fact is usually user identity/profile/preference information, or explicit durable repo/project metadata stated by the user.
+- A durable fact is not a command, a request, a question, a task, a bug report, a temporary plan, a tool trace, or a one-off instruction.
+- Treat anything phrased as something to do now as non-factual unless it also explicitly states durable background information.
+- When a line contains both a durable fact and a request, extract only the durable fact.
 - Preserve the order of first appearance.
 - Deduplicate exact duplicates with the same entity, attribute, and value.
 - Keep conflicting facts when the entity and attribute are the same but the value differs.
 - Extract only explicit user-stated facts. Never infer missing facts.
 - Never copy values from examples into the output.
 - Do not extract requests, questions, tasks, TODOs, commands, implementation instructions, bug reports, or temporary plans.
-- Do not turn file names, function names, flags, or one-off code-change requests into facts.
+- Do not turn file names, function names, flags, shell commands, tool traces, or one-off code-change requests into facts.
+- Ignore tool echo lines such as <bash-input>pwd</bash-input> or <bash-stdout>...</bash-stdout> completely.
 - If the transcript is mostly current-session work instructions, return [].
 - If unsure whether something is a durable fact, return [].
 - If the user says they work at a company as a role/title, extract both company and role.
@@ -173,6 +201,20 @@ Output:
 ]
 
 Input:
+User: Python is my favorite language.
+Output:
+[
+  {{"entity": "user", "attribute": "favorite_language", "value": "Python", "source_quote": "Python is my favorite language."}}
+]
+
+Input:
+User: I like Python for backend work.
+Output:
+[
+  {{"entity": "user", "attribute": "preferred_language", "value": "Python", "source_quote": "I like Python for backend work."}}
+]
+
+Input:
 User: I work at Kroger as a Tech lead.
 Output:
 [
@@ -205,7 +247,22 @@ Output:
 []
 
 Input:
+User: <bash-input>pwd</bash-input>
+Output:
+[]
+
+Input:
 User: Let's clean up the DB tables and run extraction.
+Output:
+[]
+
+Input:
+User: I need help fixing auth middleware today.
+Output:
+[]
+
+Input:
+User: My current task is fixing auth middleware.
 Output:
 []
 
@@ -291,7 +348,7 @@ def parse_extracted_facts(raw_output: str) -> list[ExtractedFact]:
     if errors:
         raise InferenceError("Invalid extracted facts: " + "; ".join(errors))
 
-    return normalize_extracted_facts(parsed)
+    return _sanitize_extracted_facts(parsed)
 
 
 def extract_facts_from_session_text(

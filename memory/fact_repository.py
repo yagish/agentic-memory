@@ -13,12 +13,25 @@ from collections.abc import Iterable
 
 from memory.contracts import ExtractedFact
 from memory.db import insert_fact
+from memory.fact_text import build_canonical_fact_content, generate_semantic_fact_text
 from memory.facts import normalize_extracted_facts
 
 
 def build_fact_content(fact: ExtractedFact) -> str:
-    """Render one extracted fact into the current facts-table text format."""
-    return f"{fact.entity}.{fact.attribute} = {fact.value}"
+    """Render one extracted fact into the canonical deterministic text format."""
+    return build_canonical_fact_content(fact.entity, fact.attribute, fact.value)
+
+
+
+def build_fact_semantic_content(fact: ExtractedFact) -> str:
+    """Render one extracted fact into model-generated retrieval text."""
+    source_text = fact.source_quote or ("\n".join(fact.evidence) if fact.evidence else None)
+    return generate_semantic_fact_text(
+        fact.entity,
+        fact.attribute,
+        fact.value,
+        source_text=source_text,
+    )
 
 
 def build_fact_tags(fact: ExtractedFact) -> list[str]:
@@ -56,10 +69,13 @@ def save_extracted_facts(
     for fact in normalize_extracted_facts(list(facts)):
         fact_id = insert_fact(
             conn,
-            build_fact_content(fact),
             tags=build_fact_tags(fact),
             source=source,
             session_id=session_id,
+            entity=fact.entity,
+            attribute=fact.attribute,
+            value=fact.value,
+            semantic_content=build_fact_semantic_content(fact),
         )
         saved_ids.append(fact_id)
     return saved_ids
@@ -69,7 +85,7 @@ def list_session_facts(conn: sqlite3.Connection, *, session_id: str) -> list[dic
     """Return facts saved for one session in insertion order."""
     rows = conn.execute(
         """
-        SELECT rowid, id, content, tags, source, session_id, created_at, updated_at
+        SELECT rowid, id, semantic_content, entity, attribute, value, tags, source, session_id, created_at, updated_at
         FROM facts
         WHERE session_id = ?
         ORDER BY rowid ASC
@@ -88,7 +104,11 @@ def list_session_facts(conn: sqlite3.Connection, *, session_id: str) -> list[dic
         result.append(
             {
                 "id": row["id"],
-                "content": row["content"],
+                "content": build_canonical_fact_content(row["entity"], row["attribute"], row["value"]),
+                "semantic_content": row["semantic_content"],
+                "entity": row["entity"],
+                "attribute": row["attribute"],
+                "value": row["value"],
                 "tags": tags or [],
                 "source": row["source"],
                 "session_id": row["session_id"],

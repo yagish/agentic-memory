@@ -114,7 +114,16 @@ def cmd_tail(args):
 def cmd_add_fact(args):
     conn = bootstrap_db(DB_PATH)
     try:
-        fact_id = insert_fact(conn, args.content, tags=args.tags, source="manual", session_id=args.session_id)
+        fact_id = insert_fact(
+            conn,
+            entity=args.entity,
+            attribute=args.attribute,
+            value=args.value,
+            semantic_content=args.semantic_content,
+            tags=args.tags,
+            source="manual",
+            session_id=args.session_id,
+        )
     finally:
         conn.close()
     print(fact_id)
@@ -166,7 +175,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_tail)
 
     p = sub.add_parser("add-fact")
-    p.add_argument("content")
+    p.add_argument("entity")
+    p.add_argument("attribute")
+    p.add_argument("value")
+    p.add_argument("--semantic-content")
     p.add_argument("--tag", dest="tags", action="append", default=[])
     p.add_argument("--session-id")
     p.set_defaults(func=cmd_add_fact)

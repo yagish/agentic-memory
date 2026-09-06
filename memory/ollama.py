@@ -13,7 +13,7 @@ from collections.abc import Callable
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_BASE = "http://localhost:11434"
-DEFAULT_MODEL = "qwen2.5:3b"
+DEFAULT_MODEL = "qwen2.5:7b"
 
 
 def _log(log_fn: Callable[[str], None] | None, message: str) -> None:

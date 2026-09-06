@@ -6,7 +6,7 @@ import json
 import sqlite3
 
 from memory.contracts import EpisodicMemory, ExtractedEpisode
-from memory.db import insert_episodic, search_episodic_semantic
+from memory.db import insert_episodic, list_recent_episodic, search_episodic_semantic
 from memory.episodic import log_episodic_event
 from memory.inference import embed_text
 
@@ -104,6 +104,23 @@ def list_session_episodes(conn: sqlite3.Connection, *, session_id: str) -> list[
             }
         )
     return result
+
+
+def list_recent_episodic_memories(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 5,
+    source: str = "manual_debug",
+) -> list[dict]:
+    """Return the most recent episodic memories with dedicated logging."""
+    results = list_recent_episodic(conn, limit=limit)
+    log_episodic_event(
+        "retrieve_recent_result",
+        source=source,
+        retrieved_records=results,
+    )
+    return results
+
 
 
 def retrieve_episodic_memories(

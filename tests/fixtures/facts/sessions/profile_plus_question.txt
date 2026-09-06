@@ -1,0 +1,2 @@
+User: My shell is zsh.
+User: Can you debug this failing test?

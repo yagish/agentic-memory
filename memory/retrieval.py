@@ -18,8 +18,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from memory.db import search_facts_semantic
-from memory.episodic_repository import retrieve_episodic_memories
-from memory.inference import embed_text
+from memory.episodic_repository import list_recent_episodic_memories, retrieve_episodic_memories
+from memory.inference import GenerationRequest, InferenceError, embed_text, generate_text
 
 MemoryRow = dict[str, Any]
 
@@ -28,9 +28,12 @@ TOKEN_BUDGET = 500
 CHARS_BUDGET = TOKEN_BUDGET * 4
 
 EPISODIC_MIN_SIMILARITY = 0.72
-FACT_MIN_SIMILARITY = 0.76
+FACT_MIN_SIMILARITY = 0.38
 EPISODIC_LIMIT = 3
+EPISODIC_RECENT_LIMIT = 5
 FACT_LIMIT = 5
+_CONTEXT_COMPACTION_MODEL = None
+_CONTEXT_COMPACTION_TIMEOUT_SECONDS = 10
 
 
 @dataclass(frozen=True)
@@ -52,29 +55,6 @@ class WakeUpContext:
     facts: list[MemoryRow]
     procedural: list[MemoryRow]
     warnings: list[RetrievalWarning] = field(default_factory=list)
-
-
-class _BudgetedSectionBuilder:
-    """Collect normalized text sections without exceeding the wake-up budget."""
-
-    def __init__(self, char_budget: int) -> None:
-        self._char_budget = char_budget
-        self._chars_used = 0
-        self._sections: list[str] = []
-
-    def add(self, block: str) -> None:
-        block = _normalize_text(block)
-        if not block:
-            return
-        if self._chars_used + len(block) > self._char_budget:
-            return
-        self._sections.append(block)
-        self._chars_used += len(block)
-
-    def render(self) -> str:
-        if not self._sections:
-            return ""
-        return f"[Memory context: {' '.join(self._sections)}]"
 
 
 def build_fact_query(prompt: str) -> str:
@@ -114,7 +94,40 @@ def _append_warning(warnings: list[RetrievalWarning], stage: str, exc: Exception
     warnings.append(RetrievalWarning(stage, str(exc)))
 
 
-def _filter_by_similarity(rows: list[MemoryRow], threshold: float) -> list[MemoryRow]:
+
+def _prompt_requests_recent_episode_summary(prompt: str) -> bool:
+    normalized = prompt.lower()
+    time_words = {"last", "latest", "recent", "recently", "previous", "before"}
+    topic_words = {"work", "working", "worked", "doing", "did", "task", "project", "session", "chat", "conversation", "discuss", "discussed", "talk", "talked"}
+    tokens = set(re.findall(r"[a-z0-9]+", normalized))
+    return bool(tokens & time_words) and bool(tokens & topic_words)
+
+
+
+def _looks_like_missing_memory_episode(item: MemoryRow) -> bool:
+    haystack = _normalize_text(f"{item.get('title', '')} {item.get('abstract', '')}").lower()
+    return any(
+        phrase in haystack
+        for phrase in (
+            "no memory",
+            "not stored in",
+            "no specific information",
+            "not recalled",
+            "nothing was recalled",
+            "nothing recalled",
+        )
+    )
+
+
+
+def _is_substantive_episode(item: MemoryRow) -> bool:
+    details_count = sum(len(item.get(key, []) or []) for key in ("decisions", "outcomes", "follow_ups"))
+    return details_count >= 2 and not _looks_like_missing_memory_episode(item)
+
+
+def _filter_by_similarity(rows: list[MemoryRow], threshold: float | None) -> list[MemoryRow]:
+    if threshold is None:
+        return rows
     return [row for row in rows if row.get("similarity", 0.0) >= threshold]
 
 
@@ -156,12 +169,56 @@ def _format_facts(facts: list[MemoryRow]) -> str:
     return " ".join(lines)
 
 
+def _build_context_body(context: WakeUpContext) -> str:
+    sections = [_format_episodic(context.episodic), _format_facts(context.facts)]
+    return _normalize_text(" ".join(section for section in sections if section))
+
+
+def _build_context_envelope(body: str) -> str:
+    body = _normalize_text(body)
+    if not body:
+        return ""
+    return f"[Memory context: {body}]"
+
+
+def _compact_context_body(body: str, *, char_budget: int) -> str:
+    normalized = _normalize_text(body)
+    if not normalized:
+        return ""
+    if len(_build_context_envelope(normalized)) <= char_budget:
+        return normalized
+
+    target_budget = max(1, char_budget - len("[Memory context: ]"))
+    try:
+        result = generate_text(
+            GenerationRequest(
+                prompt=(
+                    "Compress this memory context so it stays faithful, compact, and useful for the next turn. "
+                    "Keep names, decisions, outcomes, follow-ups, and concrete facts. "
+                    f"Return plain text only and stay under {target_budget} characters.\n\n"
+                    f"Memory context:\n{normalized}\n\nCompressed context:"
+                ),
+                model=_CONTEXT_COMPACTION_MODEL,
+                timeout_seconds=_CONTEXT_COMPACTION_TIMEOUT_SECONDS,
+                temperature=0.0,
+            )
+        )
+    except InferenceError:
+        compacted = normalized
+    else:
+        compacted = _normalize_text(result.text) or normalized
+
+    if len(_build_context_envelope(compacted)) <= char_budget:
+        return compacted
+    return compacted[:target_budget].rstrip()
+
+
 def build_wake_up_injection(context: WakeUpContext) -> str:
     """Assemble the wake-up memory block within the char budget."""
-    builder = _BudgetedSectionBuilder(CHARS_BUDGET)
-    builder.add(_format_episodic(context.episodic))
-    builder.add(_format_facts(context.facts))
-    return builder.render()
+    body = _build_context_body(context)
+    if not body:
+        return ""
+    return _build_context_envelope(_compact_context_body(body, char_budget=CHARS_BUDGET))
 
 
 def _retrieve_episodic(conn, prompt: str, prompt_vec, embed_fn, warnings: list[RetrievalWarning]) -> list[MemoryRow]:
@@ -180,7 +237,20 @@ def _retrieve_episodic(conn, prompt: str, prompt_vec, embed_fn, warnings: list[R
         return []
 
 
-def _retrieve_facts(conn, prompt_vec, warnings: list[RetrievalWarning]) -> list[MemoryRow]:
+def _retrieve_recent_episodic(conn, warnings: list[RetrievalWarning]) -> list[MemoryRow]:
+    try:
+        recent = list_recent_episodic_memories(conn, limit=EPISODIC_RECENT_LIMIT, source="wake_up_recent")
+        substantive = [item for item in recent if _is_substantive_episode(item)]
+        filtered = [item for item in substantive if not _looks_like_missing_memory_episode(item)]
+        return filtered[:EPISODIC_LIMIT]
+    except Exception as exc:
+        _append_warning(warnings, "episodic_recent", exc)
+        return []
+
+
+
+def _retrieve_facts(conn, prompt: str, prompt_vec, warnings: list[RetrievalWarning]) -> list[MemoryRow]:
+    del prompt
     try:
         fact_results = search_facts_semantic(conn, prompt_vec, limit=FACT_LIMIT)
         return _filter_by_similarity(fact_results, FACT_MIN_SIMILARITY)
@@ -206,7 +276,9 @@ def retrieve_wake_up_context(
     prompt_vec = embed_fn(prompt)
 
     episodic = _retrieve_episodic(conn, prompt, prompt_vec, embed_fn, warnings)
-    facts = _retrieve_facts(conn, prompt_vec, warnings)
+    if not episodic and _prompt_requests_recent_episode_summary(prompt):
+        episodic = _retrieve_recent_episodic(conn, warnings)
+    facts = _retrieve_facts(conn, prompt, prompt_vec, warnings)
 
     return WakeUpContext(
         cache_hit=None,

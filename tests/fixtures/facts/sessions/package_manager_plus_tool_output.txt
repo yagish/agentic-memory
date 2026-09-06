@@ -1,0 +1,2 @@
+User: My package manager is uv.
+User: <tool-stdout>uv 0.5.0</tool-stdout>

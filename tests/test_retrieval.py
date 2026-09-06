@@ -65,9 +65,9 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
             {"id": "ep-1", "title": "Resolved auth bug", "abstract": "Fixed the login loop.", "similarity": 0.79}
         ]) as retrieve_episodic, \
              patch("memory.retrieval.search_facts_semantic", return_value=[
-                 {"id": "fact-1", "content": "user.name = Yash", "similarity": 0.97},
-                 {"id": "fact-2", "content": "user.timezone = EST", "similarity": 0.55},
-             ]) as search_facts:
+                 {"id": "fact-1", "content": "user.name = Yash", "similarity": 0.45},
+                 {"id": "fact-2", "content": "user.timezone = EST", "similarity": 0.24},
+             ]) as search_facts_semantic:
             context = retrieve_wake_up_context(
                 conn,
                 "how do i deploy the auth service?",
@@ -91,7 +91,64 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
             limit=3,
             source="wake_up",
         )
-        search_facts.assert_called_once_with(conn, [0.1, 0.2], limit=5)
+        search_facts_semantic.assert_called_once_with(conn, [0.1, 0.2], limit=5)
+
+    def test_fact_retrieval_returns_no_hits_when_semantic_search_misses(self):
+        conn = MagicMock()
+
+        with patch("memory.retrieval.retrieve_episodic_memories", return_value=[]), \
+             patch("memory.retrieval.search_facts_semantic", return_value=[]):
+            context = retrieve_wake_up_context(
+                conn,
+                "what is my favorite language?",
+                include_working_memory=True,
+                embed_fn=lambda prompt: [0.1],
+            )
+
+        self.assertEqual(context.facts, [])
+
+    def test_recent_episode_fallback_returns_substantive_recent_work_items(self):
+        conn = MagicMock()
+
+        recent_rows = [
+            {
+                "id": "ep-ignored",
+                "title": "Name inquiry",
+                "abstract": "The user asked about their name, but it was not stored in the assistant's memory.",
+                "decisions": [],
+                "outcomes": [],
+                "follow_ups": [],
+            },
+            {
+                "id": "ep-1",
+                "title": "YAML error correction",
+                "abstract": "The user encountered a YAML error and fixed it by correcting the nesting.",
+                "decisions": ["Fix the YAML nesting"],
+                "outcomes": ["Corrected the YAML file"],
+                "follow_ups": [],
+            },
+            {
+                "id": "ep-2",
+                "title": "Token validation move",
+                "abstract": "Moved token validation into shared auth middleware and fixed the login loop.",
+                "decisions": ["Move token validation into shared auth middleware"],
+                "outcomes": ["Login loop fixed"],
+                "follow_ups": ["Add regression tests"],
+            },
+        ]
+
+        with patch("memory.retrieval.retrieve_episodic_memories", return_value=[]), \
+             patch("memory.retrieval.list_recent_episodic_memories", return_value=recent_rows) as list_recent, \
+             patch("memory.retrieval.search_facts_semantic", return_value=[]):
+            context = retrieve_wake_up_context(
+                conn,
+                "what was i working on last",
+                include_working_memory=True,
+                embed_fn=lambda prompt: [0.1],
+            )
+
+        self.assertEqual([item["id"] for item in context.episodic], ["ep-1", "ep-2"])
+        list_recent.assert_called_once_with(conn, limit=5, source="wake_up_recent")
 
     def test_non_fatal_layer_errors_become_warnings(self):
         conn = MagicMock()

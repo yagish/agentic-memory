@@ -55,7 +55,15 @@ class CliTestBase(unittest.TestCase):
             "2026-01-02T00:00:00Z",
             "2026-01-02T00:01:00Z",
         )
-        insert_fact(self.conn, "user.name = Yash", tags=["identity"], session_id="sess-space")
+        insert_fact(
+            self.conn,
+            entity="user",
+            attribute="name",
+            value="Yash",
+            semantic_content="My name is Yash. What's my name? Yash.",
+            tags=["identity"],
+            session_id="sess-space",
+        )
         insert_episodic(
             self.conn,
             session_id="sess-cooking",
