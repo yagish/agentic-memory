@@ -1,0 +1,30 @@
+{
+  "title_contains": [
+    "worker-service",
+    "deploy workflow"
+  ],
+  "summary_contains": [
+    "worker-service",
+    "deploy",
+    "staging",
+    "production"
+  ],
+  "steps_contains": [
+    "Build the Docker image",
+    "Run alembic upgrade",
+    "roll the worker-service deployment in staging",
+    "Verify /healthz",
+    "promote production"
+  ],
+  "trigger_phrases_contains": [
+    "deploy worker-service",
+    "deploy workflow"
+  ],
+  "tools_contains": [
+    "Docker",
+    "alembic",
+    "staging",
+    "production",
+    "WORKER_QUEUE_URL"
+  ]
+}

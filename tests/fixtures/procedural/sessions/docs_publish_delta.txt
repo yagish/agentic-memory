@@ -1,0 +1,3 @@
+User: The docs publish flow for docs-site is run pnpm docs:build, check the preview in preview, execute ./scripts/publish-docs.sh, then smoke-check https://docs.example.com/docs-site.
+Assistant: If the smoke check fails, roll back the docs flag before trying again.
+User: Keep DOCS_PREVIEW_URL in the publish environment.

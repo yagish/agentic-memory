@@ -1,0 +1,2 @@
+User: The cache bust workflow for worker-service is invalidate the CDN key, restart the worker-service pods, verify the x-build-version header, warm the cache with three employee requests, then watch the error rate.
+Assistant: If config drift is suspected, compare WORKER_QUEUE_URL before restarting again.

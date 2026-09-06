@@ -1,0 +1,26 @@
+{
+  "title_contains": [
+    "search-api",
+    "flaky test"
+  ],
+  "summary_contains": [
+    "search-api",
+    "triage workflow"
+  ],
+  "steps_contains": [
+    "quarantine tests/search_api/test_retry_logic.py::test_birch_seed",
+    "rerun the suite with PYTEST_ADDOPTS=\"-x\"",
+    "capture the seed and logs",
+    "file the Jira ticket",
+    "remove the quarantine after the fix merges"
+  ],
+  "trigger_phrases_contains": [
+    "search-api",
+    "flaky test"
+  ],
+  "tools_contains": [
+    "tests/search_api/test_retry_logic.py::test_birch_seed",
+    "PYTEST_ADDOPTS",
+    "Jira"
+  ]
+}

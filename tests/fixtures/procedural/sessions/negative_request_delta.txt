@@ -1,0 +1,2 @@
+User: Please deploy docs-site and then tell me if it worked.
+Assistant: I can do that.

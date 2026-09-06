@@ -4,6 +4,7 @@ from memory.inference import GenerationResult
 from memory.procedural import (
     build_procedural_extraction_prompt,
     extract_procedure_from_session_text,
+    parse_extracted_procedure,
     procedure_to_semantic_core,
 )
 
@@ -34,6 +35,22 @@ class TestProceduralExtractionHelpers(unittest.TestCase):
             },
         )
         self.assertEqual(procedure.confidence, 0.93)
+
+    def test_empty_json_means_no_procedural_memory(self):
+        self.assertIsNone(parse_extracted_procedure("{}"))
+
+    def test_extract_procedure_returns_none_when_model_finds_no_procedure(self):
+        def fake_generate(_request):
+            return GenerationResult(text="{}", model="fake-model")
+
+        procedure = extract_procedure_from_session_text(
+            "User: We fixed the auth bug today.",
+            generate_fn=fake_generate,
+            source="test-harness",
+            session_id="session-123",
+        )
+
+        self.assertIsNone(procedure)
 
     def test_prompt_includes_transcript_and_output_shape(self):
         prompt = build_procedural_extraction_prompt(

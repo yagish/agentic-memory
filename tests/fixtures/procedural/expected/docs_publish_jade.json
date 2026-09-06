@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "mobile-backend",
+    "docs publish"
+  ],
+  "summary_contains": [
+    "mobile-backend",
+    "publish",
+    "staging"
+  ],
+  "steps_contains": [
+    "run pnpm docs:build",
+    "check the preview in staging",
+    "execute ./scripts/publish-docs.sh",
+    "smoke-check https://docs.example.com/mobile-backend",
+    "roll back the docs flag"
+  ],
+  "trigger_phrases_contains": [
+    "publish docs for mobile-backend",
+    "docs publish"
+  ],
+  "tools_contains": [
+    "pnpm docs:build",
+    "./scripts/publish-docs.sh",
+    "https://docs.example.com/mobile-backend",
+    "MOBILE_API_URL"
+  ]
+}

@@ -1,0 +1,3 @@
+User: The docs publish flow for auth-api is run pnpm docs:build, check the preview in staging, execute ./scripts/publish-docs.sh, then smoke-check https://docs.example.com/auth-api.
+Assistant: If the smoke check fails, roll back the docs flag before trying again.
+User: Keep AUTH_DB_URL in the publish environment.

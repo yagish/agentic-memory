@@ -1,0 +1,2 @@
+User: The cache bust workflow for admin-web is invalidate the CDN key, restart the admin-web pods, verify the x-build-version header, warm the cache with three employee requests, then watch the error rate.
+Assistant: If config drift is suspected, compare ADMIN_BASE_URL before restarting again.

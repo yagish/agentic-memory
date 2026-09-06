@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "export-api",
+    "release cutoff"
+  ],
+  "summary_contains": [
+    "export-api",
+    "checklist",
+    "smoke tests"
+  ],
+  "steps_contains": [
+    "freeze merges at 4 PM",
+    "cut branch release/glint",
+    "tag the build",
+    "run smoke tests in staging",
+    "announce the cutoff in Slack"
+  ],
+  "trigger_phrases_contains": [
+    "export-api",
+    "release cutoff"
+  ],
+  "tools_contains": [
+    "release/glint",
+    "staging",
+    "production",
+    "Slack"
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "title_contains": [
+    "worker-service",
+    "flaky test"
+  ],
+  "summary_contains": [
+    "worker-service",
+    "triage workflow"
+  ],
+  "steps_contains": [
+    "quarantine tests/worker_service/test_retry_logic.py::test_forge_seed",
+    "rerun the suite with PYTEST_ADDOPTS=\"-x\"",
+    "capture the seed and logs",
+    "file the Jira ticket",
+    "remove the quarantine after the fix merges"
+  ],
+  "trigger_phrases_contains": [
+    "worker-service",
+    "flaky test"
+  ],
+  "tools_contains": [
+    "tests/worker_service/test_retry_logic.py::test_forge_seed",
+    "PYTEST_ADDOPTS",
+    "Jira"
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "checkout-api",
+    "procedure"
+  ],
+  "summary_contains": [
+    "checkout-api",
+    "feature flag",
+    "rollback"
+  ],
+  "steps_contains": [
+    "Disable CHECKOUT_API_FLAG",
+    "Clear the edge cache",
+    "Retry with an employee account",
+    "Capture the request id",
+    "Page support"
+  ],
+  "trigger_phrases_contains": [
+    "checkout-api",
+    "feature flag"
+  ],
+  "tools_contains": [
+    "CHECKOUT_API_FLAG",
+    "edge cache",
+    "request id",
+    "STAGING_DB_URL"
+  ]
+}

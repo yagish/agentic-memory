@@ -1,0 +1,29 @@
+{
+  "title_contains": [
+    "mobile-backend",
+    "setup"
+  ],
+  "summary_contains": [
+    "mobile-backend",
+    "local setup"
+  ],
+  "steps_contains": [
+    "Clone the repo",
+    "copy .env.example to .env.local",
+    "export MOBILE_API_URL",
+    "run docker compose up mobile-backend",
+    "run pytest tests/mobile_backend",
+    "run alembic upgrade"
+  ],
+  "trigger_phrases_contains": [
+    "set up mobile-backend",
+    "local setup"
+  ],
+  "tools_contains": [
+    ".env.local",
+    "MOBILE_API_URL",
+    "docker compose",
+    "pytest",
+    "alembic"
+  ]
+}

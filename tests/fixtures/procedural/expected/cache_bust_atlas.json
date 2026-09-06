@@ -1,0 +1,27 @@
+{
+  "title_contains": [
+    "checkout-api",
+    "cache bust"
+  ],
+  "summary_contains": [
+    "checkout-api",
+    "cache",
+    "CDN"
+  ],
+  "steps_contains": [
+    "invalidate the CDN key",
+    "restart the checkout-api pods",
+    "verify the x-build-version header",
+    "warm the cache",
+    "watch the error rate"
+  ],
+  "trigger_phrases_contains": [
+    "checkout-api",
+    "cache bust"
+  ],
+  "tools_contains": [
+    "CDN",
+    "x-build-version",
+    "STAGING_DB_URL"
+  ]
+}

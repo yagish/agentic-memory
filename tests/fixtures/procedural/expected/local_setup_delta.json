@@ -1,0 +1,29 @@
+{
+  "title_contains": [
+    "docs-site",
+    "setup"
+  ],
+  "summary_contains": [
+    "docs-site",
+    "local setup"
+  ],
+  "steps_contains": [
+    "Clone the repo",
+    "copy .env.example to .env.local",
+    "export DOCS_PREVIEW_URL",
+    "run docker compose up docs-site",
+    "run pytest tests/docs_site",
+    "run alembic upgrade"
+  ],
+  "trigger_phrases_contains": [
+    "set up docs-site",
+    "local setup"
+  ],
+  "tools_contains": [
+    ".env.local",
+    "DOCS_PREVIEW_URL",
+    "docker compose",
+    "pytest",
+    "alembic"
+  ]
+}

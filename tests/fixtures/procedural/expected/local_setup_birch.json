@@ -1,0 +1,29 @@
+{
+  "title_contains": [
+    "search-api",
+    "setup"
+  ],
+  "summary_contains": [
+    "search-api",
+    "local setup"
+  ],
+  "steps_contains": [
+    "Clone the repo",
+    "copy .env.example to .env.local",
+    "export SEARCH_INDEX_URL",
+    "run docker compose up search-api",
+    "run pytest tests/search_api",
+    "run alembic upgrade"
+  ],
+  "trigger_phrases_contains": [
+    "set up search-api",
+    "local setup"
+  ],
+  "tools_contains": [
+    ".env.local",
+    "SEARCH_INDEX_URL",
+    "docker compose",
+    "pytest",
+    "alembic"
+  ]
+}

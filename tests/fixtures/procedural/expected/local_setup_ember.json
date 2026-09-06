@@ -1,0 +1,29 @@
+{
+  "title_contains": [
+    "auth-api",
+    "setup"
+  ],
+  "summary_contains": [
+    "auth-api",
+    "local setup"
+  ],
+  "steps_contains": [
+    "Clone the repo",
+    "copy .env.example to .env.local",
+    "export AUTH_DB_URL",
+    "run docker compose up auth-api",
+    "run pytest tests/auth_api",
+    "run alembic upgrade"
+  ],
+  "trigger_phrases_contains": [
+    "set up auth-api",
+    "local setup"
+  ],
+  "tools_contains": [
+    ".env.local",
+    "AUTH_DB_URL",
+    "docker compose",
+    "pytest",
+    "alembic"
+  ]
+}

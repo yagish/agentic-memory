@@ -1,0 +1,30 @@
+{
+  "title_contains": [
+    "export-api",
+    "deploy workflow"
+  ],
+  "summary_contains": [
+    "export-api",
+    "deploy",
+    "staging",
+    "production"
+  ],
+  "steps_contains": [
+    "Build the Docker image",
+    "Run alembic upgrade",
+    "roll the export-api deployment in staging",
+    "Verify /healthz",
+    "promote production"
+  ],
+  "trigger_phrases_contains": [
+    "deploy export-api",
+    "deploy workflow"
+  ],
+  "tools_contains": [
+    "Docker",
+    "alembic",
+    "staging",
+    "production",
+    "EXPORT_BUCKET"
+  ]
+}

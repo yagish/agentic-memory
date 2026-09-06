@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "auth-api",
+    "release cutoff"
+  ],
+  "summary_contains": [
+    "auth-api",
+    "checklist",
+    "smoke tests"
+  ],
+  "steps_contains": [
+    "freeze merges at 4 PM",
+    "cut branch release/ember",
+    "tag the build",
+    "run smoke tests in staging",
+    "announce the cutoff in Slack"
+  ],
+  "trigger_phrases_contains": [
+    "auth-api",
+    "release cutoff"
+  ],
+  "tools_contains": [
+    "release/ember",
+    "staging",
+    "production",
+    "Slack"
+  ]
+}

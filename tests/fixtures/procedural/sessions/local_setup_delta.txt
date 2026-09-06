@@ -1,0 +1,3 @@
+User: The local setup for docs-site is clone the repo, copy .env.example to .env.local, export DOCS_PREVIEW_URL, run docker compose up docs-site, then run pytest tests/docs_site.
+Assistant: That sounds repeatable.
+User: If migrations are pending, run alembic upgrade before opening the app.

@@ -1,0 +1,26 @@
+{
+  "title_contains": [
+    "checkout-api",
+    "flaky test"
+  ],
+  "summary_contains": [
+    "checkout-api",
+    "triage workflow"
+  ],
+  "steps_contains": [
+    "quarantine tests/checkout_api/test_retry_logic.py::test_atlas_seed",
+    "rerun the suite with PYTEST_ADDOPTS=\"-x\"",
+    "capture the seed and logs",
+    "file the Jira ticket",
+    "remove the quarantine after the fix merges"
+  ],
+  "trigger_phrases_contains": [
+    "checkout-api",
+    "flaky test"
+  ],
+  "tools_contains": [
+    "tests/checkout_api/test_retry_logic.py::test_atlas_seed",
+    "PYTEST_ADDOPTS",
+    "Jira"
+  ]
+}

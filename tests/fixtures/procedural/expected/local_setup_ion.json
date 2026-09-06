@@ -1,0 +1,29 @@
+{
+  "title_contains": [
+    "pricing-api",
+    "setup"
+  ],
+  "summary_contains": [
+    "pricing-api",
+    "local setup"
+  ],
+  "steps_contains": [
+    "Clone the repo",
+    "copy .env.example to .env.local",
+    "export PRICING_DB_URL",
+    "run docker compose up pricing-api",
+    "run pytest tests/pricing_api",
+    "run alembic upgrade"
+  ],
+  "trigger_phrases_contains": [
+    "set up pricing-api",
+    "local setup"
+  ],
+  "tools_contains": [
+    ".env.local",
+    "PRICING_DB_URL",
+    "docker compose",
+    "pytest",
+    "alembic"
+  ]
+}

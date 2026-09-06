@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "checkout-api",
+    "release cutoff"
+  ],
+  "summary_contains": [
+    "checkout-api",
+    "checklist",
+    "smoke tests"
+  ],
+  "steps_contains": [
+    "freeze merges at 4 PM",
+    "cut branch release/atlas",
+    "tag the build",
+    "run smoke tests in staging",
+    "announce the cutoff in Slack"
+  ],
+  "trigger_phrases_contains": [
+    "checkout-api",
+    "release cutoff"
+  ],
+  "tools_contains": [
+    "release/atlas",
+    "staging",
+    "production",
+    "Slack"
+  ]
+}

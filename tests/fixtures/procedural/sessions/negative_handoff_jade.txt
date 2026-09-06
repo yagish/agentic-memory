@@ -1,0 +1,2 @@
+User: Jade will own the mobile-backend postmortem.
+Assistant: I will note the ownership.

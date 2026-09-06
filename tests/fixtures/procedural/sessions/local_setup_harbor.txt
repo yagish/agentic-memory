@@ -1,0 +1,3 @@
+User: The local setup for admin-web is clone the repo, copy .env.example to .env.local, export ADMIN_BASE_URL, run docker compose up admin-web, then run pytest tests/admin_web.
+Assistant: That sounds repeatable.
+User: If migrations are pending, run alembic upgrade before opening the app.

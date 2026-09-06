@@ -1,0 +1,29 @@
+{
+  "title_contains": [
+    "export-api",
+    "setup"
+  ],
+  "summary_contains": [
+    "export-api",
+    "local setup"
+  ],
+  "steps_contains": [
+    "Clone the repo",
+    "copy .env.example to .env.local",
+    "export EXPORT_BUCKET",
+    "run docker compose up export-api",
+    "run pytest tests/export_api",
+    "run alembic upgrade"
+  ],
+  "trigger_phrases_contains": [
+    "set up export-api",
+    "local setup"
+  ],
+  "tools_contains": [
+    ".env.local",
+    "EXPORT_BUCKET",
+    "docker compose",
+    "pytest",
+    "alembic"
+  ]
+}

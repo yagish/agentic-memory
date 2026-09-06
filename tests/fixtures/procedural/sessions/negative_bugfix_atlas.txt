@@ -1,0 +1,3 @@
+User: We fixed the atlas auth bug by changing one if statement.
+Assistant: Great, staging is green now.
+User: Next week maybe clean up the helper.

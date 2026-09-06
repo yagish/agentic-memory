@@ -1,0 +1,29 @@
+{
+  "title_contains": [
+    "auth-api",
+    "incident debug"
+  ],
+  "summary_contains": [
+    "auth-api",
+    "debug workflow"
+  ],
+  "steps_contains": [
+    "collect the request id",
+    "check the auth-api-latency dashboard",
+    "tail the api logs",
+    "compare AUTH_DB_URL",
+    "roll back",
+    "page the on-call",
+    "capture the failing payload"
+  ],
+  "trigger_phrases_contains": [
+    "auth-api",
+    "incident"
+  ],
+  "tools_contains": [
+    "request id",
+    "auth-api-latency",
+    "AUTH_DB_URL",
+    "on-call"
+  ]
+}

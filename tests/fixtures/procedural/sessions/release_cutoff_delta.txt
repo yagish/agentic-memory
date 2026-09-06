@@ -1,0 +1,2 @@
+User: The release cutoff checklist for docs-site is freeze merges at 4 PM, cut branch release/delta, tag the build, run smoke tests in preview, then announce the cutoff in Slack.
+Assistant: If smoke tests fail, do not promote production.

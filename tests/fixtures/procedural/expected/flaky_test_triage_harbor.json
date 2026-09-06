@@ -1,0 +1,26 @@
+{
+  "title_contains": [
+    "admin-web",
+    "flaky test"
+  ],
+  "summary_contains": [
+    "admin-web",
+    "triage workflow"
+  ],
+  "steps_contains": [
+    "quarantine tests/admin_web/test_retry_logic.py::test_harbor_seed",
+    "rerun the suite with PYTEST_ADDOPTS=\"-x\"",
+    "capture the seed and logs",
+    "file the Jira ticket",
+    "remove the quarantine after the fix merges"
+  ],
+  "trigger_phrases_contains": [
+    "admin-web",
+    "flaky test"
+  ],
+  "tools_contains": [
+    "tests/admin_web/test_retry_logic.py::test_harbor_seed",
+    "PYTEST_ADDOPTS",
+    "Jira"
+  ]
+}

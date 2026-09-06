@@ -1,0 +1,29 @@
+{
+  "title_contains": [
+    "search-api",
+    "incident debug"
+  ],
+  "summary_contains": [
+    "search-api",
+    "debug workflow"
+  ],
+  "steps_contains": [
+    "collect the request id",
+    "check the search-api-latency dashboard",
+    "tail the api logs",
+    "compare SEARCH_INDEX_URL",
+    "roll back",
+    "page the on-call",
+    "capture the failing payload"
+  ],
+  "trigger_phrases_contains": [
+    "search-api",
+    "incident"
+  ],
+  "tools_contains": [
+    "request id",
+    "search-api-latency",
+    "SEARCH_INDEX_URL",
+    "on-call"
+  ]
+}

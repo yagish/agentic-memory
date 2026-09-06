@@ -1,0 +1,3 @@
+User: The docs publish flow for worker-service is run pnpm docs:build, check the preview in staging, execute ./scripts/publish-docs.sh, then smoke-check https://docs.example.com/worker-service.
+Assistant: If the smoke check fails, roll back the docs flag before trying again.
+User: Keep WORKER_QUEUE_URL in the publish environment.

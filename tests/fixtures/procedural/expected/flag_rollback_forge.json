@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "worker-service",
+    "procedure"
+  ],
+  "summary_contains": [
+    "worker-service",
+    "feature flag",
+    "rollback"
+  ],
+  "steps_contains": [
+    "Disable WORKER_SERVICE_FLAG",
+    "Clear the edge cache",
+    "Retry with an employee account",
+    "Capture the request id",
+    "Page support"
+  ],
+  "trigger_phrases_contains": [
+    "worker-service",
+    "feature flag"
+  ],
+  "tools_contains": [
+    "WORKER_SERVICE_FLAG",
+    "edge cache",
+    "request id",
+    "WORKER_QUEUE_URL"
+  ]
+}

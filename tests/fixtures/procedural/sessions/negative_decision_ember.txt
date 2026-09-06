@@ -1,0 +1,2 @@
+User: We decided to keep auth-api behind a feature flag for one more week.
+Assistant: I documented the decision.

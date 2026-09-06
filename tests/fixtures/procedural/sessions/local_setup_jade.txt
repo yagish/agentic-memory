@@ -1,0 +1,3 @@
+User: The local setup for mobile-backend is clone the repo, copy .env.example to .env.local, export MOBILE_API_URL, run docker compose up mobile-backend, then run pytest tests/mobile_backend.
+Assistant: That sounds repeatable.
+User: If migrations are pending, run alembic upgrade before opening the app.

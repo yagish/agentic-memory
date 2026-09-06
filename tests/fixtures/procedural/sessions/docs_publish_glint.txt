@@ -1,0 +1,3 @@
+User: The docs publish flow for export-api is run pnpm docs:build, check the preview in staging, execute ./scripts/publish-docs.sh, then smoke-check https://docs.example.com/export-api.
+Assistant: If the smoke check fails, roll back the docs flag before trying again.
+User: Keep EXPORT_BUCKET in the publish environment.

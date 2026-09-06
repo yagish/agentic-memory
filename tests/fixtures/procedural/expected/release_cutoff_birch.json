@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "search-api",
+    "release cutoff"
+  ],
+  "summary_contains": [
+    "search-api",
+    "checklist",
+    "smoke tests"
+  ],
+  "steps_contains": [
+    "freeze merges at 4 PM",
+    "cut branch release/birch",
+    "tag the build",
+    "run smoke tests in staging",
+    "announce the cutoff in Slack"
+  ],
+  "trigger_phrases_contains": [
+    "search-api",
+    "release cutoff"
+  ],
+  "tools_contains": [
+    "release/birch",
+    "staging",
+    "production",
+    "Slack"
+  ]
+}

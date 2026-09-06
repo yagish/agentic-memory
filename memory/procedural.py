@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -92,6 +93,8 @@ Rules:
 - Keep exact literals when central: commands, flags, env vars, file names, branch names, service names, rollout percentages, and environments.
 - Steps must be concrete, reusable, and written as short imperative actions.
 - Steps must describe a repeatable workflow, not a one-time historical narration.
+- Good procedural memories often answer questions like: how do we deploy this, how do we roll this back, how do we set this up, how do we run this backfill, how do we debug this incident, or what is the release checklist.
+- Do NOT emit a procedure for: one-off bug fixes, status updates, summaries of what happened once, decisions without repeatable steps, personal facts, or transcripts that mainly contain requests without a reusable workflow.
 - If the transcript does not contain a clear durable procedure, return an empty JSON object: {{}}.
 - Do not invent missing steps, tools, or trigger phrases.
 - Return raw JSON only. No prose. No markdown fences.
@@ -137,6 +140,15 @@ Output:
   "confidence": 0.9
 }}
 
+Example 3:
+Transcript:
+User: We fixed the login loop by moving token validation into shared middleware.
+Assistant: The patch is merged and staging is green.
+User: Next week we can clean up the old helper.
+
+Output:
+{{}}
+
 Transcript:
 {transcript}
 
@@ -144,10 +156,15 @@ Return only the JSON object.
 '''
 
 
-def parse_extracted_procedure(raw_output: str) -> ExtractedProcedure:
-    """Parse model output into a validated extracted procedure."""
+def parse_extracted_procedure(raw_output: str) -> ExtractedProcedure | None:
+    """Parse model output into a validated extracted procedure.
+
+    ``None`` means the transcript did not contain a durable procedural memory.
+    """
     payload = parse_json_payload(raw_output)
-    if not isinstance(payload, dict) or not payload:
+    if payload in ({}, []):
+        return None
+    if not isinstance(payload, dict):
         raise InferenceError("Procedural extractor did not return a JSON object")
 
     try:
@@ -164,7 +181,7 @@ def extract_procedure_from_session_text(
     timeout_seconds: int = 180,
     source: str = "procedural_extractor",
     session_id: str | None = None,
-) -> ExtractedProcedure:
+) -> ExtractedProcedure | None:
     """Extract one validated procedural memory from a session transcript."""
     prompt = build_procedural_extraction_prompt(session_text)
     last_error: Exception | None = None
@@ -194,7 +211,7 @@ def extract_procedure_from_session_text(
                 session_id=session_id,
                 attempt=attempt_number,
                 raw_model_output=result.text,
-                validated_object=procedure.model_dump(mode="json"),
+                validated_object=procedure.model_dump(mode="json") if procedure is not None else None,
                 model=result.model,
             )
             return procedure
@@ -214,8 +231,10 @@ def extract_procedure_from_session_text(
     raise InferenceError("Procedural extraction failed without an error")
 
 
-def procedure_to_semantic_core(procedure: ExtractedProcedure | dict) -> dict[str, object]:
+def procedure_to_semantic_core(procedure: ExtractedProcedure | dict | None) -> dict[str, object] | None:
     """Return a comparison-friendly reduced shape for tests and fixtures."""
+    if procedure is None:
+        return None
     if isinstance(procedure, ExtractedProcedure):
         return {
             "title": procedure.title,
@@ -232,6 +251,15 @@ def procedure_to_semantic_core(procedure: ExtractedProcedure | dict) -> dict[str
         "trigger_phrases": [str(item).strip() for item in procedure.get("trigger_phrases", []) if str(item).strip()],
         "tools": [str(item).strip() for item in procedure.get("tools", []) if str(item).strip()],
     }
+
+
+
+def normalized_contains(text: str, snippet: str) -> bool:
+    """Case-insensitive whitespace-tolerant containment for eval fixtures."""
+    normalize = lambda value: " ".join(re.findall(r"[a-z0-9]+", (value or "").lower()))
+    haystack = normalize(text)
+    needle = normalize(snippet)
+    return bool(needle) and needle in haystack
 
 
 def discover_procedural_fixture_cases(fixtures_root: str | Path) -> list[str]:

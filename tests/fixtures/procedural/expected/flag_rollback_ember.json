@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "auth-api",
+    "procedure"
+  ],
+  "summary_contains": [
+    "auth-api",
+    "feature flag",
+    "rollback"
+  ],
+  "steps_contains": [
+    "Disable AUTH_API_FLAG",
+    "Clear the edge cache",
+    "Retry with an employee account",
+    "Capture the request id",
+    "Page support"
+  ],
+  "trigger_phrases_contains": [
+    "auth-api",
+    "feature flag"
+  ],
+  "tools_contains": [
+    "AUTH_API_FLAG",
+    "edge cache",
+    "request id",
+    "AUTH_DB_URL"
+  ]
+}

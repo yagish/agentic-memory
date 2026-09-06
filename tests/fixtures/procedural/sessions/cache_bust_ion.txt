@@ -1,0 +1,2 @@
+User: The cache bust workflow for pricing-api is invalidate the CDN key, restart the pricing-api pods, verify the x-build-version header, warm the cache with three employee requests, then watch the error rate.
+Assistant: If config drift is suspected, compare PRICING_DB_URL before restarting again.

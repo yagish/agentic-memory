@@ -1,0 +1,29 @@
+{
+  "title_contains": [
+    "admin-web",
+    "incident debug"
+  ],
+  "summary_contains": [
+    "admin-web",
+    "debug workflow"
+  ],
+  "steps_contains": [
+    "collect the request id",
+    "check the admin-web-latency dashboard",
+    "tail the api logs",
+    "compare ADMIN_BASE_URL",
+    "roll back",
+    "page the on-call",
+    "capture the failing payload"
+  ],
+  "trigger_phrases_contains": [
+    "admin-web",
+    "incident"
+  ],
+  "tools_contains": [
+    "request id",
+    "admin-web-latency",
+    "ADMIN_BASE_URL",
+    "on-call"
+  ]
+}

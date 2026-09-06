@@ -1,0 +1,3 @@
+User: The local setup for worker-service is clone the repo, copy .env.example to .env.local, export WORKER_QUEUE_URL, run docker compose up worker-service, then run pytest tests/worker_service.
+Assistant: That sounds repeatable.
+User: If migrations are pending, run alembic upgrade before opening the app.

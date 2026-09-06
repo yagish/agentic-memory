@@ -1,0 +1,2 @@
+User: Our flaky test triage workflow for billing-api is quarantine tests/billing_api/test_retry_logic.py::test_cinder_seed, rerun the suite with PYTEST_ADDOPTS="-x", capture the seed and logs, file the Jira ticket, then remove the quarantine after the fix merges.
+Assistant: That should stay as the repeatable process.

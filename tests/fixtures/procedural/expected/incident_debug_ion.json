@@ -1,0 +1,29 @@
+{
+  "title_contains": [
+    "pricing-api",
+    "incident debug"
+  ],
+  "summary_contains": [
+    "pricing-api",
+    "debug workflow"
+  ],
+  "steps_contains": [
+    "collect the request id",
+    "check the pricing-api-latency dashboard",
+    "tail the api logs",
+    "compare PRICING_DB_URL",
+    "roll back",
+    "page the on-call",
+    "capture the failing payload"
+  ],
+  "trigger_phrases_contains": [
+    "pricing-api",
+    "incident"
+  ],
+  "tools_contains": [
+    "request id",
+    "pricing-api-latency",
+    "PRICING_DB_URL",
+    "on-call"
+  ]
+}

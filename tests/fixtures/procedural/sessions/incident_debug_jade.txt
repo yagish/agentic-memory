@@ -1,0 +1,2 @@
+User: The incident debug workflow for mobile-backend is collect the request id, check the mobile-backend-latency dashboard, tail the api logs, compare MOBILE_API_URL, then roll back if the mismatch explains the failure.
+Assistant: If rollback does not help, page the on-call and capture the failing payload.

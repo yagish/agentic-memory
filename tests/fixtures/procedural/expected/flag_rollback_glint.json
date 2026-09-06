@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "export-api",
+    "procedure"
+  ],
+  "summary_contains": [
+    "export-api",
+    "feature flag",
+    "rollback"
+  ],
+  "steps_contains": [
+    "Disable EXPORT_API_FLAG",
+    "Clear the edge cache",
+    "Retry with an employee account",
+    "Capture the request id",
+    "Page support"
+  ],
+  "trigger_phrases_contains": [
+    "export-api",
+    "feature flag"
+  ],
+  "tools_contains": [
+    "EXPORT_API_FLAG",
+    "edge cache",
+    "request id",
+    "EXPORT_BUCKET"
+  ]
+}

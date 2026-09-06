@@ -1,0 +1,29 @@
+{
+  "title_contains": [
+    "mobile-backend",
+    "incident debug"
+  ],
+  "summary_contains": [
+    "mobile-backend",
+    "debug workflow"
+  ],
+  "steps_contains": [
+    "collect the request id",
+    "check the mobile-backend-latency dashboard",
+    "tail the api logs",
+    "compare MOBILE_API_URL",
+    "roll back",
+    "page the on-call",
+    "capture the failing payload"
+  ],
+  "trigger_phrases_contains": [
+    "mobile-backend",
+    "incident"
+  ],
+  "tools_contains": [
+    "request id",
+    "mobile-backend-latency",
+    "MOBILE_API_URL",
+    "on-call"
+  ]
+}

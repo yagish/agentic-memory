@@ -1,0 +1,29 @@
+{
+  "title_contains": [
+    "checkout-api",
+    "incident debug"
+  ],
+  "summary_contains": [
+    "checkout-api",
+    "debug workflow"
+  ],
+  "steps_contains": [
+    "collect the request id",
+    "check the checkout-api-latency dashboard",
+    "tail the api logs",
+    "compare STAGING_DB_URL",
+    "roll back",
+    "page the on-call",
+    "capture the failing payload"
+  ],
+  "trigger_phrases_contains": [
+    "checkout-api",
+    "incident"
+  ],
+  "tools_contains": [
+    "request id",
+    "checkout-api-latency",
+    "STAGING_DB_URL",
+    "on-call"
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "search-api",
+    "procedure"
+  ],
+  "summary_contains": [
+    "search-api",
+    "feature flag",
+    "rollback"
+  ],
+  "steps_contains": [
+    "Disable SEARCH_API_FLAG",
+    "Clear the edge cache",
+    "Retry with an employee account",
+    "Capture the request id",
+    "Page support"
+  ],
+  "trigger_phrases_contains": [
+    "search-api",
+    "feature flag"
+  ],
+  "tools_contains": [
+    "SEARCH_API_FLAG",
+    "edge cache",
+    "request id",
+    "SEARCH_INDEX_URL"
+  ]
+}

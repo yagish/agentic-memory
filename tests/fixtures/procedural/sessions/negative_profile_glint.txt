@@ -1,0 +1,2 @@
+User: My editor is Neovim and my shell is zsh.
+Assistant: Got it.

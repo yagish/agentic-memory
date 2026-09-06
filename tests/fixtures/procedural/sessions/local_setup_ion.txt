@@ -1,0 +1,3 @@
+User: The local setup for pricing-api is clone the repo, copy .env.example to .env.local, export PRICING_DB_URL, run docker compose up pricing-api, then run pytest tests/pricing_api.
+Assistant: That sounds repeatable.
+User: If migrations are pending, run alembic upgrade before opening the app.

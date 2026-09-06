@@ -1,0 +1,26 @@
+{
+  "title_contains": [
+    "export-api",
+    "flaky test"
+  ],
+  "summary_contains": [
+    "export-api",
+    "triage workflow"
+  ],
+  "steps_contains": [
+    "quarantine tests/export_api/test_retry_logic.py::test_glint_seed",
+    "rerun the suite with PYTEST_ADDOPTS=\"-x\"",
+    "capture the seed and logs",
+    "file the Jira ticket",
+    "remove the quarantine after the fix merges"
+  ],
+  "trigger_phrases_contains": [
+    "export-api",
+    "flaky test"
+  ],
+  "tools_contains": [
+    "tests/export_api/test_retry_logic.py::test_glint_seed",
+    "PYTEST_ADDOPTS",
+    "Jira"
+  ]
+}

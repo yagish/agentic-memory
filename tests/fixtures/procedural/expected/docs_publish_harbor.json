@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "admin-web",
+    "docs publish"
+  ],
+  "summary_contains": [
+    "admin-web",
+    "publish",
+    "staging"
+  ],
+  "steps_contains": [
+    "run pnpm docs:build",
+    "check the preview in staging",
+    "execute ./scripts/publish-docs.sh",
+    "smoke-check https://docs.example.com/admin-web",
+    "roll back the docs flag"
+  ],
+  "trigger_phrases_contains": [
+    "publish docs for admin-web",
+    "docs publish"
+  ],
+  "tools_contains": [
+    "pnpm docs:build",
+    "./scripts/publish-docs.sh",
+    "https://docs.example.com/admin-web",
+    "ADMIN_BASE_URL"
+  ]
+}

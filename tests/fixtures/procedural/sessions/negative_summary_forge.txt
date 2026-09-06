@@ -1,0 +1,2 @@
+User: Yesterday the worker-service rollout failed because Redis was down.
+Assistant: We rolled it back.

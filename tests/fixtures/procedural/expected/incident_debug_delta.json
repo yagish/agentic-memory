@@ -1,0 +1,29 @@
+{
+  "title_contains": [
+    "docs-site",
+    "incident debug"
+  ],
+  "summary_contains": [
+    "docs-site",
+    "debug workflow"
+  ],
+  "steps_contains": [
+    "collect the request id",
+    "check the docs-site-latency dashboard",
+    "tail the api logs",
+    "compare DOCS_PREVIEW_URL",
+    "roll back",
+    "page the on-call",
+    "capture the failing payload"
+  ],
+  "trigger_phrases_contains": [
+    "docs-site",
+    "incident"
+  ],
+  "tools_contains": [
+    "request id",
+    "docs-site-latency",
+    "DOCS_PREVIEW_URL",
+    "on-call"
+  ]
+}

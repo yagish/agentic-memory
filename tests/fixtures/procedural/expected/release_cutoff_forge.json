@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "worker-service",
+    "release cutoff"
+  ],
+  "summary_contains": [
+    "worker-service",
+    "checklist",
+    "smoke tests"
+  ],
+  "steps_contains": [
+    "freeze merges at 4 PM",
+    "cut branch release/forge",
+    "tag the build",
+    "run smoke tests in staging",
+    "announce the cutoff in Slack"
+  ],
+  "trigger_phrases_contains": [
+    "worker-service",
+    "release cutoff"
+  ],
+  "tools_contains": [
+    "release/forge",
+    "staging",
+    "production",
+    "Slack"
+  ]
+}

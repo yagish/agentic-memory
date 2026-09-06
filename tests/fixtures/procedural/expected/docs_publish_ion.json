@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "pricing-api",
+    "docs publish"
+  ],
+  "summary_contains": [
+    "pricing-api",
+    "publish",
+    "staging"
+  ],
+  "steps_contains": [
+    "run pnpm docs:build",
+    "check the preview in staging",
+    "execute ./scripts/publish-docs.sh",
+    "smoke-check https://docs.example.com/pricing-api",
+    "roll back the docs flag"
+  ],
+  "trigger_phrases_contains": [
+    "publish docs for pricing-api",
+    "docs publish"
+  ],
+  "tools_contains": [
+    "pnpm docs:build",
+    "./scripts/publish-docs.sh",
+    "https://docs.example.com/pricing-api",
+    "PRICING_DB_URL"
+  ]
+}

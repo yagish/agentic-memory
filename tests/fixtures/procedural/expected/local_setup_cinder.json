@@ -1,0 +1,29 @@
+{
+  "title_contains": [
+    "billing-api",
+    "setup"
+  ],
+  "summary_contains": [
+    "billing-api",
+    "local setup"
+  ],
+  "steps_contains": [
+    "Clone the repo",
+    "copy .env.example to .env.local",
+    "export BILLING_DB_URL",
+    "run docker compose up billing-api",
+    "run pytest tests/billing_api",
+    "run alembic upgrade"
+  ],
+  "trigger_phrases_contains": [
+    "set up billing-api",
+    "local setup"
+  ],
+  "tools_contains": [
+    ".env.local",
+    "BILLING_DB_URL",
+    "docker compose",
+    "pytest",
+    "alembic"
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "worker-service",
+    "docs publish"
+  ],
+  "summary_contains": [
+    "worker-service",
+    "publish",
+    "staging"
+  ],
+  "steps_contains": [
+    "run pnpm docs:build",
+    "check the preview in staging",
+    "execute ./scripts/publish-docs.sh",
+    "smoke-check https://docs.example.com/worker-service",
+    "roll back the docs flag"
+  ],
+  "trigger_phrases_contains": [
+    "publish docs for worker-service",
+    "docs publish"
+  ],
+  "tools_contains": [
+    "pnpm docs:build",
+    "./scripts/publish-docs.sh",
+    "https://docs.example.com/worker-service",
+    "WORKER_QUEUE_URL"
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "pricing-api",
+    "backfill"
+  ],
+  "summary_contains": [
+    "pricing-api",
+    "safe backfill"
+  ],
+  "steps_contains": [
+    "pause the cron",
+    "run python3 scripts/backfill.py --job pricing_api_backfill --limit 500",
+    "verify the row count in staging",
+    "resume the cron",
+    "watch the error rate dashboard"
+  ],
+  "trigger_phrases_contains": [
+    "run backfill for pricing-api",
+    "backfill"
+  ],
+  "tools_contains": [
+    "cron",
+    "scripts/backfill.py",
+    "pricing_api_backfill",
+    "staging",
+    "PRICING_DB_URL"
+  ]
+}

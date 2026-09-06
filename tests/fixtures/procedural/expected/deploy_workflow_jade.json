@@ -1,0 +1,30 @@
+{
+  "title_contains": [
+    "mobile-backend",
+    "deploy workflow"
+  ],
+  "summary_contains": [
+    "mobile-backend",
+    "deploy",
+    "staging",
+    "production"
+  ],
+  "steps_contains": [
+    "Build the Docker image",
+    "Run alembic upgrade",
+    "roll the mobile-backend deployment in staging",
+    "Verify /healthz",
+    "promote production"
+  ],
+  "trigger_phrases_contains": [
+    "deploy mobile-backend",
+    "deploy workflow"
+  ],
+  "tools_contains": [
+    "Docker",
+    "alembic",
+    "staging",
+    "production",
+    "MOBILE_API_URL"
+  ]
+}

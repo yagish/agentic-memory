@@ -1,0 +1,26 @@
+{
+  "title_contains": [
+    "docs-site",
+    "flaky test"
+  ],
+  "summary_contains": [
+    "docs-site",
+    "triage workflow"
+  ],
+  "steps_contains": [
+    "quarantine tests/docs_site/test_retry_logic.py::test_delta_seed",
+    "rerun the suite with PYTEST_ADDOPTS=\"-x\"",
+    "capture the seed and logs",
+    "file the Jira ticket",
+    "remove the quarantine after the fix merges"
+  ],
+  "trigger_phrases_contains": [
+    "docs-site",
+    "flaky test"
+  ],
+  "tools_contains": [
+    "tests/docs_site/test_retry_logic.py::test_delta_seed",
+    "PYTEST_ADDOPTS",
+    "Jira"
+  ]
+}

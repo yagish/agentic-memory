@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "billing-api",
+    "release cutoff"
+  ],
+  "summary_contains": [
+    "billing-api",
+    "checklist",
+    "smoke tests"
+  ],
+  "steps_contains": [
+    "freeze merges at 4 PM",
+    "cut branch release/cinder",
+    "tag the build",
+    "run smoke tests in staging",
+    "announce the cutoff in Slack"
+  ],
+  "trigger_phrases_contains": [
+    "billing-api",
+    "release cutoff"
+  ],
+  "tools_contains": [
+    "release/cinder",
+    "staging",
+    "production",
+    "Slack"
+  ]
+}

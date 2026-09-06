@@ -1,0 +1,3 @@
+User: The worker-service deploy workflow is always build the Docker image, run alembic upgrade, roll the worker-service deployment in staging, verify /healthz, then promote production.
+Assistant: I'll preserve those exact steps.
+User: If WORKER_QUEUE_URL is missing, stop before promotion.

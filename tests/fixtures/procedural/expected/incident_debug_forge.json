@@ -1,0 +1,29 @@
+{
+  "title_contains": [
+    "worker-service",
+    "incident debug"
+  ],
+  "summary_contains": [
+    "worker-service",
+    "debug workflow"
+  ],
+  "steps_contains": [
+    "collect the request id",
+    "check the worker-service-latency dashboard",
+    "tail the api logs",
+    "compare WORKER_QUEUE_URL",
+    "roll back",
+    "page the on-call",
+    "capture the failing payload"
+  ],
+  "trigger_phrases_contains": [
+    "worker-service",
+    "incident"
+  ],
+  "tools_contains": [
+    "request id",
+    "worker-service-latency",
+    "WORKER_QUEUE_URL",
+    "on-call"
+  ]
+}

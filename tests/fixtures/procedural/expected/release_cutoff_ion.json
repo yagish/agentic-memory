@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "pricing-api",
+    "release cutoff"
+  ],
+  "summary_contains": [
+    "pricing-api",
+    "checklist",
+    "smoke tests"
+  ],
+  "steps_contains": [
+    "freeze merges at 4 PM",
+    "cut branch release/ion",
+    "tag the build",
+    "run smoke tests in staging",
+    "announce the cutoff in Slack"
+  ],
+  "trigger_phrases_contains": [
+    "pricing-api",
+    "release cutoff"
+  ],
+  "tools_contains": [
+    "release/ion",
+    "staging",
+    "production",
+    "Slack"
+  ]
+}

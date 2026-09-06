@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "mobile-backend",
+    "release cutoff"
+  ],
+  "summary_contains": [
+    "mobile-backend",
+    "checklist",
+    "smoke tests"
+  ],
+  "steps_contains": [
+    "freeze merges at 4 PM",
+    "cut branch release/jade",
+    "tag the build",
+    "run smoke tests in staging",
+    "announce the cutoff in Slack"
+  ],
+  "trigger_phrases_contains": [
+    "mobile-backend",
+    "release cutoff"
+  ],
+  "tools_contains": [
+    "release/jade",
+    "staging",
+    "production",
+    "Slack"
+  ]
+}

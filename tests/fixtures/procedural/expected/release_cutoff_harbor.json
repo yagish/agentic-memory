@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "admin-web",
+    "release cutoff"
+  ],
+  "summary_contains": [
+    "admin-web",
+    "checklist",
+    "smoke tests"
+  ],
+  "steps_contains": [
+    "freeze merges at 4 PM",
+    "cut branch release/harbor",
+    "tag the build",
+    "run smoke tests in staging",
+    "announce the cutoff in Slack"
+  ],
+  "trigger_phrases_contains": [
+    "admin-web",
+    "release cutoff"
+  ],
+  "tools_contains": [
+    "release/harbor",
+    "staging",
+    "production",
+    "Slack"
+  ]
+}

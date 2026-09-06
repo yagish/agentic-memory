@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "docs-site",
+    "procedure"
+  ],
+  "summary_contains": [
+    "docs-site",
+    "feature flag",
+    "rollback"
+  ],
+  "steps_contains": [
+    "Disable DOCS_SITE_FLAG",
+    "Clear the edge cache",
+    "Retry with an employee account",
+    "Capture the request id",
+    "Page support"
+  ],
+  "trigger_phrases_contains": [
+    "docs-site",
+    "feature flag"
+  ],
+  "tools_contains": [
+    "DOCS_SITE_FLAG",
+    "edge cache",
+    "request id",
+    "DOCS_PREVIEW_URL"
+  ]
+}

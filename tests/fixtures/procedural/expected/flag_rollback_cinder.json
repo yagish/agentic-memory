@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "billing-api",
+    "procedure"
+  ],
+  "summary_contains": [
+    "billing-api",
+    "feature flag",
+    "rollback"
+  ],
+  "steps_contains": [
+    "Disable BILLING_API_FLAG",
+    "Clear the edge cache",
+    "Retry with an employee account",
+    "Capture the request id",
+    "Page support"
+  ],
+  "trigger_phrases_contains": [
+    "billing-api",
+    "feature flag"
+  ],
+  "tools_contains": [
+    "BILLING_API_FLAG",
+    "edge cache",
+    "request id",
+    "BILLING_DB_URL"
+  ]
+}

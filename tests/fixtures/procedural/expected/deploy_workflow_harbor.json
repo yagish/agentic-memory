@@ -1,0 +1,30 @@
+{
+  "title_contains": [
+    "admin-web",
+    "deploy workflow"
+  ],
+  "summary_contains": [
+    "admin-web",
+    "deploy",
+    "staging",
+    "production"
+  ],
+  "steps_contains": [
+    "Build the Docker image",
+    "Run alembic upgrade",
+    "roll the admin-web deployment in staging",
+    "Verify /healthz",
+    "promote production"
+  ],
+  "trigger_phrases_contains": [
+    "deploy admin-web",
+    "deploy workflow"
+  ],
+  "tools_contains": [
+    "Docker",
+    "alembic",
+    "staging",
+    "production",
+    "ADMIN_BASE_URL"
+  ]
+}

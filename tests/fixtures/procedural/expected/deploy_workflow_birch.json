@@ -1,0 +1,30 @@
+{
+  "title_contains": [
+    "search-api",
+    "deploy workflow"
+  ],
+  "summary_contains": [
+    "search-api",
+    "deploy",
+    "staging",
+    "production"
+  ],
+  "steps_contains": [
+    "Build the Docker image",
+    "Run alembic upgrade",
+    "roll the search-api deployment in staging",
+    "Verify /healthz",
+    "promote production"
+  ],
+  "trigger_phrases_contains": [
+    "deploy search-api",
+    "deploy workflow"
+  ],
+  "tools_contains": [
+    "Docker",
+    "alembic",
+    "staging",
+    "production",
+    "SEARCH_INDEX_URL"
+  ]
+}

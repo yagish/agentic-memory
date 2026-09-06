@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "mobile-backend",
+    "procedure"
+  ],
+  "summary_contains": [
+    "mobile-backend",
+    "feature flag",
+    "rollback"
+  ],
+  "steps_contains": [
+    "Disable MOBILE_BACKEND_FLAG",
+    "Clear the edge cache",
+    "Retry with an employee account",
+    "Capture the request id",
+    "Page support"
+  ],
+  "trigger_phrases_contains": [
+    "mobile-backend",
+    "feature flag"
+  ],
+  "tools_contains": [
+    "MOBILE_BACKEND_FLAG",
+    "edge cache",
+    "request id",
+    "MOBILE_API_URL"
+  ]
+}

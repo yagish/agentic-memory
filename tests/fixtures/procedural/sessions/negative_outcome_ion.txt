@@ -1,0 +1,2 @@
+User: Pricing-api passed staging and production is healthy again.
+Assistant: Nice, the incident is closed.

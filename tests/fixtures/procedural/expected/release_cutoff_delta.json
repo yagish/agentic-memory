@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "docs-site",
+    "release cutoff"
+  ],
+  "summary_contains": [
+    "docs-site",
+    "checklist",
+    "smoke tests"
+  ],
+  "steps_contains": [
+    "freeze merges at 4 PM",
+    "cut branch release/delta",
+    "tag the build",
+    "run smoke tests in preview",
+    "announce the cutoff in Slack"
+  ],
+  "trigger_phrases_contains": [
+    "docs-site",
+    "release cutoff"
+  ],
+  "tools_contains": [
+    "release/delta",
+    "preview",
+    "production",
+    "Slack"
+  ]
+}

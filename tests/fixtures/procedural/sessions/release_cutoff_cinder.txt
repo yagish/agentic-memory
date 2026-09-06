@@ -1,0 +1,2 @@
+User: The release cutoff checklist for billing-api is freeze merges at 4 PM, cut branch release/cinder, tag the build, run smoke tests in staging, then announce the cutoff in Slack.
+Assistant: If smoke tests fail, do not promote production.

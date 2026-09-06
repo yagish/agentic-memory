@@ -1,0 +1,28 @@
+{
+  "title_contains": [
+    "docs-site",
+    "docs publish"
+  ],
+  "summary_contains": [
+    "docs-site",
+    "publish",
+    "preview"
+  ],
+  "steps_contains": [
+    "run pnpm docs:build",
+    "check the preview in preview",
+    "execute ./scripts/publish-docs.sh",
+    "smoke-check https://docs.example.com/docs-site",
+    "roll back the docs flag"
+  ],
+  "trigger_phrases_contains": [
+    "publish docs for docs-site",
+    "docs publish"
+  ],
+  "tools_contains": [
+    "pnpm docs:build",
+    "./scripts/publish-docs.sh",
+    "https://docs.example.com/docs-site",
+    "DOCS_PREVIEW_URL"
+  ]
+}

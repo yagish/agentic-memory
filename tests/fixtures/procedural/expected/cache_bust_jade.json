@@ -1,0 +1,27 @@
+{
+  "title_contains": [
+    "mobile-backend",
+    "cache bust"
+  ],
+  "summary_contains": [
+    "mobile-backend",
+    "cache",
+    "CDN"
+  ],
+  "steps_contains": [
+    "invalidate the CDN key",
+    "restart the mobile-backend pods",
+    "verify the x-build-version header",
+    "warm the cache",
+    "watch the error rate"
+  ],
+  "trigger_phrases_contains": [
+    "mobile-backend",
+    "cache bust"
+  ],
+  "tools_contains": [
+    "CDN",
+    "x-build-version",
+    "MOBILE_API_URL"
+  ]
+}

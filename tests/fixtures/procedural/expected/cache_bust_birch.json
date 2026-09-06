@@ -1,0 +1,27 @@
+{
+  "title_contains": [
+    "search-api",
+    "cache bust"
+  ],
+  "summary_contains": [
+    "search-api",
+    "cache",
+    "CDN"
+  ],
+  "steps_contains": [
+    "invalidate the CDN key",
+    "restart the search-api pods",
+    "verify the x-build-version header",
+    "warm the cache",
+    "watch the error rate"
+  ],
+  "trigger_phrases_contains": [
+    "search-api",
+    "cache bust"
+  ],
+  "tools_contains": [
+    "CDN",
+    "x-build-version",
+    "SEARCH_INDEX_URL"
+  ]
+}

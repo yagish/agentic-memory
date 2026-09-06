@@ -1,0 +1,29 @@
+{
+  "title_contains": [
+    "admin-web",
+    "setup"
+  ],
+  "summary_contains": [
+    "admin-web",
+    "local setup"
+  ],
+  "steps_contains": [
+    "Clone the repo",
+    "copy .env.example to .env.local",
+    "export ADMIN_BASE_URL",
+    "run docker compose up admin-web",
+    "run pytest tests/admin_web",
+    "run alembic upgrade"
+  ],
+  "trigger_phrases_contains": [
+    "set up admin-web",
+    "local setup"
+  ],
+  "tools_contains": [
+    ".env.local",
+    "ADMIN_BASE_URL",
+    "docker compose",
+    "pytest",
+    "alembic"
+  ]
+}

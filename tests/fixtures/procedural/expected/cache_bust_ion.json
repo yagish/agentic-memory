@@ -1,0 +1,27 @@
+{
+  "title_contains": [
+    "pricing-api",
+    "cache bust"
+  ],
+  "summary_contains": [
+    "pricing-api",
+    "cache",
+    "CDN"
+  ],
+  "steps_contains": [
+    "invalidate the CDN key",
+    "restart the pricing-api pods",
+    "verify the x-build-version header",
+    "warm the cache",
+    "watch the error rate"
+  ],
+  "trigger_phrases_contains": [
+    "pricing-api",
+    "cache bust"
+  ],
+  "tools_contains": [
+    "CDN",
+    "x-build-version",
+    "PRICING_DB_URL"
+  ]
+}

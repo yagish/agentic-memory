@@ -1,0 +1,3 @@
+User: When the docs-site feature flag misbehaves, first disable DOCS_SITE_FLAG, then clear the edge cache, then retry with an employee account.
+Assistant: If it still fails, capture the request id and page support.
+User: Mention DOCS_PREVIEW_URL in the incident notes if config drift caused it.

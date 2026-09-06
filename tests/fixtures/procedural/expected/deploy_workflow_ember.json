@@ -1,0 +1,30 @@
+{
+  "title_contains": [
+    "auth-api",
+    "deploy workflow"
+  ],
+  "summary_contains": [
+    "auth-api",
+    "deploy",
+    "staging",
+    "production"
+  ],
+  "steps_contains": [
+    "Build the Docker image",
+    "Run alembic upgrade",
+    "roll the auth-api deployment in staging",
+    "Verify /healthz",
+    "promote production"
+  ],
+  "trigger_phrases_contains": [
+    "deploy auth-api",
+    "deploy workflow"
+  ],
+  "tools_contains": [
+    "Docker",
+    "alembic",
+    "staging",
+    "production",
+    "AUTH_DB_URL"
+  ]
+}

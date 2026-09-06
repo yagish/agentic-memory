@@ -1,0 +1,3 @@
+User: The docs publish flow for admin-web is run pnpm docs:build, check the preview in staging, execute ./scripts/publish-docs.sh, then smoke-check https://docs.example.com/admin-web.
+Assistant: If the smoke check fails, roll back the docs flag before trying again.
+User: Keep ADMIN_BASE_URL in the publish environment.

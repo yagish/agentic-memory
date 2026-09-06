@@ -1,0 +1,3 @@
+User: The safe backfill procedure for pricing-api is pause the cron, run python3 scripts/backfill.py --job pricing_api_backfill --limit 500, verify the row count in staging, then resume the cron.
+Assistant: After resuming, watch the error rate dashboard for 15 minutes.
+User: Keep PRICING_DB_URL pointed at the backfill target the whole time.

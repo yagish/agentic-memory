@@ -1,0 +1,26 @@
+{
+  "title_contains": [
+    "mobile-backend",
+    "flaky test"
+  ],
+  "summary_contains": [
+    "mobile-backend",
+    "triage workflow"
+  ],
+  "steps_contains": [
+    "quarantine tests/mobile_backend/test_retry_logic.py::test_jade_seed",
+    "rerun the suite with PYTEST_ADDOPTS=\"-x\"",
+    "capture the seed and logs",
+    "file the Jira ticket",
+    "remove the quarantine after the fix merges"
+  ],
+  "trigger_phrases_contains": [
+    "mobile-backend",
+    "flaky test"
+  ],
+  "tools_contains": [
+    "tests/mobile_backend/test_retry_logic.py::test_jade_seed",
+    "PYTEST_ADDOPTS",
+    "Jira"
+  ]
+}

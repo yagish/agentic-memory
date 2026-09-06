@@ -1,0 +1,2 @@
+User: The incident debug workflow for search-api is collect the request id, check the search-api-latency dashboard, tail the api logs, compare SEARCH_INDEX_URL, then roll back if the mismatch explains the failure.
+Assistant: If rollback does not help, page the on-call and capture the failing payload.

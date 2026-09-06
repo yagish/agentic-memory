@@ -219,6 +219,9 @@ def _create_procedural_entry(conn, session: dict, text_sample: str | None = None
             source="daemon",
             session_id=session_id,
         )
+        if procedure is None:
+            _daemon_log(f"no procedural memory extracted for {session_id}")
+            return None
         updated_at = session.get("updated_at") or datetime.now(timezone.utc).isoformat()
         save_extracted_procedure(
             conn,

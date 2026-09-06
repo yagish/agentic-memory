@@ -1,0 +1,2 @@
+User: The incident debug workflow for auth-api is collect the request id, check the auth-api-latency dashboard, tail the api logs, compare AUTH_DB_URL, then roll back if the mismatch explains the failure.
+Assistant: If rollback does not help, page the on-call and capture the failing payload.

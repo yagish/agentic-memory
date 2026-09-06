@@ -1,0 +1,30 @@
+{
+  "title_contains": [
+    "docs-site",
+    "deploy workflow"
+  ],
+  "summary_contains": [
+    "docs-site",
+    "deploy",
+    "preview",
+    "production"
+  ],
+  "steps_contains": [
+    "Build the Docker image",
+    "Run alembic upgrade",
+    "roll the docs-site deployment in preview",
+    "Verify /healthz",
+    "promote production"
+  ],
+  "trigger_phrases_contains": [
+    "deploy docs-site",
+    "deploy workflow"
+  ],
+  "tools_contains": [
+    "Docker",
+    "alembic",
+    "preview",
+    "production",
+    "DOCS_PREVIEW_URL"
+  ]
+}

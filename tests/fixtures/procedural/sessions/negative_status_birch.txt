@@ -1,0 +1,3 @@
+User: Birch docs are published now and the alert is quiet.
+Assistant: Sounds good.
+User: I also answered a support ticket.

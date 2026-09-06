@@ -1,0 +1,30 @@
+{
+  "title_contains": [
+    "pricing-api",
+    "deploy workflow"
+  ],
+  "summary_contains": [
+    "pricing-api",
+    "deploy",
+    "staging",
+    "production"
+  ],
+  "steps_contains": [
+    "Build the Docker image",
+    "Run alembic upgrade",
+    "roll the pricing-api deployment in staging",
+    "Verify /healthz",
+    "promote production"
+  ],
+  "trigger_phrases_contains": [
+    "deploy pricing-api",
+    "deploy workflow"
+  ],
+  "tools_contains": [
+    "Docker",
+    "alembic",
+    "staging",
+    "production",
+    "PRICING_DB_URL"
+  ]
+}

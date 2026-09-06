@@ -1,0 +1,29 @@
+{
+  "title_contains": [
+    "worker-service",
+    "setup"
+  ],
+  "summary_contains": [
+    "worker-service",
+    "local setup"
+  ],
+  "steps_contains": [
+    "Clone the repo",
+    "copy .env.example to .env.local",
+    "export WORKER_QUEUE_URL",
+    "run docker compose up worker-service",
+    "run pytest tests/worker_service",
+    "run alembic upgrade"
+  ],
+  "trigger_phrases_contains": [
+    "set up worker-service",
+    "local setup"
+  ],
+  "tools_contains": [
+    ".env.local",
+    "WORKER_QUEUE_URL",
+    "docker compose",
+    "pytest",
+    "alembic"
+  ]
+}

@@ -1,0 +1,3 @@
+User: The docs publish flow for mobile-backend is run pnpm docs:build, check the preview in staging, execute ./scripts/publish-docs.sh, then smoke-check https://docs.example.com/mobile-backend.
+Assistant: If the smoke check fails, roll back the docs flag before trying again.
+User: Keep MOBILE_API_URL in the publish environment.

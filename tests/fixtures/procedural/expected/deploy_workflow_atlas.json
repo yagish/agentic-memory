@@ -1,0 +1,30 @@
+{
+  "title_contains": [
+    "checkout-api",
+    "deploy workflow"
+  ],
+  "summary_contains": [
+    "checkout-api",
+    "deploy",
+    "staging",
+    "production"
+  ],
+  "steps_contains": [
+    "Build the Docker image",
+    "Run alembic upgrade",
+    "roll the checkout-api deployment in staging",
+    "Verify /healthz",
+    "promote production"
+  ],
+  "trigger_phrases_contains": [
+    "deploy checkout-api",
+    "deploy workflow"
+  ],
+  "tools_contains": [
+    "Docker",
+    "alembic",
+    "staging",
+    "production",
+    "STAGING_DB_URL"
+  ]
+}
