@@ -1,0 +1,17 @@
+{
+  "current_goal_contains": [
+    "setting up forge-service locally"
+  ],
+  "current_focus_contains": [
+    "FORGE_API_KEY",
+    ".env.local"
+  ],
+  "active_tasks_contains": [
+    "FORGE_API_KEY",
+    "docker compose up forge-service"
+  ],
+  "next_step_contains": [
+    ".env.local"
+  ],
+  "status": "in_progress"
+}

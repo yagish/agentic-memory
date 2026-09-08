@@ -1,0 +1,19 @@
+{
+  "current_goal_contains": [
+    "triaging",
+    "flaky",
+    "delta"
+  ],
+  "current_focus_contains": [
+    "PYTEST_ADDOPTS=-x",
+    "test_delta.py"
+  ],
+  "active_tasks_contains": [
+    "capture the failing seed",
+    "pytest tests/integration/test_delta.py -k refresh_flow --maxfail=1"
+  ],
+  "next_step_contains": [
+    "capture the failing seed"
+  ],
+  "status": "in_progress"
+}

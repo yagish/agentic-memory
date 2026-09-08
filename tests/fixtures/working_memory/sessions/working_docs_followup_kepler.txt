@@ -1,0 +1,3 @@
+User: I updated docs/runbooks/kepler.md for the backfill verification notes.
+Assistant: The draft is in place, but we still need the final screenshots from preview.
+User: Tomorrow I need to capture the preview screenshots and open the docs PR from branch docs/kepler-runbook.

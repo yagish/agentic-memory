@@ -1,0 +1,19 @@
+{
+  "current_goal_contains": [
+    "kepler",
+    "backfill"
+  ],
+  "current_focus_contains": [
+    "error-rate dashboard",
+    "widening the rollout"
+  ],
+  "active_tasks_contains": [
+    "watch the error-rate dashboard",
+    "widen the rollout"
+  ],
+  "constraints_contains": [],
+  "next_step_contains": [
+    "watch the error-rate dashboard"
+  ],
+  "status": "ready_to_resume"
+}

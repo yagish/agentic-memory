@@ -1,4 +1,4 @@
-# dashboard_server.py — simplified dashboard API for sessions, facts, episodes, and logs.
+# dashboard_server.py — simplified dashboard API for sessions, facts, episodes, working memory, and logs.
 
 from __future__ import annotations
 
@@ -64,6 +64,11 @@ _LOG_SOURCES: dict[str, dict[str, object]] = {
         "label": "Procedural",
         "description": "Procedural extraction log",
         "paths": [os.path.expanduser("~/.memory/procedural.log")],
+    },
+    "working_memory": {
+        "label": "Working Memory",
+        "description": "Working-memory extraction and retrieval log",
+        "paths": [os.path.expanduser("~/.memory/working_memory.log")],
     },
 }
 
@@ -232,6 +237,7 @@ def get_services() -> dict:
     total_facts = 0
     total_episodes = 0
     total_procedures = 0
+    total_working_memory = 0
 
     try:
         conn = open_db(DB_PATH)
@@ -240,6 +246,7 @@ def get_services() -> dict:
             total_facts = conn.execute("SELECT COUNT(*) AS c FROM facts").fetchone()["c"]
             total_episodes = conn.execute("SELECT COUNT(*) AS c FROM episodic_memory").fetchone()["c"]
             total_procedures = conn.execute("SELECT COUNT(*) AS c FROM procedural_memory").fetchone()["c"]
+            total_working_memory = conn.execute("SELECT COUNT(*) AS c FROM working_memory").fetchone()["c"]
         finally:
             conn.close()
     except Exception:
@@ -277,6 +284,7 @@ def get_services() -> dict:
             "total_facts": total_facts,
             "total_episodes": total_episodes,
             "total_procedures": total_procedures,
+            "total_working_memory": total_working_memory,
             "db_size_bytes": os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0,
         },
     }
@@ -526,6 +534,43 @@ def get_memory_procedural() -> dict:
     except Exception:
         pass
     return {"procedural": rows, "total": len(rows)}
+
+
+@memory_router.get("/working-memory")
+@memory_router.get("/working")
+def get_memory_working_memory() -> dict:
+    rows: list[dict] = []
+    try:
+        conn = open_db(DB_PATH)
+        try:
+            for row in conn.execute(
+                "SELECT id, session_id, current_goal, current_focus, next_step, status, updated_at, details FROM working_memory ORDER BY updated_at DESC"
+            ).fetchall():
+                try:
+                    details = json.loads(row["details"] or "{}")
+                except Exception:
+                    details = {}
+                rows.append(
+                    {
+                        "id": row["id"],
+                        "session_id": row["session_id"],
+                        "current_goal": row["current_goal"],
+                        "current_focus": row["current_focus"],
+                        "next_step": row["next_step"],
+                        "status": row["status"],
+                        "updated_at": row["updated_at"],
+                        "active_tasks": details.get("active_tasks", []),
+                        "constraints": details.get("constraints", []),
+                        "confidence": details.get("confidence"),
+                        "source_quote": details.get("source_quote"),
+                        "source": details.get("source", "working_memory_extractor"),
+                    }
+                )
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return {"working_memory": rows, "total": len(rows)}
 
 
 @ops_router.post("/ops/ollama/start")

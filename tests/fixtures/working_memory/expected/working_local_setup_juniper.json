@@ -1,0 +1,17 @@
+{
+  "current_goal_contains": [
+    "setting up juniper-service locally"
+  ],
+  "current_focus_contains": [
+    "JUNIPER_API_KEY",
+    ".env.local"
+  ],
+  "active_tasks_contains": [
+    "JUNIPER_API_KEY",
+    "docker compose up juniper-service"
+  ],
+  "next_step_contains": [
+    ".env.local"
+  ],
+  "status": "in_progress"
+}

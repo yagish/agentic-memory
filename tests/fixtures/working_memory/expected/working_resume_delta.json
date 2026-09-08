@@ -1,0 +1,19 @@
+{
+  "current_goal_contains": [
+    "finish",
+    "auth middleware"
+  ],
+  "current_focus_contains": [
+    "regression",
+    "refresh-token",
+    "expired-session"
+  ],
+  "active_tasks_contains": [
+    "refresh-token",
+    "expired-session"
+  ],
+  "next_step_contains": [
+    "regression tests"
+  ],
+  "status": "ready_to_resume"
+}

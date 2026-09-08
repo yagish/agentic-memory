@@ -1,0 +1,19 @@
+{
+  "current_goal_contains": [
+    "triaging",
+    "flaky",
+    "juniper"
+  ],
+  "current_focus_contains": [
+    "PYTEST_ADDOPTS=-x",
+    "test_juniper.py"
+  ],
+  "active_tasks_contains": [
+    "capture the failing seed",
+    "pytest tests/integration/test_juniper.py -k refresh_flow --maxfail=1"
+  ],
+  "next_step_contains": [
+    "capture the failing seed"
+  ],
+  "status": "in_progress"
+}

@@ -1,0 +1,17 @@
+{
+  "current_goal_contains": [
+    "setting up ember-service locally"
+  ],
+  "current_focus_contains": [
+    "EMBER_API_KEY",
+    ".env.local"
+  ],
+  "active_tasks_contains": [
+    "EMBER_API_KEY",
+    "docker compose up ember-service"
+  ],
+  "next_step_contains": [
+    ".env.local"
+  ],
+  "status": "in_progress"
+}

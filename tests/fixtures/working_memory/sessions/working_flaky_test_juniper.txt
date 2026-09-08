@@ -1,0 +1,3 @@
+User: I am still triaging the flaky pytest job for juniper-service.
+Assistant: So far PYTEST_ADDOPTS=-x reproduces the failure faster in tests/integration/test_juniper.py.
+User: Next I want to rerun pytest tests/integration/test_juniper.py -k refresh_flow --maxfail=1 and capture the failing seed.

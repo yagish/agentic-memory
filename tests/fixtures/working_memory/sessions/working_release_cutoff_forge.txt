@@ -1,0 +1,3 @@
+User: We are preparing the release cutoff checklist for forge-service.
+Assistant: Release notes are drafted, but the changelog still needs the final commit range and the oncall owner.
+User: Next fill in the final commit range, assign the oncall owner, and tag release/forge-2026-09.

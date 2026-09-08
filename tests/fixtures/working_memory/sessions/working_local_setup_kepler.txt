@@ -1,0 +1,3 @@
+User: I am still setting up kepler-service locally.
+Assistant: You already pulled the repo, but you still need KEPLER_API_KEY in .env.local before docker compose up kepler-service works.
+User: Next add KEPLER_API_KEY to .env.local and rerun docker compose up kepler-service.

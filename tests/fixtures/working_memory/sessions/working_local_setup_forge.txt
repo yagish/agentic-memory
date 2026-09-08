@@ -1,0 +1,3 @@
+User: I am still setting up forge-service locally.
+Assistant: You already pulled the repo, but you still need FORGE_API_KEY in .env.local before docker compose up forge-service works.
+User: Next add FORGE_API_KEY to .env.local and rerun docker compose up forge-service.

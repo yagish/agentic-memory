@@ -1,0 +1,17 @@
+{
+  "current_goal_contains": [
+    "setting up birch-service locally"
+  ],
+  "current_focus_contains": [
+    "BIRCH_API_KEY",
+    ".env.local"
+  ],
+  "active_tasks_contains": [
+    "BIRCH_API_KEY",
+    "docker compose up birch-service"
+  ],
+  "next_step_contains": [
+    ".env.local"
+  ],
+  "status": "in_progress"
+}

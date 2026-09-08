@@ -1,0 +1,21 @@
+{
+  "current_goal_contains": [
+    "deploy birch-service"
+  ],
+  "current_focus_contains": [
+    "preview",
+    "staging metrics"
+  ],
+  "active_tasks_contains": [
+    "compare the preview dashboard",
+    "widen the rollout"
+  ],
+  "constraints_contains": [
+    "--canary 10",
+    "30 minutes"
+  ],
+  "next_step_contains": [
+    "compare the preview dashboard"
+  ],
+  "status": "in_progress"
+}

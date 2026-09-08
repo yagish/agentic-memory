@@ -1,0 +1,3 @@
+User: I am still setting up harbor-service locally.
+Assistant: You already pulled the repo, but you still need HARBOR_API_KEY in .env.local before docker compose up harbor-service works.
+User: Next add HARBOR_API_KEY to .env.local and rerun docker compose up harbor-service.

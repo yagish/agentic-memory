@@ -1,0 +1,3 @@
+User: I am still setting up ion-service locally.
+Assistant: You already pulled the repo, but you still need ION_API_KEY in .env.local before docker compose up ion-service works.
+User: Next add ION_API_KEY to .env.local and rerun docker compose up ion-service.

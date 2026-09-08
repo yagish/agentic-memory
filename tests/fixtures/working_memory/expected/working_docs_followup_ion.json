@@ -1,0 +1,18 @@
+{
+  "current_goal_contains": [
+    "cache bust workflow",
+    "docs"
+  ],
+  "current_focus_contains": [
+    "preview screenshots"
+  ],
+  "active_tasks_contains": [
+    "capture the preview screenshots",
+    "docs/ion-runbook"
+  ],
+  "constraints_contains": [],
+  "next_step_contains": [
+    "preview screenshots"
+  ],
+  "status": "ready_to_resume"
+}

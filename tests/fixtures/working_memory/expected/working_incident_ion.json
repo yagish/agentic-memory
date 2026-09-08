@@ -1,0 +1,20 @@
+{
+  "current_goal_contains": [
+    "debugging",
+    "500 spike",
+    "ion"
+  ],
+  "current_focus_contains": [
+    "REDIS_URL",
+    "preview",
+    "production"
+  ],
+  "active_tasks_contains": [
+    "compare REDIS_URL",
+    "curl -H"
+  ],
+  "next_step_contains": [
+    "compare REDIS_URL"
+  ],
+  "status": "in_progress"
+}

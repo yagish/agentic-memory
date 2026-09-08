@@ -7,7 +7,8 @@ Current runtime scope is intentionally small:
 - extract durable **facts**
 - extract **episodes** (episodic memory)
 - extract durable **procedures** (procedural memory)
-- retrieve **facts + episodes + procedures** during wake-up
+- extract session-scoped **working memory** snapshots
+- retrieve **working memory + facts + episodes + procedures** during wake-up
 
 Everything else from the older design was removed.
 
@@ -23,7 +24,7 @@ Everything else from the older design was removed.
 - Claude UserPromptSubmit hook adapter
 - searches memory on each prompt
 - deterministically answers from fact-only hits
-- cannot inject prompt text because Claude's hook contract only supports allow/block here
+- returns prompt enrichment with `hookSpecificOutput.additionalContext` when contextual memory exists
 
 ### 2. Pi integration
 `integrations/pi/extension.ts`
@@ -38,7 +39,7 @@ Everything else from the older design was removed.
 ### 3. Daemon
 `memory/daemon.py`
 - polls for unprocessed sessions
-- extracts facts, then episodes, then procedures
+- extracts facts, then episodes, then procedures, then working memory
 - marks sessions processed
 - `--once` forces one immediate extraction pass and skips the CPU gate
 - writes only `~/.memory/daemon.log`
@@ -55,7 +56,9 @@ Everything else from the older design was removed.
 - sessions view
 - facts view
 - episodes view
-- logs for daemon, facts, episodes, procedures
+- procedural-memory view
+- working-memory view
+- logs for daemon, facts, episodes, procedures, working memory
 
 ## Storage
 
@@ -64,6 +67,7 @@ Retained database tables:
 - `facts`
 - `episodic_memory`
 - `procedural_memory`
+- `working_memory`
 
 Dropped on bootstrap/migration:
 - `session_vecs`
@@ -74,7 +78,6 @@ Dropped on bootstrap/migration:
 - `cluster_memberships`
 - `summaries`
 - `compressed_memory`
-- `working_memory`
 - `compacted_sessions`
 - `response_cache`
 
@@ -85,6 +88,7 @@ Retained log files:
 - `~/.memory/facts.log`
 - `~/.memory/episodic.log`
 - `~/.memory/procedural.log`
+- `~/.memory/working_memory.log`
 
 Unit tests suppress file-log writes.
 
@@ -181,10 +185,10 @@ pytest -q
 
 ## Notes
 
-- `WakeUpContext` still keeps some old fields for compatibility, but runtime retrieval uses `episodic`, `facts`, and `procedural` memory.
+- `WakeUpContext` still keeps some old fields for compatibility, but runtime retrieval uses working memory plus `episodic`, `facts`, and `procedural` memory.
 - Model selection:
-  - `MEMORY_OLLAMA_MODEL` sets the model used for fact extraction, episodic extraction, and procedural extraction.
+  - `MEMORY_OLLAMA_MODEL` sets the model used for fact extraction, episodic extraction, procedural extraction, and working-memory extraction.
   - Recall is model-free apart from the singleton embedding model hosted by `memory/ingest_server.py`.
 - `memory.db.log_retrieval()` is a compatibility no-op because retrieval-event storage was removed.
 - `integrations/common.py` holds the shared save/retrieve policy used by Claude and pi.
-- `dashboard.html` supports click-row details for Sessions, Facts, and Episodes. Procedural storage exists in the runtime, but the dashboard UI has not been expanded for it yet.
+- `dashboard.html` supports click-row details for Sessions, Facts, Episodes, Procedural memory, and Working memory.

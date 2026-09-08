@@ -1,0 +1,3 @@
+User: I am deploying juniper-service, but I still need to compare preview and staging metrics first.
+Assistant: Keep --canary 10 in place and do not widen the rollout until the preview dashboard stays flat for 30 minutes.
+User: My next step is to compare the preview dashboard with staging and then decide whether to widen the rollout.

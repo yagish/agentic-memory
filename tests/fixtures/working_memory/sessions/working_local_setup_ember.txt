@@ -1,0 +1,3 @@
+User: I am still setting up ember-service locally.
+Assistant: You already pulled the repo, but you still need EMBER_API_KEY in .env.local before docker compose up ember-service works.
+User: Next add EMBER_API_KEY to .env.local and rerun docker compose up ember-service.

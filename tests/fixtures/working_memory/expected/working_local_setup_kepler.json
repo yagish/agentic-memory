@@ -1,0 +1,17 @@
+{
+  "current_goal_contains": [
+    "setting up kepler-service locally"
+  ],
+  "current_focus_contains": [
+    "KEPLER_API_KEY",
+    ".env.local"
+  ],
+  "active_tasks_contains": [
+    "KEPLER_API_KEY",
+    "docker compose up kepler-service"
+  ],
+  "next_step_contains": [
+    ".env.local"
+  ],
+  "status": "in_progress"
+}

@@ -1,0 +1,3 @@
+User: I am still setting up juniper-service locally.
+Assistant: You already pulled the repo, but you still need JUNIPER_API_KEY in .env.local before docker compose up juniper-service works.
+User: Next add JUNIPER_API_KEY to .env.local and rerun docker compose up juniper-service.

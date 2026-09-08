@@ -1,0 +1,20 @@
+{
+  "current_goal_contains": [
+    "release cutoff checklist",
+    "kepler"
+  ],
+  "current_focus_contains": [
+    "changelog",
+    "commit range",
+    "oncall owner"
+  ],
+  "active_tasks_contains": [
+    "final commit range",
+    "oncall owner",
+    "release/kepler-2026-09"
+  ],
+  "next_step_contains": [
+    "final commit range"
+  ],
+  "status": "ready_to_resume"
+}

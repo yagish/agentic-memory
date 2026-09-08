@@ -1,0 +1,3 @@
+User: I updated docs/runbooks/juniper.md for the release cutoff notes.
+Assistant: The draft is in place, but we still need the final screenshots from preview.
+User: Tomorrow I need to capture the preview screenshots and open the docs PR from branch docs/juniper-runbook.

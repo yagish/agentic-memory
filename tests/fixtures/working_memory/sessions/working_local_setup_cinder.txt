@@ -1,0 +1,3 @@
+User: I am still setting up cinder-service locally.
+Assistant: You already pulled the repo, but you still need CINDER_API_KEY in .env.local before docker compose up cinder-service works.
+User: Next add CINDER_API_KEY to .env.local and rerun docker compose up cinder-service.

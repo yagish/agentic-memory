@@ -1,0 +1,3 @@
+User: I am debugging the 500 spike for atlas-service in production.
+Assistant: The trace points at REDIS_URL mismatches between preview and production.
+User: Next compare REDIS_URL in the deploy workflow and rerun curl -H "x-debug: 1" https://atlas.internal/health after the config fix.

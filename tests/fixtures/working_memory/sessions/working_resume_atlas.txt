@@ -1,0 +1,3 @@
+User: We moved token validation into shared auth middleware for atlas-service.
+Assistant: The login redirect loop stopped reproducing locally.
+User: Next I need regression tests for refresh-token and expired-session flows before I call the auth middleware refactor done.
