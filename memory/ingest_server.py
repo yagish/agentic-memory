@@ -151,6 +151,7 @@ def post_recall(request: RecallRequest) -> dict:
             conn,
             prompt,
             include_working_memory=request.include_working_memory,
+            session_id=request.session_id,
         )
         return build_recall_response(prompt, context)
     except Exception as exc:

@@ -5,7 +5,9 @@
 #   2. extracts durable facts from the session
 #   3. extracts one episodic memory from the session
 #   4. extracts one procedural memory from the session
-#   5. marks the session processed
+#   5. extracts one working-memory snapshot from the session
+#   6. extracts one compacted session memory from the session
+#   7. marks the session processed
 #
 # Run:
 #   python3 memory/daemon.py        # runs forever
@@ -43,6 +45,10 @@ from memory.facts import extract_facts_from_session_text, normalize_extracted_fa
 from memory.logger import activity_log, error_log
 from memory.procedural import extract_procedure_from_session_text
 from memory.procedural_repository import save_extracted_procedure
+from memory.session_memory import extract_session_memory_from_session_text
+from memory.session_memory_repository import save_extracted_session_memory
+from memory.working_memory import extract_working_memory_from_session_text
+from memory.working_memory_repository import save_extracted_working_memory
 from memory.ollama import (
     start_ollama_if_needed as _start_ollama_if_needed,
     stop_ollama as _stop_ollama,
@@ -239,8 +245,101 @@ def _create_procedural_entry(conn, session: dict, text_sample: str | None = None
         return None
 
 
+
+def _log_working_memory_details(session_id: str, working_memory) -> None:
+    _daemon_log(
+        f"working memory extracted for {session_id}: goal={working_memory.current_goal} | next_step={working_memory.next_step} | status={working_memory.status}"
+    )
+    if getattr(working_memory, "active_tasks", None):
+        _daemon_log(f"working memory tasks for {session_id}: {'; '.join(working_memory.active_tasks)}")
+    if getattr(working_memory, "constraints", None):
+        _daemon_log(f"working memory constraints for {session_id}: {'; '.join(working_memory.constraints)}")
+
+
+
+def _create_working_memory_entry(conn, session: dict, text_sample: str | None = None):
+    """Generate and persist one working-memory snapshot for a session."""
+    session_id = session["session_id"]
+    if text_sample is None:
+        text_sample = _session_text_sample(session)
+    if not text_sample:
+        return None
+
+    try:
+        working_memory = extract_working_memory_from_session_text(
+            text_sample,
+            source="daemon",
+            session_id=session_id,
+        )
+        if working_memory is None:
+            _daemon_log(f"no working memory extracted for {session_id}")
+            return None
+        updated_at = session.get("updated_at") or datetime.now(timezone.utc).isoformat()
+        save_extracted_working_memory(
+            conn,
+            working_memory,
+            session_id=session_id,
+            updated_at=updated_at,
+            source="daemon",
+            embed_fn=embed,
+        )
+        activity_log("daemon", "working_memory", session=session_id, goal=working_memory.current_goal)
+        _log_working_memory_details(session_id, working_memory)
+        return working_memory
+    except Exception as exc:
+        error_log("daemon", f"working-memory creation failed for {session_id}: {exc}", exc=exc)
+        return None
+
+
+
+def _log_session_memory_details(session_id: str, session_memory) -> None:
+    _daemon_log(
+        f"session memory extracted for {session_id}: title={session_memory.title} | left_off_at={session_memory.left_off_at}"
+    )
+    if getattr(session_memory, "outcomes", None):
+        _daemon_log(f"session memory outcomes for {session_id}: {'; '.join(session_memory.outcomes)}")
+    if getattr(session_memory, "next_steps", None):
+        _daemon_log(f"session memory next steps for {session_id}: {'; '.join(session_memory.next_steps)}")
+
+
+
+def _create_session_memory_entry(conn, session: dict, text_sample: str | None = None):
+    """Generate and persist one compacted session memory for a session."""
+    session_id = session["session_id"]
+    if text_sample is None:
+        text_sample = _session_text_sample(session)
+    if not text_sample:
+        return None
+
+    try:
+        session_memory = extract_session_memory_from_session_text(
+            text_sample,
+            source="daemon",
+            session_id=session_id,
+        )
+        if session_memory is None:
+            _daemon_log(f"no session memory extracted for {session_id}")
+            return None
+        updated_at = session.get("updated_at") or datetime.now(timezone.utc).isoformat()
+        save_extracted_session_memory(
+            conn,
+            session_memory,
+            session_id=session_id,
+            updated_at=updated_at,
+            source="daemon",
+            embed_fn=embed,
+        )
+        activity_log("daemon", "session_memory", session=session_id, title=session_memory.title)
+        _log_session_memory_details(session_id, session_memory)
+        return session_memory
+    except Exception as exc:
+        error_log("daemon", f"session-memory creation failed for {session_id}: {exc}", exc=exc)
+        return None
+
+
+
 def _process_session(conn, session: dict) -> bool:
-    """Process one session through the facts/episodic/procedural pipeline."""
+    """Process one session through the structured memory pipeline."""
     session_id = session["session_id"]
     _daemon_log(f"processing session {session_id}")
 
@@ -248,6 +347,8 @@ def _process_session(conn, session: dict) -> bool:
     _extract_facts(conn, session, text_sample=text_sample)
     _create_episodic_entry(conn, session, text_sample=text_sample)
     _create_procedural_entry(conn, session, text_sample=text_sample)
+    _create_working_memory_entry(conn, session, text_sample=text_sample)
+    _create_session_memory_entry(conn, session, text_sample=text_sample)
 
     mark_session_processed(conn, session_id)
     activity_log("daemon", "processed", session=session_id)

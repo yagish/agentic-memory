@@ -2,7 +2,8 @@
 #
 # Runs before every user prompt. Searches memory and either:
 # - deterministically answers from retrieved facts, or
-# - allows the prompt through (Claude's hook contract cannot inject text here)
+# - enriches the prompt with additional context when related memory is found
+# - otherwise allows the prompt through unchanged
 #
 # Usage:
 #   python3 /path/to/integrations/claude/wake_up.py
@@ -65,18 +66,31 @@ def _log_info(msg: str) -> None:
     _append_log_line("info", msg)
 
 
-def _allow() -> None:
-    print(json.dumps({}))
+def _emit_hook_response(payload: dict) -> None:
+    _log_info("returning hook response=" + json.dumps(payload, ensure_ascii=False))
+    print(json.dumps(payload))
     sys.exit(0)
+
+
+def _allow() -> None:
+    _emit_hook_response({})
 
 
 def _respond_with_blocked_prompt(reason: str) -> None:
-    print(json.dumps({
+    _emit_hook_response({
         "decision": "block",
         "reason": reason.strip(),
         "suppressOriginalPrompt": True,
-    }))
-    sys.exit(0)
+    })
+
+
+def _respond_with_additional_context(additional_context: str) -> None:
+    _emit_hook_response({
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": additional_context,
+        }
+    })
 
 
 def _first_message_flag(session_id: str) -> str:
@@ -180,18 +194,44 @@ def _log_response_fact_lookup_details(response: dict) -> None:
 
 
 def _log_context_details(context) -> None:
+    if getattr(context, "working_mem", None):
+        _log_info("working_mem=" + json.dumps(context.working_mem, ensure_ascii=False))
     if context.episodic:
         _log_info("episodic=" + json.dumps(context.episodic, ensure_ascii=False))
     if context.procedural:
         _log_info("procedural=" + json.dumps(context.procedural, ensure_ascii=False))
+    if getattr(context, "session_memory", None):
+        _log_info("session_memory=" + json.dumps(context.session_memory, ensure_ascii=False))
 
 
 def _log_response_context_details(response: dict) -> None:
     context = response.get("context", {})
+    if context.get("working_mem"):
+        _log_info("working_mem=" + json.dumps(context["working_mem"], ensure_ascii=False))
     if context.get("episodic"):
         _log_info("episodic=" + json.dumps(context["episodic"], ensure_ascii=False))
     if context.get("procedural"):
         _log_info("procedural=" + json.dumps(context["procedural"], ensure_ascii=False))
+    if context.get("session_memory"):
+        _log_info("session_memory=" + json.dumps(context["session_memory"], ensure_ascii=False))
+
+
+def _compose_enriched_prompt(prompt: str, injection: str) -> str:
+    prompt = prompt.strip()
+    injection = injection.strip()
+    if not injection:
+        return prompt
+    if not prompt:
+        return injection
+    return f"{injection}\n\n[User prompt]\n{prompt}"
+
+
+def _log_prompt_enrichment(request: HookRequest, injection: str) -> None:
+    if not injection:
+        return
+    _log_info(f"prompt enrichment context for session={request.session_id}: {injection}")
+    enriched_prompt = _compose_enriched_prompt(request.prompt, injection)
+    _log_info("effective prompt to Claude=" + repr(enriched_prompt))
 
 
 def _log_retrieval_metrics(
@@ -213,6 +253,8 @@ def _log_retrieval_metrics(
             episodic_count=len(context.episodic),
             facts_count=len(context.facts),
             procedural_count=len(context.procedural),
+            session_memory_count=len(getattr(context, "session_memory", []) or []),
+            working_memory_count=1 if getattr(context, "working_mem", None) else 0,
             est_tokens=est_tokens,
         )
     except Exception:
@@ -277,16 +319,17 @@ def main() -> None:
 
         injection = str(server_response.get("injection", ""))
         if injection:
-            _log_info(f"wake-up context found but prompt injection is unavailable for this hook: {injection}")
+            _log_prompt_enrichment(request, injection)
             if conn is not None:
                 _log_retrieval_metrics(
                     conn,
                     tool_name="wake_up_context_found",
-                    action="context_found_allow",
+                    action="context_found_inject",
                     request=request,
                     context=type("Ctx", (), server_response.get("context", {}))(),
                     payload_text=injection,
                 )
+            _respond_with_additional_context(injection)
         else:
             _log_info("no wake-up memory found; allowing prompt through")
             if conn is not None:

@@ -23,20 +23,22 @@ class TestBuildInjection(unittest.TestCase):
         result = _build_injection(
             WakeUpContext(
                 {"id": "cs-1", "similarity": 0.98, "content": "Task: Fix auth middleware"},
-                {"id": "wm-1", "summary": "Current task is cleaning up auth middleware", "similarity": 0.88},
+                {"id": "wm-1", "current_goal": "Current task is cleaning up auth middleware", "current_focus": "Regression coverage", "active_tasks": ["Add regression coverage"], "next_step": "Write the regression coverage", "status": "ready_to_resume", "similarity": 0.88},
                 [{"id": "cs-2", "similarity": 0.83, "content": "Task: Add JWT refresh flow"}],
                 [{"id": "ep-1", "title": "Resolved auth bug", "abstract": "Fixed the login loop.", "similarity": 0.79}],
                 [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.97}],
                 [{"id": "proc-1", "title": "Deploy workflow", "summary": "Use this when deploying auth.", "steps": ["Build", "Ship"], "similarity": 0.86}],
+                session_memory=[{"id": "sm-1", "title": "Auth middleware refactor", "summary": "Moved token validation into shared middleware.", "left_off_at": "Regression coverage still needs to be written", "next_steps": ["Add regression coverage"], "similarity": 0.9}],
             )
         )
         self.assertTrue(result.startswith("[Memory context: "))
+        self.assertIn("Current working goal: Current task is cleaning up auth middleware.", result)
+        self.assertIn("Relevant prior session: Auth middleware refactor. Moved token validation into shared middleware.", result)
+        self.assertIn("Left off at: Regression coverage still needs to be written.", result)
         self.assertIn("Recent related episode: Resolved auth bug. Fixed the login loop.", result)
         self.assertIn("Relevant how-to pattern: Deploy workflow. Use this when deploying auth.", result)
         self.assertIn("Steps: Build; Ship.", result)
         self.assertIn("Remembered fact: user.name = Yash.", result)
-        self.assertNotIn("Relevant prior session", result)
-        self.assertNotIn("Current task context", result)
         self.assertNotIn("Related prior session", result)
 
 
@@ -124,7 +126,7 @@ class TestMainIntegration(unittest.TestCase):
             len("Your name is Yash.") // 4,
         )
 
-    def test_fact_hit_with_episodic_context_allows_prompt(self):
+    def test_context_hit_returns_additional_context_payload(self):
         result = self._run_main(
             prompt="continue fixing auth",
             server_response={
@@ -140,13 +142,57 @@ class TestMainIntegration(unittest.TestCase):
             first_message=False,
         )
 
-        self.assertEqual(json.loads(result["stdout"]), {})
+        self.assertEqual(
+            json.loads(result["stdout"]),
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": "[Memory context: foo]",
+                }
+            },
+        )
         result["log_retrieval"].assert_called_once_with(
             result["conn"],
             "wake_up_context_found",
             "continue fixing auth",
             unittest.mock.ANY,
         )
+
+    def test_logs_prompt_enrichment_and_effective_prompt_for_injected_context(self):
+        payload = json.dumps({"session_id": "test-sess", "prompt": "continue fixing auth"})
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        conn = MagicMock()
+
+        with patch("sys.stdin", io.StringIO(payload)), \
+             patch("sys.stdout", stdout), \
+             patch("sys.stderr", stderr), \
+             patch("sys.exit", side_effect=lambda code=0: (_ for _ in ()).throw(SystemExit(code))), \
+             patch.object(_wu, "DB_PATH", "/fake/test.db"), \
+             patch.object(_wu, "_open_connection", return_value=conn), \
+             patch.object(_wu, "_is_first_message", return_value=False), \
+             patch.object(_wu, "_recall_via_server", return_value={
+                 "action": "inject",
+                 "injection": "[Memory context: Recent related episode: Resolved auth bug. Fixed the login loop.]",
+                 "warnings": [],
+                 "context": {
+                     "facts": [],
+                     "episodic": [{"id": "ep-1", "title": "Resolved auth bug", "abstract": "Fixed the login loop.", "similarity": 0.79}],
+                     "procedural": [],
+                 },
+             }), \
+             patch.object(_wu, "log_retrieval"), \
+             patch.object(_wu, "activity_log"), \
+             patch.object(_wu, "_log_info") as log_info:
+            with self.assertRaises(SystemExit):
+                main()
+
+        logged_messages = [call.args[0] for call in log_info.call_args_list]
+        self.assertTrue(any("prompt enrichment context for session=test-sess:" in msg for msg in logged_messages))
+        self.assertTrue(any("Recent related episode: Resolved auth bug. Fixed the login loop." in msg for msg in logged_messages))
+        self.assertTrue(any("effective prompt to Claude=" in msg for msg in logged_messages))
+        self.assertTrue(any("returning hook response={\"hookSpecificOutput\": {\"hookEventName\": \"UserPromptSubmit\"" in msg for msg in logged_messages))
+        self.assertTrue(any("[User prompt]" in msg and "continue fixing auth" in msg for msg in logged_messages))
 
     def test_logs_fact_lookup_query_results_and_renderer_io(self):
         payload = json.dumps({"session_id": "test-sess", "prompt": "what is my name and where do i live?"})

@@ -35,6 +35,11 @@ _LOG_SOURCES: dict[str, dict[str, object]] = {
         "description": "Background extraction log",
         "paths": [os.path.expanduser("~/.memory/daemon.log")],
     },
+    "recall": {
+        "label": "Recall",
+        "description": "Recall server log",
+        "paths": [os.path.expanduser("~/.memory/ingest.log")],
+    },
     "wake_up": {
         "label": "Wake Up",
         "description": "Claude wake-up recall log",
@@ -54,6 +59,11 @@ _LOG_SOURCES: dict[str, dict[str, object]] = {
         "label": "Episodes",
         "description": "Episode extraction and retrieval log",
         "paths": [os.path.expanduser("~/.memory/episodic.log")],
+    },
+    "procedural": {
+        "label": "Procedural",
+        "description": "Procedural extraction log",
+        "paths": [os.path.expanduser("~/.memory/procedural.log")],
     },
 }
 
@@ -221,6 +231,7 @@ def get_services() -> dict:
     total_sessions = 0
     total_facts = 0
     total_episodes = 0
+    total_procedures = 0
 
     try:
         conn = open_db(DB_PATH)
@@ -228,6 +239,7 @@ def get_services() -> dict:
             total_sessions = conn.execute("SELECT COUNT(*) AS c FROM sessions").fetchone()["c"]
             total_facts = conn.execute("SELECT COUNT(*) AS c FROM facts").fetchone()["c"]
             total_episodes = conn.execute("SELECT COUNT(*) AS c FROM episodic_memory").fetchone()["c"]
+            total_procedures = conn.execute("SELECT COUNT(*) AS c FROM procedural_memory").fetchone()["c"]
         finally:
             conn.close()
     except Exception:
@@ -264,6 +276,7 @@ def get_services() -> dict:
             "total_sessions": total_sessions,
             "total_facts": total_facts,
             "total_episodes": total_episodes,
+            "total_procedures": total_procedures,
             "db_size_bytes": os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0,
         },
     }
@@ -482,6 +495,39 @@ def get_memory_episodes() -> dict:
     return {"episodes": rows, "episodic": rows, "total": len(rows)}
 
 
+@memory_router.get("/procedural")
+def get_memory_procedural() -> dict:
+    rows: list[dict] = []
+    try:
+        conn = open_db(DB_PATH)
+        try:
+            for row in conn.execute(
+                "SELECT id, session_id, title, summary, updated_at, details FROM procedural_memory ORDER BY updated_at DESC"
+            ).fetchall():
+                try:
+                    details = json.loads(row["details"] or "{}")
+                except Exception:
+                    details = {}
+                rows.append(
+                    {
+                        "id": row["id"],
+                        "session_id": row["session_id"],
+                        "title": row["title"],
+                        "summary": row["summary"],
+                        "updated_at": row["updated_at"],
+                        "steps": details.get("steps", []),
+                        "tools": details.get("tools", []),
+                        "trigger_phrases": details.get("trigger_phrases", []),
+                        "source": details.get("source", "procedural_extractor"),
+                    }
+                )
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return {"procedural": rows, "total": len(rows)}
+
+
 @ops_router.post("/ops/ollama/start")
 def start_ollama() -> dict:
     proc = start_ollama_if_needed()
@@ -501,41 +547,48 @@ def start_ollama() -> dict:
 def restart_recall_server() -> dict:
     script = _recall_server_script()
     command = [sys.executable, script]
+    plist = os.path.expanduser("~/Library/LaunchAgents/com.memory.ingest.plist")
+    pid = None
+    started_here = False
 
     try:
-        subprocess.run(["pkill", "-f", script], capture_output=True, text=True, timeout=5)
-    except Exception:
-        pass
-
-    time.sleep(0.25)
-
-    try:
-        proc = subprocess.Popen(
-            command,
-            cwd=PROJECT_ROOT,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        if os.path.exists(plist):
+            label = "com.memory.ingest"
+            subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"], capture_output=True, text=True, timeout=5)
+        else:
+            try:
+                subprocess.run(["pkill", "-f", script], capture_output=True, text=True, timeout=5)
+            except Exception:
+                pass
+            time.sleep(0.25)
+            proc = subprocess.Popen(
+                command,
+                cwd=PROJECT_ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            pid = proc.pid
+            started_here = True
     except Exception as exc:
         status = _check_recall_server()
         return {
             "ok": False,
-            "started_here": False,
-            "pid": None,
+            "started_here": started_here,
+            "pid": pid,
             "error": str(exc),
             **status,
             "restart_command": f"{sys.executable} memory/ingest_server.py",
         }
 
-    for _ in range(20):
+    for _ in range(32):
         time.sleep(0.25)
         status = _check_recall_server()
         if status.get("running"):
             return {
                 "ok": True,
-                "started_here": True,
-                "pid": proc.pid,
+                "started_here": started_here,
+                "pid": pid,
                 **status,
                 "restart_command": f"{sys.executable} memory/ingest_server.py",
             }
@@ -543,8 +596,8 @@ def restart_recall_server() -> dict:
     status = _check_recall_server()
     return {
         "ok": bool(status.get("running")),
-        "started_here": True,
-        "pid": proc.pid,
+        "started_here": started_here,
+        "pid": pid,
         **status,
         "restart_command": f"{sys.executable} memory/ingest_server.py",
     }

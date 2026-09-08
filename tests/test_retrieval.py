@@ -19,7 +19,7 @@ class TestBuildWakeUpInjection(unittest.TestCase):
         result = build_wake_up_injection(
             WakeUpContext(
                 {"id": "cs-1", "similarity": 0.98, "content": "Task: Fix auth middleware"},
-                {"id": "wm-1", "summary": "Current task is cleaning up auth middleware", "similarity": 0.88},
+                {"id": "wm-1", "current_goal": "Current task is cleaning up auth middleware", "current_focus": "Regression coverage", "active_tasks": ["Add regression coverage"], "next_step": "Write the regression coverage", "status": "ready_to_resume", "similarity": 0.88},
                 [{"id": "cs-2", "similarity": 0.83, "content": "Task: Add JWT refresh flow"}],
                 [{
                     "id": "ep-1",
@@ -32,9 +32,13 @@ class TestBuildWakeUpInjection(unittest.TestCase):
                 }],
                 [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.97}],
                 [{"id": "proc-1", "title": "Deploy service", "summary": "Use this when releasing the auth service.", "steps": ["Build the image", "Ship to staging"], "similarity": 0.86}],
+                session_memory=[{"id": "sm-1", "title": "Auth middleware refactor", "summary": "Moved token validation into shared middleware.", "left_off_at": "Regression coverage still needs to be written", "next_steps": ["Add regression coverage"], "similarity": 0.9}],
             )
         )
         self.assertTrue(result.startswith("[Memory context: "))
+        self.assertIn("Current working goal: Current task is cleaning up auth middleware.", result)
+        self.assertIn("Relevant prior session: Auth middleware refactor. Moved token validation into shared middleware.", result)
+        self.assertIn("Left off at: Regression coverage still needs to be written.", result)
         self.assertIn("Recent related episode: Resolved auth bug. Fixed the login loop.", result)
         self.assertIn("Decision: Move token validation into shared middleware.", result)
         self.assertIn("Outcome: Login loop stopped reproducing.", result)
@@ -42,8 +46,6 @@ class TestBuildWakeUpInjection(unittest.TestCase):
         self.assertIn("Relevant how-to pattern: Deploy service. Use this when releasing the auth service.", result)
         self.assertIn("Steps: Build the image; Ship to staging.", result)
         self.assertIn("Remembered fact: user.name = Yash.", result)
-        self.assertNotIn("Relevant prior session", result)
-        self.assertNotIn("Current task context", result)
         self.assertNotIn("Related prior session", result)
 
 
@@ -152,16 +154,70 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
         self.assertEqual([item["id"] for item in context.episodic], ["ep-1", "ep-2"])
         list_recent.assert_called_once_with(conn, limit=5, source="wake_up_recent")
 
+    def test_retrieval_fetches_working_and_session_memory_when_prompt_requests_resume_context(self):
+        conn = MagicMock()
+
+        with patch("memory.retrieval.retrieve_working_memory", return_value={
+            "id": "wm-1",
+            "session_id": "session-123",
+            "current_goal": "Finish auth middleware refactor",
+            "current_focus": "Regression coverage for refresh-token flows",
+            "active_tasks": ["Add refresh-token regression tests"],
+            "constraints": ["Keep branch fix/auth-middleware"],
+            "next_step": "Write the refresh-token regression test",
+            "status": "ready_to_resume",
+            "similarity": 1.0,
+        }) as retrieve_working, \
+             patch("memory.retrieval.retrieve_episodic_memories", return_value=[]), \
+             patch("memory.retrieval.search_facts_semantic", return_value=[]), \
+             patch("memory.retrieval.retrieve_procedural_memories", return_value=[]), \
+             patch("memory.retrieval.retrieve_session_memories", return_value=[
+                 {
+                     "id": "sm-1",
+                     "session_id": "session-old",
+                     "title": "Auth middleware refactor",
+                     "summary": "Moved token validation into shared middleware and fixed the login redirect loop locally.",
+                     "left_off_at": "Regression coverage is still missing for refresh-token and expired-session flows",
+                     "next_steps": ["Add regression coverage"],
+                     "similarity": 0.91,
+                 }
+             ]) as retrieve_session:
+            context = retrieve_wake_up_context(
+                conn,
+                "pick up where i left off on the auth middleware work",
+                include_working_memory=False,
+                session_id="session-123",
+                embed_fn=lambda prompt: [0.1, 0.2],
+            )
+
+        self.assertIsNotNone(context.working_mem)
+        self.assertEqual(context.working_mem["id"], "wm-1")
+        self.assertEqual([item["id"] for item in context.session_memory], ["sm-1"])
+        retrieve_working.assert_called_once_with(conn, session_id="session-123", source="wake_up")
+        retrieve_session.assert_called_once_with(
+            conn,
+            "pick up where i left off on the auth middleware work",
+            query_vector=[0.1, 0.2],
+            embed_fn=unittest.mock.ANY,
+            min_similarity=0.78,
+            limit=2,
+            source="wake_up",
+            exclude_session_id="session-123",
+        )
+
     def test_non_fatal_layer_errors_become_warnings(self):
         conn = MagicMock()
 
-        with patch("memory.retrieval.retrieve_episodic_memories", side_effect=RuntimeError("episodic boom")), \
+        with patch("memory.retrieval.retrieve_working_memory", side_effect=RuntimeError("working boom")), \
+             patch("memory.retrieval.retrieve_episodic_memories", side_effect=RuntimeError("episodic boom")), \
              patch("memory.retrieval.search_facts_semantic", side_effect=RuntimeError("facts boom")), \
-             patch("memory.retrieval.retrieve_procedural_memories", side_effect=RuntimeError("procedural boom")):
+             patch("memory.retrieval.retrieve_procedural_memories", side_effect=RuntimeError("procedural boom")), \
+             patch("memory.retrieval.retrieve_session_memories", side_effect=RuntimeError("session boom")):
             context = retrieve_wake_up_context(
                 conn,
-                "how do i deploy?",
+                "pick up where i left off and how do i deploy?",
                 include_working_memory=True,
+                session_id="session-123",
                 embed_fn=lambda prompt: [0.1],
             )
 
@@ -171,9 +227,10 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
         self.assertEqual(context.episodic, [])
         self.assertEqual(context.facts, [])
         self.assertEqual(context.procedural, [])
+        self.assertEqual(context.session_memory, [])
         self.assertEqual(
             [warning.stage for warning in context.warnings],
-            ["episodic", "facts", "procedural"],
+            ["working_memory", "episodic", "facts", "procedural", "session_memory"],
         )
 
 

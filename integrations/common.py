@@ -44,6 +44,7 @@ def empty_wake_up_context() -> WakeUpContext:
         episodic=[],
         facts=[],
         procedural=[],
+        session_memory=[],
         warnings=[],
     )
 
@@ -92,10 +93,11 @@ def retrieve_prompt_memory(
     prompt: str,
     *,
     include_working_memory: bool,
+    session_id: str | None = None,
     embed_fn=None,
 ) -> WakeUpContext:
     """Fetch memory context for one prompt through the shared retrieval seam."""
-    kwargs = {"include_working_memory": include_working_memory}
+    kwargs = {"include_working_memory": include_working_memory, "session_id": session_id}
     if embed_fn is not None:
         kwargs["embed_fn"] = embed_fn
     return retrieve_wake_up_context(conn, prompt, **kwargs)
@@ -103,7 +105,10 @@ def retrieve_prompt_memory(
 
 def decide_prompt_memory_action(prompt: str, context: WakeUpContext) -> RecallOutcome:
     """Decide whether memory should answer directly or enrich the next turn."""
-    if context.facts and not context.episodic:
+    has_contextual_memory = bool(
+        context.working_mem or context.episodic or context.procedural or context.session_memory
+    )
+    if context.facts and not has_contextual_memory:
         answer = render_fact_answer(prompt, [str(fact.get("content", "")) for fact in context.facts])
         if answer:
             return RecallOutcome(context=context, answer=answer)
@@ -121,11 +126,15 @@ def build_recall_response(prompt: str, context: WakeUpContext) -> dict:
         "facts_count": len(context.facts),
         "episodic_count": len(context.episodic),
         "procedural_count": len(context.procedural),
+        "session_memory_count": len(context.session_memory),
+        "working_memory_count": 1 if context.working_mem else 0,
         "warnings": [warning.__dict__ for warning in context.warnings],
         "context": {
             "facts": context.facts,
             "episodic": context.episodic,
             "procedural": context.procedural,
+            "session_memory": context.session_memory,
+            "working_mem": context.working_mem,
         },
     }
     if outcome.answer:

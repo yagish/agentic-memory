@@ -18,8 +18,11 @@ from memory.db import (
     search_episodic_semantic,
     search_facts_semantic,
     search_procedural_semantic,
+    search_session_memory_semantic,
     semantic_search,
     upsert_session,
+    upsert_session_memory,
+    upsert_working_memory,
 )
 from memory.vectors import embed
 from scripts.migrate_facts_semantic_text import migrate_fact_schema
@@ -47,8 +50,7 @@ class TestConnectionBootstrapSplit(unittest.TestCase):
                     row[0]
                     for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
                 }
-                self.assertTrue({"sessions", "facts", "episodic_memory", "procedural_memory"}.issubset(tables))
-                self.assertTrue({"sessions", "facts", "episodic_memory", "procedural_memory"}.issubset(tables))
+                self.assertTrue({"sessions", "facts", "episodic_memory", "procedural_memory", "working_memory", "session_memory"}.issubset(tables))
             finally:
                 conn.close()
         finally:
@@ -260,6 +262,61 @@ class TestFactAndEpisodeStorage(unittest.TestCase):
         )
         results = search_procedural_semantic(self.conn, embed("how do i deploy the web service"), limit=2)
         self.assertEqual(results[0]["title"], "Web deploy workflow")
+
+    def test_working_memory_upsert_replaces_existing_session_snapshot(self):
+        first_id = upsert_working_memory(
+            self.conn,
+            session_id="s1",
+            current_goal="Finish auth middleware refactor",
+            current_focus="Regression coverage",
+            next_step="Write refresh-token tests",
+            status="in_progress",
+            updated_at="2026-01-01T00:00:00Z",
+            details={"active_tasks": ["Add refresh-token tests"]},
+            embedding=[1.0, 0.0],
+        )
+        second_id = upsert_working_memory(
+            self.conn,
+            session_id="s1",
+            current_goal="Finish auth middleware refactor",
+            current_focus="Expired-session coverage",
+            next_step="Write expired-session tests",
+            status="ready_to_resume",
+            updated_at="2026-01-01T00:05:00Z",
+            details={"active_tasks": ["Add expired-session tests"]},
+            embedding=[1.0, 0.0],
+        )
+
+        self.assertEqual(first_id, second_id)
+        rows = self.conn.execute("SELECT id, current_focus, status FROM working_memory WHERE session_id = ?", ("s1",)).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["current_focus"], "Expired-session coverage")
+        self.assertEqual(rows[0]["status"], "ready_to_resume")
+
+    def test_semantic_session_memory_search(self):
+        upsert_session_memory(
+            self.conn,
+            session_id="s1",
+            title="Auth middleware refactor",
+            summary="Moved token validation into shared middleware and fixed the login redirect loop locally.",
+            left_off_at="Regression coverage is still missing for refresh-token and expired-session flows",
+            updated_at="2026-01-01T00:00:00Z",
+            details={"next_steps": ["Add regression coverage"]},
+            embedding=embed("auth middleware refactor login redirect loop refresh token expired session"),
+        )
+        upsert_session_memory(
+            self.conn,
+            session_id="s2",
+            title="Billing copy update",
+            summary="Adjusted invoice wording for support.",
+            left_off_at="Awaiting support review",
+            updated_at="2026-01-02T00:00:00Z",
+            details={"next_steps": ["Wait for support review"]},
+            embedding=embed("billing copy invoice wording support review"),
+        )
+
+        results = search_session_memory_semantic(self.conn, embed("pick up auth middleware refactor where I left off"), limit=2)
+        self.assertEqual(results[0]["title"], "Auth middleware refactor")
 
 
 class TestCompatibilityNoops(unittest.TestCase):

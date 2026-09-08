@@ -33,6 +33,8 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
 #panels{flex:1;overflow-y:auto}.panel{padding:20px 24px}
 .tiles-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px}
 .tile{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px}
+.tile.tile-clickable{cursor:pointer;transition:border-color .1s,transform .1s}
+.tile.tile-clickable:hover{border-color:var(--accent);transform:translateY(-1px)}
 .tile-value{font-size:22px;font-weight:600}.tile-label{font-size:10px;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:.07em}
 .tile-sub{font-size:12px;color:var(--muted);margin-top:6px;word-break:break-word}
 .tile-actions{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap}
@@ -80,6 +82,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
       <span class="svc-dot" id="dot-daemon"></span>
       <div class="svc-body"><div class="svc-name">Daemon</div><div class="svc-desc">Background extraction log</div></div>
     </div>
+    <div class="svc-item" id="svc-recall" onclick="selectLog('recall')">
+      <span class="svc-dot" id="dot-recall-log"></span>
+      <div class="svc-body"><div class="svc-name">Recall</div><div class="svc-desc">Recall server log</div></div>
+    </div>
     <div class="svc-item" id="svc-wake_up" onclick="selectLog('wake_up')">
       <span class="svc-dot" id="dot-wake_up"></span>
       <div class="svc-body"><div class="svc-name">Wake Up</div><div class="svc-desc">Claude wake-up recall log</div></div>
@@ -96,6 +102,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
       <span class="svc-dot" id="dot-episodic"></span>
       <div class="svc-body"><div class="svc-name">Episodes</div><div class="svc-desc">Episode extraction and retrieval log</div></div>
     </div>
+    <div class="svc-item" id="svc-procedural" onclick="selectLog('procedural')">
+      <span class="svc-dot" id="dot-procedural"></span>
+      <div class="svc-body"><div class="svc-name">Procedural</div><div class="svc-desc">Procedural extraction log</div></div>
+    </div>
     <div class="sidebar-note" id="sidebar-note">Refreshing every 30s</div>
   </aside>
 
@@ -105,6 +115,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
       <button class="tab-btn" data-tab="sessions" onclick="switchTab('sessions')">Sessions</button>
       <button class="tab-btn" data-tab="facts" onclick="switchTab('facts')">Facts</button>
       <button class="tab-btn" data-tab="episodes" onclick="switchTab('episodes')">Episodes</button>
+      <button class="tab-btn" data-tab="procedural" onclick="switchTab('procedural')">Procedural</button>
       <span class="tab-spacer"></span>
       <span class="tab-updated" id="tab-updated"></span>
     </nav>
@@ -121,9 +132,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
     <div id="panels">
       <div class="panel" id="panel-overview">
         <div class="tiles-row">
-          <div class="tile"><div class="tile-value" id="t-sessions">—</div><div class="tile-label">Sessions</div></div>
-          <div class="tile"><div class="tile-value" id="t-facts">—</div><div class="tile-label">Facts</div></div>
-          <div class="tile"><div class="tile-value" id="t-episodes">—</div><div class="tile-label">Episodes</div></div>
+          <div class="tile tile-clickable" onclick="switchTab('sessions')"><div class="tile-value" id="t-sessions">—</div><div class="tile-label">Sessions</div></div>
+          <div class="tile tile-clickable" onclick="switchTab('facts')"><div class="tile-value" id="t-facts">—</div><div class="tile-label">Facts</div></div>
+          <div class="tile tile-clickable" onclick="switchTab('episodes')"><div class="tile-value" id="t-episodes">—</div><div class="tile-label">Episodes</div></div>
+          <div class="tile tile-clickable" onclick="switchTab('procedural')"><div class="tile-value" id="t-procedural">—</div><div class="tile-label">Procedural</div></div>
           <div class="tile"><div class="tile-value" id="t-dbsize">—</div><div class="tile-label">DB Size</div></div>
           <div class="tile">
             <div class="tile-value" id="t-recall">—</div>
@@ -155,7 +167,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
           <div class="chart-card"><div class="chart-title">Episodes per Day</div><div id="ch-episodes"></div></div>
         </div>
         <div class="overview-copy">
-          This dashboard is intentionally trimmed down. The database keeps only <strong>sessions</strong>, <strong>facts</strong>, and <strong>episodes</strong>. The visible logs are <strong>daemon</strong>, <strong>wake up</strong>, <strong>save hook</strong>, <strong>facts</strong>, and <strong>episodes</strong>. Recall server status is shown above, and the <strong>Restart Recall Server</strong> button restarts the singleton embedding/recall process. Ollama status is also shown for extraction-time model work, and the <strong>Start Ollama</strong> button calls the local dashboard endpoint if the server is down. Click any row in a database tab to inspect its full details in the panel below the table.
+          This dashboard is intentionally trimmed down. The database keeps only <strong>sessions</strong>, <strong>facts</strong>, <strong>episodes</strong>, and <strong>procedural memory</strong>. The visible logs are <strong>daemon</strong>, <strong>recall</strong>, <strong>wake up</strong>, <strong>save hook</strong>, <strong>facts</strong>, <strong>episodes</strong>, and <strong>procedural</strong>. Recall server status is shown above, and the <strong>Restart Recall Server</strong> button restarts the singleton embedding/recall process. Ollama status is also shown for extraction-time model work, and the <strong>Start Ollama</strong> button calls the local dashboard endpoint if the server is down. Click any overview count tile to jump to that memory tab, or click any row in a database tab to inspect its full details in the panel below the table.
         </div>
       </div>
 
@@ -197,6 +209,19 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
           <div class="detail-body" id="episode-detail-body"></div>
         </div>
       </div>
+
+      <div class="panel" id="panel-procedural" hidden>
+        <input class="tbl-search" id="srch-procedural" type="text" placeholder="Filter procedural memory…" oninput="renderProcedural()">
+        <table class="dtbl">
+          <thead><tr><th>Updated</th><th>Title</th><th>Session</th><th>Summary</th></tr></thead>
+          <tbody id="tb-procedural"><tr><td colspan="4" class="tbl-loading">Loading…</td></tr></tbody>
+        </table>
+        <div class="tbl-meta" id="meta-procedural"></div>
+        <div class="detail-box" id="procedural-detail-box">
+          <div class="detail-head"><span class="detail-title" id="procedural-detail-title"></span><button class="detail-close" onclick="hideDetail('procedural-detail-box')">✕</button></div>
+          <div class="detail-body" id="procedural-detail-body"></div>
+        </div>
+      </div>
     </div>
   </main>
 </div>
@@ -212,12 +237,15 @@ let _activeTab = 'overview';
 let _rawSessions = [];
 let _rawFacts = [];
 let _rawEpisodes = [];
+let _rawProcedural = [];
 let _filteredSessions = [];
 let _filteredFacts = [];
 let _filteredEpisodes = [];
+let _filteredProcedural = [];
 let _selectedSessionId = null;
 let _selectedFactId = null;
 let _selectedEpisodeId = null;
+let _selectedProceduralId = null;
 
 document.addEventListener('DOMContentLoaded', () => {
   loadServices();
@@ -231,13 +259,14 @@ async function loadServices() {
     if (!r.ok) return;
     const d = await r.json();
     const logs = d.logs || [];
-    logs.forEach(log => setDot(log.name, !!log.exists));
+    logs.forEach(log => setDot(log.name === 'recall' ? 'recall-log' : log.name, !!log.exists));
     const mem = d.memory || {};
     const recall = d.recall || {};
     const ollama = d.ollama || {};
     set('t-sessions', fmt(mem.total_sessions));
     set('t-facts', fmt(mem.total_facts));
     set('t-episodes', fmt(mem.total_episodes));
+    set('t-procedural', fmt(mem.total_procedures));
     set('t-dbsize', fmtBytes(mem.db_size_bytes));
     setDot('recall', !!recall.running);
     set('t-recall', recall.running ? (recall.status === 'degraded' ? 'Degraded' : 'Running') : 'Stopped');
@@ -322,6 +351,7 @@ function switchTab(name) {
   if (name === 'sessions') loadSessions();
   if (name === 'facts') loadFacts();
   if (name === 'episodes') loadEpisodes();
+  if (name === 'procedural') loadProcedural();
 }
 
 function selectLog(name) {
@@ -565,6 +595,47 @@ function showEpisodeDetail(index) {
   box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
+async function loadProcedural() {
+  try {
+    const r = await fetch(BASE + '/memory/procedural');
+    if (!r.ok) return;
+    const d = await r.json();
+    _rawProcedural = d.procedural || [];
+    renderProcedural();
+  } catch (_) {}
+}
+
+function renderProcedural() {
+  const q = (document.getElementById('srch-procedural')?.value || '').toLowerCase();
+  _filteredProcedural = q ? _rawProcedural.filter(row =>
+    (row.title || '').toLowerCase().includes(q) ||
+    (row.summary || '').toLowerCase().includes(q) ||
+    (row.session_id || '').toLowerCase().includes(q) ||
+    (row.tools || []).join(' ').toLowerCase().includes(q) ||
+    (row.trigger_phrases || []).join(' ').toLowerCase().includes(q)
+  ) : _rawProcedural.slice();
+  const tb = document.getElementById('tb-procedural');
+  if (!tb) return;
+  tb.innerHTML = _filteredProcedural.length
+    ? _filteredProcedural.map((row, i) => `<tr class="clickable-row ${row.id === _selectedProceduralId ? 'active' : ''}" onclick="showProceduralDetail(${i})"><td style="white-space:nowrap">${fmtDate(row.updated_at)}</td><td>${esc(row.title || '')}</td><td class="mono" title="${esc(row.session_id || '')}">${esc(shortId(row.session_id || ''))}</td><td>${esc(trunc(row.summary || '', 180))}</td></tr>`).join('')
+    : '<tr><td colspan="4" class="tbl-loading">No procedural memory found.</td></tr>';
+  set('meta-procedural', `${_filteredProcedural.length} of ${_rawProcedural.length} procedures`);
+}
+
+function showProceduralDetail(index) {
+  const row = _filteredProcedural[index];
+  if (!row) return;
+  _selectedProceduralId = row.id;
+  renderProcedural();
+  const box = document.getElementById('procedural-detail-box');
+  const title = document.getElementById('procedural-detail-title');
+  const body = document.getElementById('procedural-detail-body');
+  title.textContent = `${row.title || 'Procedure'} — ${fmtDate(row.updated_at)}`;
+  body.innerHTML = `<div class="detail-grid"><div class="detail-label">Procedure ID</div><div class="detail-value mono">${esc(row.id || '')}</div><div class="detail-label">Session ID</div><div class="detail-value mono">${esc(row.session_id || '')}</div><div class="detail-label">Source</div><div class="detail-value">${esc(row.source || '—')}</div><div class="detail-label">Updated</div><div class="detail-value">${esc(fmtDate(row.updated_at))}</div><div class="detail-label">Summary</div><div class="detail-value">${esc(row.summary || '')}</div><div class="detail-label">Steps</div><div class="detail-value">${renderList(row.steps)}</div><div class="detail-label">Trigger Phrases</div><div class="detail-value">${renderList(row.trigger_phrases)}</div><div class="detail-label">Tools</div><div class="detail-value">${renderList(row.tools)}</div></div>`;
+  box.style.display = 'block';
+  box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
 function renderList(items) {
   if (!items || !items.length) return '—';
   return `<ul style="margin:0;padding-left:18px">${items.map(item => `<li>${esc(item)}</li>`).join('')}</ul>`;
@@ -582,7 +653,7 @@ function esc(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt
 function fmt(n) { return n == null ? '—' : n.toLocaleString(); }
 function fmtBytes(b) { if (!b) return '—'; if (b >= 1073741824) return (b / 1073741824).toFixed(1) + ' GB'; if (b >= 1048576) return (b / 1048576).toFixed(1) + ' MB'; if (b >= 1024) return (b / 1024).toFixed(1) + ' KB'; return b + ' B'; }
 function fmtDate(iso) { if (!iso) return '—'; try { return new Date(iso).toLocaleString(undefined, { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }); } catch (_) { return String(iso).slice(0, 16); } }
-function svcLabel(s) { return { daemon:'Daemon', wake_up:'Wake Up', save_hook:'Save Hook', facts:'Facts', episodic:'Episodes' }[s] || s; }
+function svcLabel(s) { return { daemon:'Daemon', recall:'Recall', wake_up:'Wake Up', save_hook:'Save Hook', facts:'Facts', episodic:'Episodes', procedural:'Procedural' }[s] || s; }
 </script>
 </body>
 </html>

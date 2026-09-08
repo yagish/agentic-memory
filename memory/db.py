@@ -5,9 +5,11 @@ The retained persistent tables are:
 - facts
 - episodic_memory
 - procedural_memory
+- working_memory
+- session_memory
 
-Older storage concerns (chunks, retrievals, working memory, compaction,
-compression, clustering, response cache) were removed.
+Older storage concerns (chunks, retrievals, compaction, compression,
+clustering, response cache) were removed.
 """
 
 from __future__ import annotations
@@ -66,6 +68,29 @@ CREATE TABLE IF NOT EXISTS procedural_memory (
   updated_at  TEXT NOT NULL,
   details     TEXT,
   embedding   BLOB
+);
+
+CREATE TABLE IF NOT EXISTS working_memory (
+  id            TEXT PRIMARY KEY,
+  session_id    TEXT NOT NULL UNIQUE,
+  current_goal  TEXT NOT NULL,
+  current_focus TEXT NOT NULL,
+  next_step     TEXT NOT NULL,
+  status        TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  details       TEXT,
+  embedding     BLOB
+);
+
+CREATE TABLE IF NOT EXISTS session_memory (
+  id           TEXT PRIMARY KEY,
+  session_id   TEXT NOT NULL UNIQUE,
+  title        TEXT NOT NULL,
+  summary      TEXT NOT NULL,
+  left_off_at  TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  details      TEXT,
+  embedding    BLOB
 );
 """
 
@@ -183,7 +208,8 @@ def upsert_session(
           updated_at = excluded.updated_at,
           turn_count = excluded.turn_count,
           transcript = excluded.transcript,
-          metadata = excluded.metadata
+          metadata = excluded.metadata,
+          daemon_processed_at = NULL
         """,
         (
             session_id,
@@ -585,5 +611,160 @@ def search_procedural_semantic(conn: sqlite3.Connection, query_vector: list[floa
     for row in rows:
         distance = cosine_distance(query_vector, bytes(row["embedding"]))
         scored.append(_procedural_row_to_memory_row(row, similarity=1.0 - distance))
+    scored.sort(key=lambda item: item["similarity"], reverse=True)
+    return scored[:limit]
+
+
+def upsert_working_memory(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    current_goal: str,
+    current_focus: str,
+    next_step: str,
+    status: str,
+    updated_at: str | None = None,
+    details: dict | None = None,
+    embedding: list[float] | None = None,
+) -> str:
+    existing = conn.execute(
+        "SELECT id FROM working_memory WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    memory_id = existing["id"] if existing else str(uuid.uuid4())
+    conn.execute(
+        """
+        INSERT INTO working_memory (id, session_id, current_goal, current_focus, next_step, status, updated_at, details, embedding)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+          current_goal = excluded.current_goal,
+          current_focus = excluded.current_focus,
+          next_step = excluded.next_step,
+          status = excluded.status,
+          updated_at = excluded.updated_at,
+          details = excluded.details,
+          embedding = excluded.embedding
+        """,
+        (
+            memory_id,
+            session_id,
+            current_goal,
+            current_focus,
+            next_step,
+            status,
+            updated_at or _utc_now(),
+            json.dumps(details or {}),
+            pack_vector(embedding) if embedding is not None else None,
+        ),
+    )
+    conn.commit()
+    return memory_id
+
+
+def _working_memory_row_to_memory_row(row: sqlite3.Row, *, similarity: float | None = None) -> dict:
+    details = _json_loads(row["details"], {})
+    payload = {
+        "id": row["id"],
+        "session_id": row["session_id"],
+        "current_goal": row["current_goal"],
+        "current_focus": row["current_focus"],
+        "next_step": row["next_step"],
+        "status": row["status"],
+        "updated_at": row["updated_at"],
+        "active_tasks": details.get("active_tasks", []),
+        "constraints": details.get("constraints", []),
+        "confidence": details.get("confidence"),
+        "source_quote": details.get("source_quote"),
+        "source": details.get("source"),
+        "semantic_text": details.get("semantic_text", ""),
+    }
+    if similarity is not None:
+        payload["similarity"] = round(similarity, 4)
+    return payload
+
+
+def get_working_memory(conn: sqlite3.Connection, *, session_id: str) -> dict | None:
+    row = conn.execute(
+        "SELECT id, session_id, current_goal, current_focus, next_step, status, updated_at, details FROM working_memory WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return _working_memory_row_to_memory_row(row, similarity=1.0)
+
+
+def upsert_session_memory(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    title: str,
+    summary: str,
+    left_off_at: str,
+    updated_at: str | None = None,
+    details: dict | None = None,
+    embedding: list[float] | None = None,
+) -> str:
+    existing = conn.execute(
+        "SELECT id FROM session_memory WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    memory_id = existing["id"] if existing else str(uuid.uuid4())
+    conn.execute(
+        """
+        INSERT INTO session_memory (id, session_id, title, summary, left_off_at, updated_at, details, embedding)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+          title = excluded.title,
+          summary = excluded.summary,
+          left_off_at = excluded.left_off_at,
+          updated_at = excluded.updated_at,
+          details = excluded.details,
+          embedding = excluded.embedding
+        """,
+        (
+            memory_id,
+            session_id,
+            title,
+            summary,
+            left_off_at,
+            updated_at or _utc_now(),
+            json.dumps(details or {}),
+            pack_vector(embedding) if embedding is not None else None,
+        ),
+    )
+    conn.commit()
+    return memory_id
+
+
+def _session_memory_row_to_memory_row(row: sqlite3.Row, *, similarity: float | None = None) -> dict:
+    details = _json_loads(row["details"], {})
+    payload = {
+        "id": row["id"],
+        "session_id": row["session_id"],
+        "title": row["title"],
+        "summary": row["summary"],
+        "left_off_at": row["left_off_at"],
+        "updated_at": row["updated_at"],
+        "what_was_tried": details.get("what_was_tried", []),
+        "outcomes": details.get("outcomes", []),
+        "next_steps": details.get("next_steps", []),
+        "confidence": details.get("confidence"),
+        "source_quote": details.get("source_quote"),
+        "source": details.get("source"),
+        "semantic_text": details.get("semantic_text", ""),
+    }
+    if similarity is not None:
+        payload["similarity"] = round(similarity, 4)
+    return payload
+
+
+def search_session_memory_semantic(conn: sqlite3.Connection, query_vector: list[float], limit: int = 2) -> list[dict]:
+    rows = conn.execute(
+        "SELECT id, session_id, title, summary, left_off_at, updated_at, details, embedding FROM session_memory WHERE embedding IS NOT NULL"
+    ).fetchall()
+    scored: list[dict] = []
+    for row in rows:
+        distance = cosine_distance(query_vector, bytes(row["embedding"]))
+        scored.append(_session_memory_row_to_memory_row(row, similarity=1.0 - distance))
     scored.sort(key=lambda item: item["similarity"], reverse=True)
     return scored[:limit]

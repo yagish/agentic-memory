@@ -11,6 +11,7 @@ class TestDashboardServices(unittest.TestCase):
             MagicMock(fetchone=MagicMock(return_value={"c": 12})),
             MagicMock(fetchone=MagicMock(return_value={"c": 34})),
             MagicMock(fetchone=MagicMock(return_value={"c": 5})),
+            MagicMock(fetchone=MagicMock(return_value={"c": 7})),
         ]
 
         with patch.object(dashboard_server, "_check_daemon", return_value=(True, 4321)), \
@@ -47,6 +48,7 @@ class TestDashboardServices(unittest.TestCase):
         self.assertEqual(payload["memory"]["total_sessions"], 12)
         self.assertEqual(payload["memory"]["total_facts"], 34)
         self.assertEqual(payload["memory"]["total_episodes"], 5)
+        self.assertEqual(payload["memory"]["total_procedures"], 7)
         conn.close.assert_called_once()
 
     def test_start_ollama_reports_running_state_after_attempt(self):
@@ -70,8 +72,8 @@ class TestDashboardServices(unittest.TestCase):
         proc = MagicMock(pid=9876)
         with patch.object(dashboard_server.subprocess, "run", return_value=MagicMock(returncode=0)), \
              patch.object(dashboard_server.subprocess, "Popen", return_value=proc), \
+             patch("memory.dashboard_server.os.path.exists", return_value=False), \
              patch.object(dashboard_server, "_check_recall_server", side_effect=[
-                 {"running": False, "status": "stopped", "port": 7747, "embed_model_ready": False, "embed_model_error": ""},
                  {"running": True, "status": "running", "port": 7747, "embed_model_ready": True, "embed_model_error": ""},
              ]):
             payload = dashboard_server.restart_recall_server()
@@ -80,6 +82,7 @@ class TestDashboardServices(unittest.TestCase):
         self.assertEqual(payload["running"], True)
         self.assertEqual(payload["status"], "running")
         self.assertEqual(payload["pid"], 9876)
+        self.assertEqual(payload["started_here"], True)
         self.assertEqual(payload["port"], 7747)
         self.assertEqual(payload["embed_model_ready"], True)
         self.assertIn("memory/ingest_server.py", payload["restart_command"])
@@ -93,6 +96,11 @@ class TestDashboardHtml(unittest.TestCase):
         self.assertIn("id=\"t-recall-port\"", html)
         self.assertIn("id=\"t-recall-embed\"", html)
         self.assertIn("id=\"svc-desc-recall\"", html)
+        self.assertIn("id=\"svc-recall\"", html)
+        self.assertIn("id=\"panel-procedural\"", html)
+        self.assertIn("id=\"tb-procedural\"", html)
+        self.assertIn("id=\"t-procedural\"", html)
+        self.assertIn("switchTab('procedural')", html)
         self.assertIn("Start Ollama", html)
         self.assertIn("id=\"t-ollama\"", html)
         self.assertIn("id=\"t-ollama-default-model\"", html)

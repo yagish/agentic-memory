@@ -1,7 +1,8 @@
 """Canonical validated memory contracts.
 
-The system currently persists facts, episodic memories, and procedural
-memories behind strict Pydantic contracts.
+The system currently persists facts, episodic memories, procedural
+memories, working memories, and compacted session memories behind strict
+Pydantic contracts.
 """
 
 from __future__ import annotations
@@ -9,6 +10,9 @@ from __future__ import annotations
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+_WORKING_MEMORY_STATUSES = {"in_progress", "blocked", "ready_to_resume", "done"}
 
 
 def _normalize_identifier(value: str) -> str:
@@ -38,6 +42,13 @@ def _normalize_text_list(value: list[str] | tuple[str, ...] | None) -> tuple[str
             continue
         deduped.append(normalized)
     return tuple(deduped)
+
+
+def _normalize_working_status(value: str) -> str:
+    normalized = _normalize_identifier(str(value))
+    if normalized not in _WORKING_MEMORY_STATUSES:
+        raise ValueError(f"invalid working-memory status: {value}")
+    return normalized
 
 
 class ExtractedFact(BaseModel):
@@ -204,4 +215,118 @@ class ProceduralMemory(BaseModel):
     @field_validator("steps", "trigger_phrases", "tools", mode="before")
     @classmethod
     def _normalize_procedural_memory_lists(cls, value: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+        return _normalize_text_list(value)
+
+
+class ExtractedWorkingMemory(BaseModel):
+    """Current temporary active context emitted by the extractor."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    current_goal: str = Field(min_length=1, max_length=300)
+    current_focus: str = Field(min_length=1, max_length=300)
+    active_tasks: tuple[str, ...] = Field(default=(), min_length=1)
+    constraints: tuple[str, ...] = ()
+    next_step: str = Field(min_length=1, max_length=300)
+    status: str = Field(min_length=1)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    source_quote: str | None = None
+
+    @field_validator("current_goal", "current_focus", "next_step", "source_quote", mode="before")
+    @classmethod
+    def _strip_working_text_fields(cls, value: str | None) -> str | None:
+        return _strip_text(value)
+
+    @field_validator("active_tasks", "constraints", mode="before")
+    @classmethod
+    def _normalize_working_lists(cls, value: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+        return _normalize_text_list(value)
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _normalize_working_status_field(cls, value: str) -> str:
+        return _normalize_working_status(value)
+
+
+class WorkingMemory(BaseModel):
+    """A session-scoped working memory stored with provenance."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    current_goal: str = Field(min_length=1, max_length=300)
+    current_focus: str = Field(min_length=1, max_length=300)
+    active_tasks: tuple[str, ...] = Field(default=(), min_length=1)
+    constraints: tuple[str, ...] = ()
+    next_step: str = Field(min_length=1, max_length=300)
+    status: str = Field(min_length=1)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    source_quote: str | None = None
+    source_session_id: str = Field(min_length=1)
+    updated_at: datetime
+
+    @field_validator("current_goal", "current_focus", "next_step", "source_quote", "source_session_id", mode="before")
+    @classmethod
+    def _strip_working_memory_text_fields(cls, value: str | None) -> str | None:
+        return _strip_text(value)
+
+    @field_validator("active_tasks", "constraints", mode="before")
+    @classmethod
+    def _normalize_working_memory_lists(cls, value: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+        return _normalize_text_list(value)
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _normalize_working_memory_status_field(cls, value: str) -> str:
+        return _normalize_working_status(value)
+
+
+class ExtractedSessionMemory(BaseModel):
+    """One compacted session handoff emitted by the extractor."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    title: str = Field(min_length=1, max_length=200)
+    summary: str = Field(min_length=1, max_length=600)
+    what_was_tried: tuple[str, ...] = ()
+    outcomes: tuple[str, ...] = ()
+    left_off_at: str = Field(min_length=1, max_length=300)
+    next_steps: tuple[str, ...] = ()
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    source_quote: str | None = None
+
+    @field_validator("title", "summary", "left_off_at", "source_quote", mode="before")
+    @classmethod
+    def _strip_session_memory_text_fields(cls, value: str | None) -> str | None:
+        return _strip_text(value)
+
+    @field_validator("what_was_tried", "outcomes", "next_steps", mode="before")
+    @classmethod
+    def _normalize_session_memory_lists(cls, value: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+        return _normalize_text_list(value)
+
+
+class SessionMemory(BaseModel):
+    """A compacted session memory stored with provenance."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    title: str = Field(min_length=1, max_length=200)
+    summary: str = Field(min_length=1, max_length=600)
+    what_was_tried: tuple[str, ...] = ()
+    outcomes: tuple[str, ...] = ()
+    left_off_at: str = Field(min_length=1, max_length=300)
+    next_steps: tuple[str, ...] = ()
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    source_quote: str | None = None
+    source_session_id: str = Field(min_length=1)
+    updated_at: datetime
+
+    @field_validator("title", "summary", "left_off_at", "source_quote", "source_session_id", mode="before")
+    @classmethod
+    def _strip_stored_session_memory_text_fields(cls, value: str | None) -> str | None:
+        return _strip_text(value)
+
+    @field_validator("what_was_tried", "outcomes", "next_steps", mode="before")
+    @classmethod
+    def _normalize_stored_session_memory_lists(cls, value: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
         return _normalize_text_list(value)
