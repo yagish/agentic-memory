@@ -8,7 +8,8 @@ Current runtime scope is intentionally small:
 - extract **episodes** (episodic memory)
 - extract durable **procedures** (procedural memory)
 - extract session-scoped **working memory** snapshots
-- retrieve **working memory + facts + episodes + procedures** during wake-up
+- extract compacted **session memory** handoffs
+- retrieve **working memory + session memory + facts + episodes + procedures** during wake-up
 
 Everything else from the older design was removed.
 
@@ -39,7 +40,7 @@ Everything else from the older design was removed.
 ### 3. Daemon
 `memory/daemon.py`
 - polls for unprocessed sessions
-- extracts facts, then episodes, then procedures, then working memory
+- extracts facts, then episodes, then procedures, then working memory, then session memory
 - marks sessions processed
 - `--once` forces one immediate extraction pass and skips the CPU gate
 - writes only `~/.memory/daemon.log`
@@ -58,7 +59,8 @@ Everything else from the older design was removed.
 - episodes view
 - procedural-memory view
 - working-memory view
-- logs for daemon, facts, episodes, procedures, working memory
+- session-memory view
+- logs for daemon, facts, episodes, procedures, working memory, session memory
 
 ## Storage
 
@@ -68,6 +70,7 @@ Retained database tables:
 - `episodic_memory`
 - `procedural_memory`
 - `working_memory`
+- `session_memory`
 
 Dropped on bootstrap/migration:
 - `session_vecs`
@@ -89,6 +92,7 @@ Retained log files:
 - `~/.memory/episodic.log`
 - `~/.memory/procedural.log`
 - `~/.memory/working_memory.log`
+- `~/.memory/session_memory.log`
 
 Unit tests suppress file-log writes.
 
@@ -185,10 +189,10 @@ pytest -q
 
 ## Notes
 
-- `WakeUpContext` still keeps some old fields for compatibility, but runtime retrieval uses working memory plus `episodic`, `facts`, and `procedural` memory.
+- `WakeUpContext` still keeps some old fields for compatibility, but runtime retrieval uses working memory, session memory, plus `episodic`, `facts`, and `procedural` memory.
 - Model selection:
-  - `MEMORY_OLLAMA_MODEL` sets the model used for fact extraction, episodic extraction, procedural extraction, and working-memory extraction.
+  - `MEMORY_OLLAMA_MODEL` sets the model used for fact extraction, episodic extraction, procedural extraction, working-memory extraction, and session-memory extraction.
   - Recall is model-free apart from the singleton embedding model hosted by `memory/ingest_server.py`.
 - `memory.db.log_retrieval()` is a compatibility no-op because retrieval-event storage was removed.
 - `integrations/common.py` holds the shared save/retrieve policy used by Claude and pi.
-- `dashboard.html` supports click-row details for Sessions, Facts, Episodes, Procedural memory, and Working memory.
+- `dashboard.html` supports click-row details for Sessions, Facts, Episodes, Procedural memory, Working memory, and Session memory.

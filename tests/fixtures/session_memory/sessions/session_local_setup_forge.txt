@@ -1,0 +1,3 @@
+User: I was setting up forge-service locally.
+Assistant: docker compose up forge-service still needed FORGE_API_KEY in .env.local.
+User: Next session should add FORGE_API_KEY, rerun docker compose up forge-service, and verify the health endpoint.

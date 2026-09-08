@@ -1,0 +1,3 @@
+User: I was setting up delta-service locally.
+Assistant: docker compose up delta-service still needed DELTA_API_KEY in .env.local.
+User: Next session should add DELTA_API_KEY, rerun docker compose up delta-service, and verify the health endpoint.

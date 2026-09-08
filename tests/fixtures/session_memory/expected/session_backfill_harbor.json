@@ -1,0 +1,24 @@
+{
+  "title_contains": [
+    "harbor",
+    "backfill"
+  ],
+  "summary_contains": [
+    "python3 scripts/backfill.py --job harbor_rebuild",
+    "counts matched"
+  ],
+  "what_was_tried_contains": [
+    "python3 scripts/backfill.py --job harbor_rebuild in staging"
+  ],
+  "outcomes_contains": [
+    "counts matched",
+    "diff looked clean"
+  ],
+  "left_off_at_contains": [
+    "watch the error-rate dashboard"
+  ],
+  "next_steps_contains": [
+    "error-rate dashboard",
+    "widening the rollout"
+  ]
+}

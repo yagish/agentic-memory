@@ -1,0 +1,3 @@
+User: I was setting up ember-service locally.
+Assistant: docker compose up ember-service still needed EMBER_API_KEY in .env.local.
+User: Next session should add EMBER_API_KEY, rerun docker compose up ember-service, and verify the health endpoint.

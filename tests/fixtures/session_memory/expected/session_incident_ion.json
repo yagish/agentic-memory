@@ -1,0 +1,26 @@
+{
+  "title_contains": [
+    "500 spike",
+    "ion"
+  ],
+  "summary_contains": [
+    "REDIS_URL",
+    "preview",
+    "production"
+  ],
+  "what_was_tried_contains": [
+    "debugged the 500 spike",
+    "traces pointed"
+  ],
+  "outcomes_contains": [
+    "likely cause"
+  ],
+  "left_off_at_contains": [
+    "config fix",
+    "curl -H"
+  ],
+  "next_steps_contains": [
+    "config fix",
+    "curl -H"
+  ]
+}

@@ -13,6 +13,7 @@ class TestDashboardServices(unittest.TestCase):
             MagicMock(fetchone=MagicMock(return_value={"c": 5})),
             MagicMock(fetchone=MagicMock(return_value={"c": 7})),
             MagicMock(fetchone=MagicMock(return_value={"c": 3})),
+            MagicMock(fetchone=MagicMock(return_value={"c": 2})),
         ]
 
         with patch.object(dashboard_server, "_check_daemon", return_value=(True, 4321)), \
@@ -51,6 +52,7 @@ class TestDashboardServices(unittest.TestCase):
         self.assertEqual(payload["memory"]["total_episodes"], 5)
         self.assertEqual(payload["memory"]["total_procedures"], 7)
         self.assertEqual(payload["memory"]["total_working_memory"], 3)
+        self.assertEqual(payload["memory"]["total_session_memory"], 2)
         conn.close.assert_called_once()
 
     def test_start_ollama_reports_running_state_after_attempt(self):
@@ -108,6 +110,11 @@ class TestDashboardHtml(unittest.TestCase):
         self.assertIn("id=\"t-working\"", html)
         self.assertIn("switchTab('working')", html)
         self.assertIn("id=\"svc-working_memory\"", html)
+        self.assertIn("id=\"panel-session-memory\"", html)
+        self.assertIn("id=\"tb-session-memory\"", html)
+        self.assertIn("id=\"t-session-memory\"", html)
+        self.assertIn("switchTab('session-memory')", html)
+        self.assertIn("id=\"svc-session_memory\"", html)
         self.assertIn("Start Ollama", html)
         self.assertIn("id=\"t-ollama\"", html)
         self.assertIn("id=\"t-ollama-default-model\"", html)

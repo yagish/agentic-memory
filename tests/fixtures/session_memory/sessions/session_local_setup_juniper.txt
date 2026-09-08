@@ -1,0 +1,3 @@
+User: I was setting up juniper-service locally.
+Assistant: docker compose up juniper-service still needed JUNIPER_API_KEY in .env.local.
+User: Next session should add JUNIPER_API_KEY, rerun docker compose up juniper-service, and verify the health endpoint.

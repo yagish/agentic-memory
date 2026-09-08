@@ -1,0 +1,25 @@
+{
+  "title_contains": [
+    "release cutoff",
+    "atlas"
+  ],
+  "summary_contains": [
+    "release notes",
+    "changelog"
+  ],
+  "what_was_tried_contains": [
+    "release notes are drafted",
+    "changelog skeleton"
+  ],
+  "outcomes_contains": [
+    "release notes are drafted"
+  ],
+  "left_off_at_contains": [
+    "final commit range",
+    "oncall owner"
+  ],
+  "next_steps_contains": [
+    "final commit range",
+    "release/atlas-2026-09"
+  ]
+}

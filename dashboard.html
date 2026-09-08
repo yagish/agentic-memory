@@ -110,6 +110,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
       <span class="svc-dot" id="dot-working_memory"></span>
       <div class="svc-body"><div class="svc-name">Working Memory</div><div class="svc-desc">Working-memory extraction and retrieval log</div></div>
     </div>
+    <div class="svc-item" id="svc-session_memory" onclick="selectLog('session_memory')">
+      <span class="svc-dot" id="dot-session_memory"></span>
+      <div class="svc-body"><div class="svc-name">Session Memory</div><div class="svc-desc">Session-memory extraction and retrieval log</div></div>
+    </div>
     <div class="sidebar-note" id="sidebar-note">Refreshing every 30s</div>
   </aside>
 
@@ -121,6 +125,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
       <button class="tab-btn" data-tab="episodes" onclick="switchTab('episodes')">Episodes</button>
       <button class="tab-btn" data-tab="procedural" onclick="switchTab('procedural')">Procedural</button>
       <button class="tab-btn" data-tab="working" onclick="switchTab('working')">Working</button>
+      <button class="tab-btn" data-tab="session-memory" onclick="switchTab('session-memory')">Session Memory</button>
       <span class="tab-spacer"></span>
       <span class="tab-updated" id="tab-updated"></span>
     </nav>
@@ -142,6 +147,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
           <div class="tile tile-clickable" onclick="switchTab('episodes')"><div class="tile-value" id="t-episodes">—</div><div class="tile-label">Episodes</div></div>
           <div class="tile tile-clickable" onclick="switchTab('procedural')"><div class="tile-value" id="t-procedural">—</div><div class="tile-label">Procedural</div></div>
           <div class="tile tile-clickable" onclick="switchTab('working')"><div class="tile-value" id="t-working">—</div><div class="tile-label">Working</div></div>
+          <div class="tile tile-clickable" onclick="switchTab('session-memory')"><div class="tile-value" id="t-session-memory">—</div><div class="tile-label">Session Memory</div></div>
           <div class="tile"><div class="tile-value" id="t-dbsize">—</div><div class="tile-label">DB Size</div></div>
           <div class="tile">
             <div class="tile-value" id="t-recall">—</div>
@@ -173,7 +179,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
           <div class="chart-card"><div class="chart-title">Episodes per Day</div><div id="ch-episodes"></div></div>
         </div>
         <div class="overview-copy">
-          This dashboard is intentionally trimmed down. The database keeps only <strong>sessions</strong>, <strong>facts</strong>, <strong>episodes</strong>, <strong>procedural memory</strong>, and <strong>working memory</strong>. The visible logs are <strong>daemon</strong>, <strong>recall</strong>, <strong>wake up</strong>, <strong>save hook</strong>, <strong>facts</strong>, <strong>episodes</strong>, <strong>procedural</strong>, and <strong>working memory</strong>. Recall server status is shown above, and the <strong>Restart Recall Server</strong> button restarts the singleton embedding/recall process. Ollama status is also shown for extraction-time model work, and the <strong>Start Ollama</strong> button calls the local dashboard endpoint if the server is down. Click any overview count tile to jump to that memory tab, or click any row in a database tab to inspect its full details in the panel below the table.
+          This dashboard is intentionally trimmed down. The database keeps only <strong>sessions</strong>, <strong>facts</strong>, <strong>episodes</strong>, <strong>procedural memory</strong>, <strong>working memory</strong>, and <strong>session memory</strong>. The visible logs are <strong>daemon</strong>, <strong>recall</strong>, <strong>wake up</strong>, <strong>save hook</strong>, <strong>facts</strong>, <strong>episodes</strong>, <strong>procedural</strong>, <strong>working memory</strong>, and <strong>session memory</strong>. Recall server status is shown above, and the <strong>Restart Recall Server</strong> button restarts the singleton embedding/recall process. Ollama status is also shown for extraction-time model work, and the <strong>Start Ollama</strong> button calls the local dashboard endpoint if the server is down. Click any overview count tile to jump to that memory tab, or click any row in a database tab to inspect its full details in the panel below the table.
         </div>
       </div>
 
@@ -241,6 +247,19 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
           <div class="detail-body" id="working-detail-body"></div>
         </div>
       </div>
+
+      <div class="panel" id="panel-session-memory" hidden>
+        <input class="tbl-search" id="srch-session-memory" type="text" placeholder="Filter session memory…" oninput="renderSessionMemory()">
+        <table class="dtbl">
+          <thead><tr><th>Updated</th><th>Title</th><th>Session</th><th>Left Off At</th></tr></thead>
+          <tbody id="tb-session-memory"><tr><td colspan="4" class="tbl-loading">Loading…</td></tr></tbody>
+        </table>
+        <div class="tbl-meta" id="meta-session-memory"></div>
+        <div class="detail-box" id="session-memory-detail-box">
+          <div class="detail-head"><span class="detail-title" id="session-memory-detail-title"></span><button class="detail-close" onclick="hideDetail('session-memory-detail-box')">✕</button></div>
+          <div class="detail-body" id="session-memory-detail-body"></div>
+        </div>
+      </div>
     </div>
   </main>
 </div>
@@ -258,16 +277,19 @@ let _rawFacts = [];
 let _rawEpisodes = [];
 let _rawProcedural = [];
 let _rawWorking = [];
+let _rawSessionMemory = [];
 let _filteredSessions = [];
 let _filteredFacts = [];
 let _filteredEpisodes = [];
 let _filteredProcedural = [];
 let _filteredWorking = [];
+let _filteredSessionMemory = [];
 let _selectedSessionId = null;
 let _selectedFactId = null;
 let _selectedEpisodeId = null;
 let _selectedProceduralId = null;
 let _selectedWorkingId = null;
+let _selectedSessionMemoryId = null;
 
 document.addEventListener('DOMContentLoaded', () => {
   loadServices();
@@ -290,6 +312,7 @@ async function loadServices() {
     set('t-episodes', fmt(mem.total_episodes));
     set('t-procedural', fmt(mem.total_procedures));
     set('t-working', fmt(mem.total_working_memory));
+    set('t-session-memory', fmt(mem.total_session_memory));
     set('t-dbsize', fmtBytes(mem.db_size_bytes));
     setDot('recall', !!recall.running);
     set('t-recall', recall.running ? (recall.status === 'degraded' ? 'Degraded' : 'Running') : 'Stopped');
@@ -376,6 +399,7 @@ function switchTab(name) {
   if (name === 'episodes') loadEpisodes();
   if (name === 'procedural') loadProcedural();
   if (name === 'working') loadWorking();
+  if (name === 'session-memory') loadSessionMemory();
 }
 
 function selectLog(name) {
@@ -703,6 +727,47 @@ function showWorkingDetail(index) {
   box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
+async function loadSessionMemory() {
+  try {
+    const r = await fetch(BASE + '/memory/session-memory');
+    if (!r.ok) return;
+    const d = await r.json();
+    _rawSessionMemory = d.session_memory || [];
+    renderSessionMemory();
+  } catch (_) {}
+}
+
+function renderSessionMemory() {
+  const q = (document.getElementById('srch-session-memory')?.value || '').toLowerCase();
+  _filteredSessionMemory = q ? _rawSessionMemory.filter(row =>
+    (row.title || '').toLowerCase().includes(q) ||
+    (row.summary || '').toLowerCase().includes(q) ||
+    (row.left_off_at || '').toLowerCase().includes(q) ||
+    (row.session_id || '').toLowerCase().includes(q) ||
+    (row.next_steps || []).join(' ').toLowerCase().includes(q)
+  ) : _rawSessionMemory.slice();
+  const tb = document.getElementById('tb-session-memory');
+  if (!tb) return;
+  tb.innerHTML = _filteredSessionMemory.length
+    ? _filteredSessionMemory.map((row, i) => `<tr class="clickable-row ${row.id === _selectedSessionMemoryId ? 'active' : ''}" onclick="showSessionMemoryDetail(${i})"><td style="white-space:nowrap">${fmtDate(row.updated_at)}</td><td>${esc(row.title || '')}</td><td class="mono" title="${esc(row.session_id || '')}">${esc(shortId(row.session_id || ''))}</td><td>${esc(trunc(row.left_off_at || '', 180))}</td></tr>`).join('')
+    : '<tr><td colspan="4" class="tbl-loading">No session memory found.</td></tr>';
+  set('meta-session-memory', `${_filteredSessionMemory.length} of ${_rawSessionMemory.length} session-memory handoffs`);
+}
+
+function showSessionMemoryDetail(index) {
+  const row = _filteredSessionMemory[index];
+  if (!row) return;
+  _selectedSessionMemoryId = row.id;
+  renderSessionMemory();
+  const box = document.getElementById('session-memory-detail-box');
+  const title = document.getElementById('session-memory-detail-title');
+  const body = document.getElementById('session-memory-detail-body');
+  title.textContent = `${row.title || 'Session memory'} — ${fmtDate(row.updated_at)}`;
+  body.innerHTML = `<div class="detail-grid"><div class="detail-label">Handoff ID</div><div class="detail-value mono">${esc(row.id || '')}</div><div class="detail-label">Session ID</div><div class="detail-value mono">${esc(row.session_id || '')}</div><div class="detail-label">Source</div><div class="detail-value">${esc(row.source || '—')}</div><div class="detail-label">Updated</div><div class="detail-value">${esc(fmtDate(row.updated_at))}</div><div class="detail-label">Summary</div><div class="detail-value">${esc(row.summary || '')}</div><div class="detail-label">What Was Tried</div><div class="detail-value">${renderList(row.what_was_tried)}</div><div class="detail-label">Outcomes</div><div class="detail-value">${renderList(row.outcomes)}</div><div class="detail-label">Left Off At</div><div class="detail-value">${esc(row.left_off_at || '')}</div><div class="detail-label">Next Steps</div><div class="detail-value">${renderList(row.next_steps)}</div><div class="detail-label">Confidence</div><div class="detail-value">${row.confidence == null ? '—' : esc(String(row.confidence))}</div><div class="detail-label">Source Quote</div><div class="detail-value">${esc(row.source_quote || '—')}</div></div>`;
+  box.style.display = 'block';
+  box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
 function renderList(items) {
   if (!items || !items.length) return '—';
   return `<ul style="margin:0;padding-left:18px">${items.map(item => `<li>${esc(item)}</li>`).join('')}</ul>`;
@@ -720,7 +785,7 @@ function esc(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt
 function fmt(n) { return n == null ? '—' : n.toLocaleString(); }
 function fmtBytes(b) { if (!b) return '—'; if (b >= 1073741824) return (b / 1073741824).toFixed(1) + ' GB'; if (b >= 1048576) return (b / 1048576).toFixed(1) + ' MB'; if (b >= 1024) return (b / 1024).toFixed(1) + ' KB'; return b + ' B'; }
 function fmtDate(iso) { if (!iso) return '—'; try { return new Date(iso).toLocaleString(undefined, { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }); } catch (_) { return String(iso).slice(0, 16); } }
-function svcLabel(s) { return { daemon:'Daemon', recall:'Recall', wake_up:'Wake Up', save_hook:'Save Hook', facts:'Facts', episodic:'Episodes', procedural:'Procedural', working_memory:'Working Memory' }[s] || s; }
+function svcLabel(s) { return { daemon:'Daemon', recall:'Recall', wake_up:'Wake Up', save_hook:'Save Hook', facts:'Facts', episodic:'Episodes', procedural:'Procedural', working_memory:'Working Memory', session_memory:'Session Memory' }[s] || s; }
 </script>
 </body>
 </html>

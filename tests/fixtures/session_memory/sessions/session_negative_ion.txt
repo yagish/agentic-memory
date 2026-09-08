@@ -1,0 +1,3 @@
+User: Thanks for explaining what embeddings are.
+Assistant: Happy to help. We also briefly mentioned ion-service, but we did not do any real task work.
+User: Great, that's all I needed.

@@ -1,0 +1,3 @@
+User: I reran python3 scripts/atlas_export.py --env staging for the auth middleware refactor work.
+Assistant: The export completed, but we are still waiting on support to confirm the invoice copy.
+User: Next session should compare the staging export with production and then send the screenshot to support.

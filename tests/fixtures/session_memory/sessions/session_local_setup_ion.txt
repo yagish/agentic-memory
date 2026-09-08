@@ -1,0 +1,3 @@
+User: I was setting up ion-service locally.
+Assistant: docker compose up ion-service still needed ION_API_KEY in .env.local.
+User: Next session should add ION_API_KEY, rerun docker compose up ion-service, and verify the health endpoint.

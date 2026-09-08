@@ -6,7 +6,7 @@ from io import StringIO
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cli import cmd_get_session, cmd_search, cmd_status, cmd_tail
-from memory.db import init_db, insert_fact, insert_episodic, upsert_session, upsert_working_memory
+from memory.db import init_db, insert_fact, insert_episodic, upsert_session, upsert_session_memory, upsert_working_memory
 
 
 def make_args(**kwargs):
@@ -82,6 +82,15 @@ class CliTestBase(unittest.TestCase):
             updated_at="2026-01-02T00:01:30Z",
             details={"active_tasks": ["Boil water", "Salt the pasta water"]},
         )
+        upsert_session_memory(
+            self.conn,
+            session_id="sess-cooking",
+            title="Pasta session",
+            summary="Discussed how to cook pasta and left off before boiling the water.",
+            left_off_at="Need to start boiling the water and finish the recipe",
+            updated_at="2026-01-02T00:01:45Z",
+            details={"next_steps": ["Boil the water"]},
+        )
 
         import cli as cli_module
 
@@ -103,6 +112,7 @@ class TestCmdStatus(CliTestBase):
         self.assertIn("Facts    : 1", output)
         self.assertIn("Episodes : 1", output)
         self.assertIn("Working : 1", output)
+        self.assertIn("Session Memory : 1", output)
 
 
 class TestCmdSearch(CliTestBase):

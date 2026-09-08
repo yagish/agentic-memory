@@ -48,6 +48,7 @@ def cmd_status(_args):
     episodes = conn.execute("SELECT COUNT(*) AS c FROM episodic_memory").fetchone()["c"]
     procedures = conn.execute("SELECT COUNT(*) AS c FROM procedural_memory").fetchone()["c"]
     working = conn.execute("SELECT COUNT(*) AS c FROM working_memory").fetchone()["c"]
+    session_memory = conn.execute("SELECT COUNT(*) AS c FROM session_memory").fetchone()["c"]
     conn.close()
 
     print("=== Memory Status ===")
@@ -57,6 +58,7 @@ def cmd_status(_args):
     print(f"Episodes : {episodes}")
     print(f"Procedures : {procedures}")
     print(f"Working : {working}")
+    print(f"Session Memory : {session_memory}")
     print(f"Oldest   : {row['oldest'] or 'none'}")
     print(f"Newest   : {row['newest'] or 'none'}")
 

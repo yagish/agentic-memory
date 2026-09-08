@@ -1,0 +1,22 @@
+{
+  "title_contains": [
+    "ember-service",
+    "local"
+  ],
+  "summary_contains": [
+    "EMBER_API_KEY",
+    ".env.local"
+  ],
+  "what_was_tried_contains": [
+    "docker compose up ember-service"
+  ],
+  "outcomes_contains": [],
+  "left_off_at_contains": [
+    "EMBER_API_KEY",
+    ".env.local"
+  ],
+  "next_steps_contains": [
+    "EMBER_API_KEY",
+    "health endpoint"
+  ]
+}

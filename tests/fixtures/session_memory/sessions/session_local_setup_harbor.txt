@@ -1,0 +1,3 @@
+User: I was setting up harbor-service locally.
+Assistant: docker compose up harbor-service still needed HARBOR_API_KEY in .env.local.
+User: Next session should add HARBOR_API_KEY, rerun docker compose up harbor-service, and verify the health endpoint.

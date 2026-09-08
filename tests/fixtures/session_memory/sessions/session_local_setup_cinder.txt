@@ -1,0 +1,3 @@
+User: I was setting up cinder-service locally.
+Assistant: docker compose up cinder-service still needed CINDER_API_KEY in .env.local.
+User: Next session should add CINDER_API_KEY, rerun docker compose up cinder-service, and verify the health endpoint.

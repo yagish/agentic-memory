@@ -1,0 +1,22 @@
+{
+  "title_contains": [
+    "release cutoff"
+  ],
+  "summary_contains": [
+    "python3 scripts/juniper_export.py --env staging",
+    "support"
+  ],
+  "what_was_tried_contains": [
+    "python3 scripts/juniper_export.py --env staging"
+  ],
+  "outcomes_contains": [
+    "export completed"
+  ],
+  "left_off_at_contains": [
+    "waiting on support"
+  ],
+  "next_steps_contains": [
+    "compare the staging export",
+    "screenshot to support"
+  ]
+}

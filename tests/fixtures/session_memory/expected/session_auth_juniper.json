@@ -1,0 +1,25 @@
+{
+  "title_contains": [
+    "auth middleware"
+  ],
+  "summary_contains": [
+    "token validation",
+    "redirect loop"
+  ],
+  "what_was_tried_contains": [
+    "token validation",
+    "redirect flow locally"
+  ],
+  "outcomes_contains": [
+    "redirect loop stopped reproducing"
+  ],
+  "left_off_at_contains": [
+    "regression coverage",
+    "refresh-token",
+    "expired-session"
+  ],
+  "next_steps_contains": [
+    "refresh-token",
+    "expired-session"
+  ]
+}

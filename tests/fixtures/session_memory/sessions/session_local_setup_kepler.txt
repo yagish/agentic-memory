@@ -1,0 +1,3 @@
+User: I was setting up kepler-service locally.
+Assistant: docker compose up kepler-service still needed KEPLER_API_KEY in .env.local.
+User: Next session should add KEPLER_API_KEY, rerun docker compose up kepler-service, and verify the health endpoint.

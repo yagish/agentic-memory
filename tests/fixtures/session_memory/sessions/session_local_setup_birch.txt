@@ -1,0 +1,3 @@
+User: I was setting up birch-service locally.
+Assistant: docker compose up birch-service still needed BIRCH_API_KEY in .env.local.
+User: Next session should add BIRCH_API_KEY, rerun docker compose up birch-service, and verify the health endpoint.

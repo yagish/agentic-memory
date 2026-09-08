@@ -1,4 +1,4 @@
-# dashboard_server.py — simplified dashboard API for sessions, facts, episodes, working memory, and logs.
+# dashboard_server.py — simplified dashboard API for sessions, facts, episodes, working memory, session memory, and logs.
 
 from __future__ import annotations
 
@@ -69,6 +69,11 @@ _LOG_SOURCES: dict[str, dict[str, object]] = {
         "label": "Working Memory",
         "description": "Working-memory extraction and retrieval log",
         "paths": [os.path.expanduser("~/.memory/working_memory.log")],
+    },
+    "session_memory": {
+        "label": "Session Memory",
+        "description": "Session-memory extraction and retrieval log",
+        "paths": [os.path.expanduser("~/.memory/session_memory.log")],
     },
 }
 
@@ -238,6 +243,7 @@ def get_services() -> dict:
     total_episodes = 0
     total_procedures = 0
     total_working_memory = 0
+    total_session_memory = 0
 
     try:
         conn = open_db(DB_PATH)
@@ -247,6 +253,7 @@ def get_services() -> dict:
             total_episodes = conn.execute("SELECT COUNT(*) AS c FROM episodic_memory").fetchone()["c"]
             total_procedures = conn.execute("SELECT COUNT(*) AS c FROM procedural_memory").fetchone()["c"]
             total_working_memory = conn.execute("SELECT COUNT(*) AS c FROM working_memory").fetchone()["c"]
+            total_session_memory = conn.execute("SELECT COUNT(*) AS c FROM session_memory").fetchone()["c"]
         finally:
             conn.close()
     except Exception:
@@ -285,6 +292,7 @@ def get_services() -> dict:
             "total_episodes": total_episodes,
             "total_procedures": total_procedures,
             "total_working_memory": total_working_memory,
+            "total_session_memory": total_session_memory,
             "db_size_bytes": os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0,
         },
     }
@@ -571,6 +579,44 @@ def get_memory_working_memory() -> dict:
     except Exception:
         pass
     return {"working_memory": rows, "total": len(rows)}
+
+
+@memory_router.get("/session-memory")
+@memory_router.get("/session-memory/compacted")
+@memory_router.get("/sessions/compacted")
+def get_memory_session_memory() -> dict:
+    rows: list[dict] = []
+    try:
+        conn = open_db(DB_PATH)
+        try:
+            for row in conn.execute(
+                "SELECT id, session_id, title, summary, left_off_at, updated_at, details FROM session_memory ORDER BY updated_at DESC"
+            ).fetchall():
+                try:
+                    details = json.loads(row["details"] or "{}")
+                except Exception:
+                    details = {}
+                rows.append(
+                    {
+                        "id": row["id"],
+                        "session_id": row["session_id"],
+                        "title": row["title"],
+                        "summary": row["summary"],
+                        "left_off_at": row["left_off_at"],
+                        "updated_at": row["updated_at"],
+                        "what_was_tried": details.get("what_was_tried", []),
+                        "outcomes": details.get("outcomes", []),
+                        "next_steps": details.get("next_steps", []),
+                        "confidence": details.get("confidence"),
+                        "source_quote": details.get("source_quote"),
+                        "source": details.get("source", "session_memory_extractor"),
+                    }
+                )
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return {"session_memory": rows, "total": len(rows)}
 
 
 @ops_router.post("/ops/ollama/start")

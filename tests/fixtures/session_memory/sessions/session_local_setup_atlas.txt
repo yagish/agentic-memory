@@ -1,0 +1,3 @@
+User: I was setting up atlas-service locally.
+Assistant: docker compose up atlas-service still needed ATLAS_API_KEY in .env.local.
+User: Next session should add ATLAS_API_KEY, rerun docker compose up atlas-service, and verify the health endpoint.

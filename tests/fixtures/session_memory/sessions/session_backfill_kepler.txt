@@ -1,0 +1,3 @@
+User: I reran python3 scripts/backfill.py --job kepler_rebuild in staging.
+Assistant: Counts matched after the rerun and the diff looked clean.
+User: One follow-up remains: next session should watch the error-rate dashboard for 20 minutes before widening the rollout.

@@ -1,0 +1,3 @@
+User: We ran the deploy workflow for ion-service in preview with --canary 10.
+Assistant: Error rate stayed flat and health checks were green.
+User: Before we widen the rollout, the next session should compare preview and staging metrics one more time.

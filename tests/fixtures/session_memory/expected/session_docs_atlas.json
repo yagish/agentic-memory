@@ -1,0 +1,24 @@
+{
+  "title_contains": [
+    "docs",
+    "atlas"
+  ],
+  "summary_contains": [
+    "docs/runbooks/atlas.md",
+    "preview screenshots"
+  ],
+  "what_was_tried_contains": [
+    "docs/runbooks/atlas.md",
+    "wording pass"
+  ],
+  "outcomes_contains": [
+    "draft looked good"
+  ],
+  "left_off_at_contains": [
+    "preview screenshots"
+  ],
+  "next_steps_contains": [
+    "capture them",
+    "docs/atlas-runbook"
+  ]
+}

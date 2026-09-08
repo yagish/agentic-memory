@@ -1,0 +1,25 @@
+{
+  "title_contains": [
+    "harbor-service",
+    "deploy"
+  ],
+  "summary_contains": [
+    "preview",
+    "--canary 10",
+    "health checks"
+  ],
+  "what_was_tried_contains": [
+    "deploy workflow",
+    "--canary 10"
+  ],
+  "outcomes_contains": [
+    "error rate stayed flat",
+    "health checks were green"
+  ],
+  "left_off_at_contains": [
+    "compare preview and staging metrics"
+  ],
+  "next_steps_contains": [
+    "compare preview and staging metrics"
+  ]
+}

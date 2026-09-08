@@ -1,0 +1,3 @@
+User: I updated docs/runbooks/birch.md for the billing export validation notes.
+Assistant: The draft looked good after the wording pass.
+User: The remaining gap is preview screenshots; next session should capture them and open the docs PR from docs/birch-runbook.

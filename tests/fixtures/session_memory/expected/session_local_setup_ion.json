@@ -1,0 +1,22 @@
+{
+  "title_contains": [
+    "ion-service",
+    "local"
+  ],
+  "summary_contains": [
+    "ION_API_KEY",
+    ".env.local"
+  ],
+  "what_was_tried_contains": [
+    "docker compose up ion-service"
+  ],
+  "outcomes_contains": [],
+  "left_off_at_contains": [
+    "ION_API_KEY",
+    ".env.local"
+  ],
+  "next_steps_contains": [
+    "ION_API_KEY",
+    "health endpoint"
+  ]
+}

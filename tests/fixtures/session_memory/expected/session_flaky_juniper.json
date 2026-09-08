@@ -1,0 +1,25 @@
+{
+  "title_contains": [
+    "flaky",
+    "juniper"
+  ],
+  "summary_contains": [
+    "PYTEST_ADDOPTS=-x",
+    "test_juniper.py"
+  ],
+  "what_was_tried_contains": [
+    "PYTEST_ADDOPTS=-x",
+    "pytest tests/integration/test_juniper.py -k refresh_flow"
+  ],
+  "outcomes_contains": [
+    "reproduced it faster"
+  ],
+  "left_off_at_contains": [
+    "did not fix it yet",
+    "capture the failing seed"
+  ],
+  "next_steps_contains": [
+    "failing seed",
+    "isolate the race"
+  ]
+}

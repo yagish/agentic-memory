@@ -1,0 +1,22 @@
+{
+  "title_contains": [
+    "harbor-service",
+    "local"
+  ],
+  "summary_contains": [
+    "HARBOR_API_KEY",
+    ".env.local"
+  ],
+  "what_was_tried_contains": [
+    "docker compose up harbor-service"
+  ],
+  "outcomes_contains": [],
+  "left_off_at_contains": [
+    "HARBOR_API_KEY",
+    ".env.local"
+  ],
+  "next_steps_contains": [
+    "HARBOR_API_KEY",
+    "health endpoint"
+  ]
+}

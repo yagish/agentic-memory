@@ -1,0 +1,3 @@
+User: We debugged the 500 spike for ion-service in production.
+Assistant: The traces pointed to REDIS_URL mismatches between preview and production.
+User: We know the likely cause now, but next session still needs the config fix and another curl -H "x-debug: 1" https://ion.internal/health validation.
