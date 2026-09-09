@@ -94,10 +94,12 @@ Optional verification:
 ```bash
 sqlite3 ~/.memory/memory.db "select id, content, source, session_id from facts order by updated_at desc limit 10;"
 sqlite3 ~/.memory/memory.db "select id, title, abstract, session_id from episodic_memory order by happened_at desc limit 10;"
+sqlite3 ~/.memory/memory.db "select id, title, summary, session_id from procedural_memory order by updated_at desc limit 10;"
 ```
 
 Expected result:
 - facts and/or episodes from the recent pi session appear
+- if the transcript contained a reusable workflow, a procedural-memory row appears too
 
 ---
 
@@ -128,6 +130,10 @@ Then inspect:
 - sessions from `pi`
 - extracted facts
 - extracted episodes
+- extracted procedural memories
+- recall log in the sidebar
+- procedural log in the sidebar
+- procedural rows in the Procedural tab
 
 ---
 
@@ -141,3 +147,12 @@ Then inspect:
 
 ### Prompt-enhancement works if:
 - a related follow-up prompt shows memory context and uses it in the response
+
+### Procedural memory works if:
+- a reusable workflow from a recent session appears in `procedural_memory`
+- a prompt like `how do i deploy the auth service?` injects the stored procedure into recall context
+
+### Dashboard works if:
+- the Procedural overview tile is clickable
+- the Procedural tab lists stored rows and opens a detail drawer
+- Recall and Procedural logs both appear in the sidebar/log viewer

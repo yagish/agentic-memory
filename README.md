@@ -107,6 +107,19 @@ For existing databases, run the one-off migration before starting the updated ap
 python3 scripts/migrate_facts_semantic_text.py --db ~/.memory/memory.db
 ```
 
+If you have older stored sessions that predate procedural extraction, backfill procedural memory explicitly:
+
+```bash
+python3 scripts/backfill_procedural_memory.py --db ~/.memory/memory.db --dry-run
+python3 scripts/backfill_procedural_memory.py --db ~/.memory/memory.db
+```
+
+To re-extract procedures for sessions that already have procedural memory, use `--force`:
+
+```bash
+python3 scripts/backfill_procedural_memory.py --db ~/.memory/memory.db --force --limit 25
+```
+
 ## Quick start
 
 ```bash
