@@ -154,11 +154,17 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
             },
         ]
 
+        # The test uses a 1-dim mock embedding ([0.1]). The intent classifier
+        # (_get_resume_exemplar_vecs) is also patched to return a matching 1-dim
+        # vector so that cosine similarity equals 1.0 and the fallback triggers.
+        # This tests that the FALLBACK MECHANISM works correctly; a separate unit
+        # test of _prompt_requests_recent_episode_summary covers the classifier itself.
         with patch("memory.retrieval.retrieve_episodic_memories", return_value=[]), \
              patch("memory.retrieval.list_recent_episodic_memories", return_value=recent_rows) as list_recent, \
              patch("memory.retrieval.search_facts_semantic", return_value=[]), \
              patch("memory.retrieval.retrieve_procedural_memories", return_value=[]), \
-             patch("memory.retrieval.retrieve_session_memories", return_value=[]):
+             patch("memory.retrieval.retrieve_session_memories", return_value=[]), \
+             patch("memory.retrieval._get_resume_exemplar_vecs", return_value=([0.1],)):
             context = retrieve_wake_up_context(
                 conn,
                 "what was i working on last",

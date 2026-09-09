@@ -44,7 +44,7 @@ class TestUnprocessedSessions(unittest.TestCase):
 
 
 class TestDaemonOnceMode(unittest.TestCase):
-    def test_daemon_once_mode_extracts_facts_then_episode_then_procedure_then_marks_processed(self):
+    def test_daemon_once_mode_extracts_facts_episode_procedure_and_marks_processed(self):
         import memory.daemon as daemon_module
 
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
@@ -89,7 +89,10 @@ class TestDaemonOnceMode(unittest.TestCase):
             create_episodic.assert_called_once()
             create_procedural.assert_called_once()
             extract_facts.assert_called_once()
-            self.assertEqual(call_order, ["facts", "episodic", "procedural"])
+            # Extractors now run in parallel (ThreadPoolExecutor), so completion
+            # order is non-deterministic. We verify that all three were called —
+            # not the specific order — using assertCountEqual (order-independent).
+            self.assertCountEqual(call_order, ["facts", "episodic", "procedural"])
         finally:
             os.unlink(tmp_path)
 

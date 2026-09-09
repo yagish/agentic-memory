@@ -172,23 +172,21 @@ def _cosine_sim(a: list[float], b) -> float:
     return dot / (mag_a * mag_b)
 
 
-def _prompt_requests_recent_episode_summary(prompt: str, prompt_vec: list[float] | None = None) -> bool:
-    """Return True when the prompt asks to resume or review recent work.
+def _prompt_requests_recent_episode_summary(prompt_vec: list[float]) -> bool:
+    """Return True when the prompt semantically asks to resume or review recent work.
 
-    Uses semantic exemplars when a prompt embedding is available, but keeps a
-    lightweight lexical fallback so tests and degraded embedding paths still
-    behave sensibly.
+    Pure embedding-based intent detection — no keyword matching. Compares the
+    prompt's vector against a set of canonical "resume intent" exemplar phrases.
+    Returns True if any exemplar exceeds the similarity threshold.
+
+    Args:
+        prompt_vec — the embedding vector already computed during retrieval
+                     (no extra embedding cost to call this function).
+
+    Returns:
+        True if the prompt is semantically asking to resume/review recent work.
+        False if exemplar embedding fails (graceful degradation — skips fallback).
     """
-    normalized = prompt.lower()
-    time_words = {"last", "latest", "recent", "recently", "previous", "before"}
-    topic_words = {"work", "working", "worked", "doing", "did", "task", "project", "session", "chat", "conversation", "discuss", "discussed", "talk", "talked"}
-    tokens = set(re.findall(r"[a-z0-9]+", normalized))
-    if bool(tokens & time_words) and bool(tokens & topic_words):
-        return True
-
-    if prompt_vec is None:
-        return False
-
     try:
         exemplar_vecs = _get_resume_exemplar_vecs()
         return any(
@@ -196,6 +194,8 @@ def _prompt_requests_recent_episode_summary(prompt: str, prompt_vec: list[float]
             for ex_vec in exemplar_vecs
         )
     except Exception:
+        # If exemplar embedding fails (model not yet warmed), skip the fallback
+        # rather than crashing the hook. The user's prompt still goes through.
         return False
 
 
@@ -774,7 +774,7 @@ def retrieve_wake_up_context(
     # Fallback: if semantic search found no episodes or session memories, check
     # whether the prompt is semantically asking to resume/review recent work.
     # We pass the already-computed prompt_vec — no extra embedding call needed.
-    if not episodic and not session_memory and _prompt_requests_recent_episode_summary(prompt, prompt_vec):
+    if not episodic and not session_memory and _prompt_requests_recent_episode_summary(prompt_vec):
         episodic = _rank_rows(_retrieve_recent_episodic(conn, warnings), "episodic", prompt, limit=EPISODIC_LIMIT)
 
     return WakeUpContext(
