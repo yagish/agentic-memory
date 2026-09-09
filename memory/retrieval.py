@@ -32,14 +32,18 @@ MemoryRow = dict[str, Any]
 TOKEN_BUDGET = 500
 CHARS_BUDGET = TOKEN_BUDGET * 4
 
-EPISODIC_MIN_SIMILARITY = 0.72
-FACT_MIN_SIMILARITY = 0.38
-EPISODIC_LIMIT = 3
+EPISODIC_MIN_SIMILARITY = 0.58
+EPISODIC_FETCH_LIMIT = 8
+EPISODIC_LIMIT = 2
 EPISODIC_RECENT_LIMIT = 5
-FACT_LIMIT = 5
-PROCEDURAL_MIN_SIMILARITY = 0.74
+FACT_MIN_SIMILARITY = 0.38
+FACT_FETCH_LIMIT = 5
+FACT_LIMIT = 3
+PROCEDURAL_MIN_SIMILARITY = 0.58
+PROCEDURAL_FETCH_LIMIT = 4
 PROCEDURAL_LIMIT = 2
-SESSION_MEMORY_MIN_SIMILARITY = 0.78
+SESSION_MEMORY_MIN_SIMILARITY = 0.60
+SESSION_MEMORY_FETCH_LIMIT = 4
 SESSION_MEMORY_LIMIT = 2
 
 
@@ -65,10 +69,11 @@ class WakeUpContext:
     warnings: list[RetrievalWarning] = field(default_factory=list)
 
 
+WORD_RE = re.compile(r"[a-z0-9_]{2,}")
+
 
 def _normalize_text(content: str) -> str:
     return re.sub(r"\s+", " ", content).strip()
-
 
 
 def _as_sentence(content: str) -> str:
@@ -76,7 +81,6 @@ def _as_sentence(content: str) -> str:
     if not content:
         return ""
     return content if content.endswith((".", "!", "?")) else f"{content}."
-
 
 
 def _naturalize_fact(content: str) -> str:
@@ -88,10 +92,8 @@ def _naturalize_fact(content: str) -> str:
     return _as_sentence(content)
 
 
-
 def _append_warning(warnings: list[RetrievalWarning], stage: str, exc: Exception) -> None:
     warnings.append(RetrievalWarning(stage, str(exc)))
-
 
 
 def _prompt_requests_recent_episode_summary(prompt: str) -> bool:
@@ -100,7 +102,6 @@ def _prompt_requests_recent_episode_summary(prompt: str) -> bool:
     topic_words = {"work", "working", "worked", "doing", "did", "task", "project", "session", "chat", "conversation", "discuss", "discussed", "talk", "talked"}
     tokens = set(re.findall(r"[a-z0-9]+", normalized))
     return bool(tokens & time_words) and bool(tokens & topic_words)
-
 
 
 def _looks_like_missing_memory_episode(item: MemoryRow) -> bool:
@@ -118,11 +119,9 @@ def _looks_like_missing_memory_episode(item: MemoryRow) -> bool:
     )
 
 
-
 def _is_substantive_episode(item: MemoryRow) -> bool:
     details_count = sum(len(item.get(key, []) or []) for key in ("decisions", "outcomes", "follow_ups"))
     return details_count >= 2 and not _looks_like_missing_memory_episode(item)
-
 
 
 def _filter_by_similarity(rows: list[MemoryRow], threshold: float | None) -> list[MemoryRow]:
@@ -130,6 +129,116 @@ def _filter_by_similarity(rows: list[MemoryRow], threshold: float | None) -> lis
         return rows
     return [row for row in rows if row.get("similarity", 0.0) >= threshold]
 
+
+def _tokenize(text: str) -> set[str]:
+    return set(WORD_RE.findall(_normalize_text(text).lower()))
+
+
+def _join_clean(values: list[str] | tuple[str, ...] | None) -> str:
+    return "; ".join(_normalize_text(value) for value in (values or []) if _normalize_text(value))
+
+
+def _episodic_semantic_text(item: MemoryRow) -> str:
+    stored = _normalize_text(str(item.get("semantic_text", "")))
+    if stored:
+        return stored
+
+    parts = [_normalize_text(item.get("title", "")), _normalize_text(item.get("abstract", ""))]
+    participants = _join_clean(item.get("participants", []))
+    decisions = _join_clean(item.get("decisions", []))
+    outcomes = _join_clean(item.get("outcomes", []))
+    follow_ups = _join_clean(item.get("follow_ups", []))
+    if participants:
+        parts.append(f"Participants: {participants}")
+    if decisions:
+        parts.append(f"Decisions: {decisions}")
+    if outcomes:
+        parts.append(f"Outcomes: {outcomes}")
+    if follow_ups:
+        parts.append(f"Follow-ups: {follow_ups}")
+    return ". ".join(part.rstrip(". ") for part in parts if part.strip()) + "."
+
+
+def _procedural_semantic_text(item: MemoryRow) -> str:
+    stored = _normalize_text(str(item.get("semantic_text", "")))
+    if stored:
+        return stored
+
+    parts = [_normalize_text(item.get("title", "")), _normalize_text(item.get("summary", ""))]
+    steps = _join_clean(item.get("steps", []))
+    triggers = _join_clean(item.get("trigger_phrases", []))
+    tools = _join_clean(item.get("tools", []))
+    if steps:
+        parts.append(f"Steps: {steps}")
+    if triggers:
+        parts.append(f"Useful for: {triggers}")
+    if tools:
+        parts.append(f"Tools: {tools}")
+    return ". ".join(part.rstrip(". ") for part in parts if part.strip()) + "."
+
+
+def _session_memory_semantic_text(item: MemoryRow) -> str:
+    stored = _normalize_text(str(item.get("semantic_text", "")))
+    if stored:
+        return stored
+
+    parts = [
+        _normalize_text(item.get("title", "")),
+        _normalize_text(item.get("summary", "")),
+        f"Left off at: {_normalize_text(item.get('left_off_at', ''))}",
+    ]
+    tried = _join_clean(item.get("what_was_tried", []))
+    outcomes = _join_clean(item.get("outcomes", []))
+    next_steps = _join_clean(item.get("next_steps", []))
+    if tried:
+        parts.append(f"Tried: {tried}")
+    if outcomes:
+        parts.append(f"Outcomes: {outcomes}")
+    if next_steps:
+        parts.append(f"Next session: {next_steps}")
+    return ". ".join(part.rstrip(". ") for part in parts if part.strip()) + "."
+
+
+def _memory_text(item: MemoryRow, kind: str) -> str:
+    if kind == "episodic":
+        return _episodic_semantic_text(item)
+    if kind == "procedural":
+        return _procedural_semantic_text(item)
+    if kind == "session_memory":
+        return _session_memory_semantic_text(item)
+    if kind == "facts":
+        return _naturalize_fact(str(item.get("content", "")))
+    return _normalize_text(str(item))
+
+
+def _row_score(item: MemoryRow, kind: str, prompt_tokens: set[str]) -> float:
+    similarity = float(item.get("similarity", 0.0) or 0.0)
+    memory_tokens = _tokenize(_memory_text(item, kind))
+    overlap = len(prompt_tokens & memory_tokens) / max(len(prompt_tokens), 1)
+    score = similarity + (0.15 * overlap)
+    if kind == "episodic" and _is_substantive_episode(item):
+        score += 0.03
+    if kind == "episodic" and _looks_like_missing_memory_episode(item):
+        score -= 0.25
+    return score
+
+
+def _rank_rows(rows: list[MemoryRow], kind: str, prompt: str, *, limit: int) -> list[MemoryRow]:
+    prompt_tokens = _tokenize(prompt)
+    filtered: list[MemoryRow] = []
+    for row in rows:
+        if kind == "episodic" and _looks_like_missing_memory_episode(row):
+            continue
+        filtered.append(row)
+    return sorted(
+        filtered,
+        key=lambda row: (
+            _row_score(row, kind, prompt_tokens),
+            float(row.get("similarity", 0.0) or 0.0),
+            str(row.get("updated_at", row.get("happened_at", ""))),
+        ),
+        reverse=True,
+    )[:limit]
 
 
 def _format_episode(item: MemoryRow) -> str:
@@ -157,10 +266,8 @@ def _format_episode(item: MemoryRow) -> str:
     return " ".join(fragments)
 
 
-
 def _format_episodic(episodic: list[MemoryRow]) -> str:
     return " ".join(_format_episode(item) for item in episodic[:2] if _format_episode(item))
-
 
 
 def _format_working_memory(item: MemoryRow | None) -> str:
@@ -189,7 +296,6 @@ def _format_working_memory(item: MemoryRow | None) -> str:
     return " ".join(fragments)
 
 
-
 def _format_facts(facts: list[MemoryRow]) -> str:
     lines: list[str] = []
     for fact in facts[:3]:
@@ -197,7 +303,6 @@ def _format_facts(facts: list[MemoryRow]) -> str:
         if content:
             lines.append(_naturalize_fact(content))
     return " ".join(lines)
-
 
 
 def _format_procedural(procedural: list[MemoryRow]) -> str:
@@ -215,7 +320,6 @@ def _format_procedural(procedural: list[MemoryRow]) -> str:
         if steps:
             fragments.append(f"Steps: {'; '.join(steps[:4])}.")
     return " ".join(fragments)
-
 
 
 def _format_session_memory(items: list[MemoryRow]) -> str:
@@ -238,7 +342,6 @@ def _format_session_memory(items: list[MemoryRow]) -> str:
     return " ".join(fragments)
 
 
-
 def _context_sections(context: WakeUpContext) -> list[str]:
     return [
         _format_working_memory(context.working_mem),
@@ -249,10 +352,8 @@ def _context_sections(context: WakeUpContext) -> list[str]:
     ]
 
 
-
 def _build_context_body(context: WakeUpContext) -> str:
     return _normalize_text(" ".join(section for section in _context_sections(context) if section))
-
 
 
 def _build_context_envelope(body: str) -> str:
@@ -260,7 +361,6 @@ def _build_context_envelope(body: str) -> str:
     if not body:
         return ""
     return f"[Memory context: {body}]"
-
 
 
 def _fit_context_to_budget(sections: list[str], *, char_budget: int) -> str:
@@ -281,7 +381,6 @@ def _fit_context_to_budget(sections: list[str], *, char_budget: int) -> str:
     return _normalize_text(" ".join(kept))
 
 
-
 def build_wake_up_injection(context: WakeUpContext) -> str:
     """Assemble the wake-up memory block within the char budget.
 
@@ -293,7 +392,6 @@ def build_wake_up_injection(context: WakeUpContext) -> str:
     return _build_context_envelope(body)
 
 
-
 def _retrieve_episodic(conn, prompt: str, prompt_vec, embed_fn, warnings: list[RetrievalWarning]) -> list[MemoryRow]:
     try:
         return retrieve_episodic_memories(
@@ -302,7 +400,7 @@ def _retrieve_episodic(conn, prompt: str, prompt_vec, embed_fn, warnings: list[R
             query_vector=prompt_vec,
             embed_fn=embed_fn,
             min_similarity=EPISODIC_MIN_SIMILARITY,
-            limit=EPISODIC_LIMIT,
+            limit=EPISODIC_FETCH_LIMIT,
             source="wake_up",
         )
     except Exception as exc:
@@ -310,70 +408,28 @@ def _retrieve_episodic(conn, prompt: str, prompt_vec, embed_fn, warnings: list[R
         return []
 
 
-
 def _retrieve_recent_episodic(conn, warnings: list[RetrievalWarning]) -> list[MemoryRow]:
     try:
         recent = list_recent_episodic_memories(conn, limit=EPISODIC_RECENT_LIMIT, source="wake_up_recent")
         substantive = [item for item in recent if _is_substantive_episode(item)]
         filtered = [item for item in substantive if not _looks_like_missing_memory_episode(item)]
-        return filtered[:EPISODIC_LIMIT]
+        return filtered[:EPISODIC_FETCH_LIMIT]
     except Exception as exc:
         _append_warning(warnings, "episodic_recent", exc)
         return []
 
 
-
 def _retrieve_facts(conn, prompt: str, prompt_vec, warnings: list[RetrievalWarning]) -> list[MemoryRow]:
     del prompt
     try:
-        fact_results = search_facts_semantic(conn, prompt_vec, limit=FACT_LIMIT)
+        fact_results = search_facts_semantic(conn, prompt_vec, limit=FACT_FETCH_LIMIT)
         return _filter_by_similarity(fact_results, FACT_MIN_SIMILARITY)
     except Exception as exc:
         _append_warning(warnings, "facts", exc)
         return []
 
 
-
-def _prompt_requests_procedural_help(prompt: str) -> bool:
-    normalized = prompt.lower().strip()
-    if normalized.startswith((
-        "how do i",
-        "how to",
-        "remind me how",
-        "what is the deploy process",
-        "what's the deploy process",
-    )):
-        return True
-    tokens = set(re.findall(r"[a-z0-9]+", normalized))
-    return bool(tokens & {"how", "steps", "workflow", "procedure", "process", "deploy", "release", "rollback", "restart", "setup", "configure", "install"})
-
-
-
-def _prompt_requests_resume_context(prompt: str) -> bool:
-    normalized = prompt.lower().strip()
-    phrases = (
-        "pick up where i left off",
-        "pick up where we left off",
-        "where did i leave off",
-        "where did we leave off",
-        "what was i working on",
-        "what were we working on",
-        "resume the work",
-        "continue the work",
-        "continue where i left off",
-        "continue where we left off",
-        "remind me what i was doing",
-    )
-    if any(phrase in normalized for phrase in phrases):
-        return True
-    tokens = set(re.findall(r"[a-z0-9]+", normalized))
-    return bool(tokens & {"resume", "continue", "left", "leftoff", "previous", "last", "recent", "working", "handoff"}) and bool(tokens & {"work", "task", "session", "project", "doing"})
-
-
-
 def _retrieve_procedural(conn, prompt: str, prompt_vec, embed_fn, warnings: list[RetrievalWarning]) -> list[MemoryRow]:
-    if not _prompt_requests_procedural_help(prompt):
-        return []
     try:
         return retrieve_procedural_memories(
             conn,
@@ -381,13 +437,12 @@ def _retrieve_procedural(conn, prompt: str, prompt_vec, embed_fn, warnings: list
             query_vector=prompt_vec,
             embed_fn=embed_fn,
             min_similarity=PROCEDURAL_MIN_SIMILARITY,
-            limit=PROCEDURAL_LIMIT,
+            limit=PROCEDURAL_FETCH_LIMIT,
             source="wake_up",
         )
     except Exception as exc:
         _append_warning(warnings, "procedural", exc)
         return []
-
 
 
 def _retrieve_working_memory(conn, session_id: str | None, warnings: list[RetrievalWarning]) -> MemoryRow | None:
@@ -400,7 +455,6 @@ def _retrieve_working_memory(conn, session_id: str | None, warnings: list[Retrie
         return None
 
 
-
 def _retrieve_session_memory(
     conn,
     prompt: str,
@@ -410,8 +464,6 @@ def _retrieve_session_memory(
     *,
     session_id: str | None,
 ) -> list[MemoryRow]:
-    if not _prompt_requests_resume_context(prompt):
-        return []
     try:
         return retrieve_session_memories(
             conn,
@@ -419,14 +471,13 @@ def _retrieve_session_memory(
             query_vector=prompt_vec,
             embed_fn=embed_fn,
             min_similarity=SESSION_MEMORY_MIN_SIMILARITY,
-            limit=SESSION_MEMORY_LIMIT,
+            limit=SESSION_MEMORY_FETCH_LIMIT,
             source="wake_up",
             exclude_session_id=session_id,
         )
     except Exception as exc:
         _append_warning(warnings, "session_memory", exc)
         return []
-
 
 
 def retrieve_wake_up_context(
@@ -437,7 +488,12 @@ def retrieve_wake_up_context(
     session_id: str | None = None,
     embed_fn=embed_text,
 ) -> WakeUpContext:
-    """Retrieve wake-up context for one user prompt."""
+    """Retrieve wake-up context for one user prompt.
+
+    Retrieval is intentionally broad: durable memory types are searched for every
+    prompt with one shared query embedding. Narrowing happens after candidate
+    search via per-type ranking and tight result caps.
+    """
 
     warnings: list[RetrievalWarning] = []
     prompt_vec = embed_fn(prompt)
@@ -447,19 +503,25 @@ def retrieve_wake_up_context(
         session_id if (include_working_memory or session_id) else None,
         warnings,
     )
-    episodic = _retrieve_episodic(conn, prompt, prompt_vec, embed_fn, warnings)
-    if not episodic and _prompt_requests_recent_episode_summary(prompt):
-        episodic = _retrieve_recent_episodic(conn, warnings)
-    facts = _retrieve_facts(conn, prompt, prompt_vec, warnings)
-    procedural = _retrieve_procedural(conn, prompt, prompt_vec, embed_fn, warnings)
-    session_memory = _retrieve_session_memory(
-        conn,
+    episodic = _rank_rows(_retrieve_episodic(conn, prompt, prompt_vec, embed_fn, warnings), "episodic", prompt, limit=EPISODIC_LIMIT)
+    facts = _rank_rows(_retrieve_facts(conn, prompt, prompt_vec, warnings), "facts", prompt, limit=FACT_LIMIT)
+    procedural = _rank_rows(_retrieve_procedural(conn, prompt, prompt_vec, embed_fn, warnings), "procedural", prompt, limit=PROCEDURAL_LIMIT)
+    session_memory = _rank_rows(
+        _retrieve_session_memory(
+            conn,
+            prompt,
+            prompt_vec,
+            embed_fn,
+            warnings,
+            session_id=session_id,
+        ),
+        "session_memory",
         prompt,
-        prompt_vec,
-        embed_fn,
-        warnings,
-        session_id=session_id,
+        limit=SESSION_MEMORY_LIMIT,
     )
+
+    if not episodic and not session_memory and _prompt_requests_recent_episode_summary(prompt):
+        episodic = _rank_rows(_retrieve_recent_episodic(conn, warnings), "episodic", prompt, limit=EPISODIC_LIMIT)
 
     return WakeUpContext(
         cache_hit=None,

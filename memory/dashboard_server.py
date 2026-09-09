@@ -28,6 +28,13 @@ PORT = int(os.environ.get("MEMORY_QUERY_PORT", "7748"))
 RECALL_PORT = int(os.environ.get("MEMORY_INGEST_PORT", "7747"))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RECALL_SERVER_URL = f"http://127.0.0.1:{RECALL_PORT}"
+MEMORY_API_LABEL = "Memory API"
+_ACTIVITY_LOG_PATH = os.path.expanduser("~/.memory/activity.log")
+_ACTIVITY_STATS_CACHE = {
+    "mtime": None,
+    "size": None,
+    "stats": {"llm_calls_avoided": 0, "est_tokens_saved": 0},
+}
 
 _LOG_SOURCES: dict[str, dict[str, object]] = {
     "daemon": {
@@ -36,8 +43,8 @@ _LOG_SOURCES: dict[str, dict[str, object]] = {
         "paths": [os.path.expanduser("~/.memory/daemon.log")],
     },
     "recall": {
-        "label": "Recall",
-        "description": "Recall server log",
+        "label": "Memory API",
+        "description": "Memory API log",
         "paths": [os.path.expanduser("~/.memory/ingest.log")],
     },
     "wake_up": {
@@ -142,6 +149,7 @@ def _check_recall_server() -> dict:
                     "status": "unreachable",
                     "port": RECALL_PORT,
                     "embed_model_ready": False,
+                    "embed_model_name": None,
                     "embed_model_error": f"HTTP {response.status}",
                 }
             payload = json.loads(response.read().decode("utf-8") or "{}")
@@ -151,10 +159,12 @@ def _check_recall_server() -> dict:
             "status": "stopped",
             "port": RECALL_PORT,
             "embed_model_ready": False,
+            "embed_model_name": None,
             "embed_model_error": str(exc),
         }
 
     embed_ready = bool(payload.get("embed_model_ready", False))
+    embed_name = payload.get("embed_model_name")
     embed_error = payload.get("embed_model_error") or ""
     status = "running" if embed_ready else "degraded"
     return {
@@ -162,6 +172,7 @@ def _check_recall_server() -> dict:
         "status": status,
         "port": RECALL_PORT,
         "embed_model_ready": embed_ready,
+        "embed_model_name": embed_name,
         "embed_model_error": embed_error,
         "db_path": payload.get("db_path"),
         "db_exists": payload.get("db_exists"),
@@ -220,6 +231,46 @@ def _parse_daemon_log() -> tuple[str | None, int]:
     return last_run_iso, facts_total
 
 
+def _parse_activity_log() -> dict:
+    if not os.path.exists(_ACTIVITY_LOG_PATH):
+        return {"llm_calls_avoided": 0, "est_tokens_saved": 0}
+
+    try:
+        mtime = os.path.getmtime(_ACTIVITY_LOG_PATH)
+        size = os.path.getsize(_ACTIVITY_LOG_PATH)
+    except OSError:
+        return {"llm_calls_avoided": 0, "est_tokens_saved": 0}
+
+    if _ACTIVITY_STATS_CACHE["mtime"] == mtime and _ACTIVITY_STATS_CACHE["size"] == size:
+        return dict(_ACTIVITY_STATS_CACHE["stats"])
+
+    stats = {"llm_calls_avoided": 0, "est_tokens_saved": 0}
+    try:
+        with open(_ACTIVITY_LOG_PATH) as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except Exception:
+                    continue
+                if payload.get("action") != "memory_answer":
+                    continue
+                stats["llm_calls_avoided"] += 1
+                try:
+                    stats["est_tokens_saved"] += int(payload.get("tokens_saved_estimate") or 0)
+                except (TypeError, ValueError):
+                    pass
+    except Exception:
+        return {"llm_calls_avoided": 0, "est_tokens_saved": 0}
+
+    _ACTIVITY_STATS_CACHE["mtime"] = mtime
+    _ACTIVITY_STATS_CACHE["size"] = size
+    _ACTIVITY_STATS_CACHE["stats"] = dict(stats)
+    return stats
+
+
 @ui_router.get("/", response_class=HTMLResponse)
 def dashboard() -> HTMLResponse:
     path = os.path.join(PROJECT_ROOT, "dashboard.html")
@@ -237,6 +288,7 @@ def get_services() -> dict:
     ollama_running, ollama_model, ollama_installed_models = _check_ollama()
     recall = _check_recall_server()
     last_run_iso, facts_extracted_total = _parse_daemon_log()
+    efficiency = _parse_activity_log()
 
     total_sessions = 0
     total_facts = 0
@@ -244,6 +296,7 @@ def get_services() -> dict:
     total_procedures = 0
     total_working_memory = 0
     total_session_memory = 0
+    unprocessed_sessions = 0
 
     try:
         conn = open_db(DB_PATH)
@@ -254,6 +307,7 @@ def get_services() -> dict:
             total_procedures = conn.execute("SELECT COUNT(*) AS c FROM procedural_memory").fetchone()["c"]
             total_working_memory = conn.execute("SELECT COUNT(*) AS c FROM working_memory").fetchone()["c"]
             total_session_memory = conn.execute("SELECT COUNT(*) AS c FROM session_memory").fetchone()["c"]
+            unprocessed_sessions = conn.execute("SELECT COUNT(*) AS c FROM sessions WHERE daemon_processed_at IS NULL").fetchone()["c"]
         finally:
             conn.close()
     except Exception:
@@ -268,6 +322,8 @@ def get_services() -> dict:
             "pid": daemon_pid,
             "last_run": last_run_iso,
             "facts_extracted": facts_extracted_total,
+            "unprocessed_sessions": unprocessed_sessions,
+            "process_one_endpoint": "/ops/daemon/process-one",
         },
         "ollama": {
             "running": ollama_running,
@@ -282,10 +338,16 @@ def get_services() -> dict:
         },
         "recall": {
             **recall,
+            "display_name": MEMORY_API_LABEL,
             "restart_command": f"{sys.executable} memory/ingest_server.py",
             "restart_endpoint": "/ops/recall/restart",
         },
         "logs": _list_logs(),
+        "efficiency": {
+            **efficiency,
+            "metric": "estimated_tokens_saved_via_memory_answers",
+            "method": "prompt_tokens + answer_tokens using ~chars/4 heuristic for direct memory answers",
+        },
         "memory": {
             "total_sessions": total_sessions,
             "total_facts": total_facts,
@@ -632,6 +694,25 @@ def start_ollama() -> dict:
         "started_here": proc is not None,
         "start_command": "ollama serve",
     }
+
+
+@ops_router.post("/ops/daemon/process-one")
+def process_one_daemon_session() -> dict:
+    from memory.daemon import process_one_unprocessed_session
+
+    result = process_one_unprocessed_session()
+    if result.get("processed") or result.get("ok"):
+        try:
+            conn = open_db(DB_PATH)
+            try:
+                result["unprocessed_sessions"] = conn.execute(
+                    "SELECT COUNT(*) AS c FROM sessions WHERE daemon_processed_at IS NULL"
+                ).fetchone()["c"]
+            finally:
+                conn.close()
+        except Exception:
+            result["unprocessed_sessions"] = None
+    return result
 
 
 @ops_router.post("/ops/recall/restart")

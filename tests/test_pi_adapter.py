@@ -26,18 +26,27 @@ class TestPiAdapterRecall(unittest.TestCase):
                 "warnings": [],
                 "context": {"facts": [{"id": "fact-1", "content": "user.name = Yash"}], "episodic": [], "procedural": []},
             },
-        ):
-            result = handle_recall({"prompt": "what is my name?"})
+        ) as recall, \
+        patch("integrations.pi.adapter._wake_log_info") as wake_log_info:
+            result = handle_recall({"prompt": "what is my name?", "session_id": "pi-session-1"})
 
         self.assertEqual(result["action"], "answer")
         self.assertEqual(result["answer"], "Your name is Yash.")
         self.assertEqual(result["facts_count"], 1)
         self.assertEqual(result["episodic_count"], 0)
+        recall.assert_called_once_with(
+            "what is my name?",
+            include_working_memory=False,
+            session_id="pi-session-1",
+            agent="pi",
+        )
+        wake_log_info.assert_called()
 
 
 class TestPiAdapterSave(unittest.TestCase):
     def test_save_persists_session(self):
-        with tempfile.NamedTemporaryFile(suffix=".db") as tmp:
+        with tempfile.NamedTemporaryFile(suffix=".db") as tmp, \
+             patch("integrations.pi.adapter._save_log_info") as save_log_info:
             result = handle_save(
                 {
                     "session_id": "pi-session-1",
@@ -62,10 +71,13 @@ class TestPiAdapterSave(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["turns_stored"], 2)
         self.assertEqual(session["agent"], "pi")
+        save_log_info.assert_called()
 
     def test_save_rejects_empty_turns(self):
-        result = handle_save({"session_id": "pi-session-1", "turns": []})
+        with patch("integrations.pi.adapter._save_log_error") as save_log_error:
+            result = handle_save({"session_id": "pi-session-1", "turns": []})
         self.assertEqual(result, {"ok": False, "error": "turns must not be empty"})
+        save_log_error.assert_called_once()
 
 
 if __name__ == "__main__":

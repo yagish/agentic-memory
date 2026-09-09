@@ -384,6 +384,33 @@ def _run_unprocessed_batch(conn) -> int:
     return len(sessions)
 
 
+def process_one_unprocessed_session() -> dict:
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    conn = bootstrap_db(DB_PATH) if not os.path.exists(DB_PATH) or os.path.getsize(DB_PATH) == 0 else open_db(DB_PATH)
+    try:
+        sessions = get_unprocessed_sessions(conn, limit=1)
+        if not sessions:
+            _daemon_log("manual process-one requested but no unprocessed sessions found")
+            return {"ok": True, "processed": False, "reason": "no_unprocessed_sessions"}
+
+        session = sessions[0]
+        session_id = session["session_id"]
+        ollama_proc = _start_ollama_if_needed(log_fn=_daemon_log)
+        try:
+            _process_session(conn, session)
+        except Exception as exc:
+            error_log("daemon", f"manual processing failed for {session_id}: {exc}", exc=exc)
+            _daemon_log(f"manual process-one failed for {session_id}: {exc}")
+            return {"ok": False, "processed": False, "session_id": session_id, "error": str(exc)}
+        finally:
+            if ollama_proc is not None:
+                _stop_ollama(ollama_proc, log_fn=_daemon_log)
+
+        return {"ok": True, "processed": True, "session_id": session_id}
+    finally:
+        conn.close()
+
+
 def run(once: bool = False) -> None:
     """Run the daemon main loop.
 

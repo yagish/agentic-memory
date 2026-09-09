@@ -79,13 +79,22 @@ class MemoryClient:
             payload["metadata"] = metadata
         return self._post("/ingest", payload)
 
-    def recall(self, prompt: str, *, include_working_memory: bool = False, session_id: str | None = None) -> dict:
+    def recall(
+        self,
+        prompt: str,
+        *,
+        include_working_memory: bool = False,
+        session_id: str | None = None,
+        agent: str | None = None,
+    ) -> dict:
         payload: dict = {
             "prompt": prompt,
             "include_working_memory": include_working_memory,
         }
         if session_id is not None:
             payload["session_id"] = session_id
+        if agent is not None:
+            payload["agent"] = agent
         return self._post("/recall", payload)
 
     def status(self) -> dict:

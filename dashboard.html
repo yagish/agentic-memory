@@ -31,7 +31,12 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
 .tab-btn:hover{color:var(--text)}.tab-btn.active{color:var(--text);border-bottom-color:var(--accent)}
 .tab-spacer{flex:1}.tab-updated{font-size:11px;color:var(--muted)}
 #panels{flex:1;overflow-y:auto}.panel{padding:20px 24px}
+.section-block{margin-bottom:22px}
+.section-head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin-bottom:10px}
+.section-title{font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.09em}
+.section-desc{font-size:12px;color:var(--muted)}
 .tiles-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px}
+.runtime-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:20px}
 .tile{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px}
 .tile.tile-clickable{cursor:pointer;transition:border-color .1s,transform .1s}
 .tile.tile-clickable:hover{border-color:var(--accent);transform:translateY(-1px)}
@@ -68,15 +73,6 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
 <div id="app">
   <aside id="sidebar">
     <div class="sidebar-title">Agentic Memory <small>Dashboard</small></div>
-    <div class="sidebar-section">Runtime</div>
-    <div class="svc-item" id="svc-recall-runtime">
-      <span class="svc-dot" id="dot-recall"></span>
-      <div class="svc-body"><div class="svc-name">Recall Server</div><div class="svc-desc" id="svc-desc-recall">Checking status…</div></div>
-    </div>
-    <div class="svc-item" id="svc-ollama-runtime">
-      <span class="svc-dot" id="dot-ollama"></span>
-      <div class="svc-body"><div class="svc-name">Ollama</div><div class="svc-desc" id="svc-desc-ollama">Checking status…</div></div>
-    </div>
     <div class="sidebar-section">Logs</div>
     <div class="svc-item" id="svc-daemon" onclick="selectLog('daemon')">
       <span class="svc-dot" id="dot-daemon"></span>
@@ -84,7 +80,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
     </div>
     <div class="svc-item" id="svc-recall" onclick="selectLog('recall')">
       <span class="svc-dot" id="dot-recall-log"></span>
-      <div class="svc-body"><div class="svc-name">Recall</div><div class="svc-desc">Recall server log</div></div>
+      <div class="svc-body"><div class="svc-name">Memory API</div><div class="svc-desc">Memory API log</div></div>
     </div>
     <div class="svc-item" id="svc-wake_up" onclick="selectLog('wake_up')">
       <span class="svc-dot" id="dot-wake_up"></span>
@@ -141,45 +137,89 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
 
     <div id="panels">
       <div class="panel" id="panel-overview">
-        <div class="tiles-row">
-          <div class="tile tile-clickable" onclick="switchTab('sessions')"><div class="tile-value" id="t-sessions">—</div><div class="tile-label">Sessions</div></div>
-          <div class="tile tile-clickable" onclick="switchTab('facts')"><div class="tile-value" id="t-facts">—</div><div class="tile-label">Facts</div></div>
-          <div class="tile tile-clickable" onclick="switchTab('episodes')"><div class="tile-value" id="t-episodes">—</div><div class="tile-label">Episodes</div></div>
-          <div class="tile tile-clickable" onclick="switchTab('procedural')"><div class="tile-value" id="t-procedural">—</div><div class="tile-label">Procedural</div></div>
-          <div class="tile tile-clickable" onclick="switchTab('working')"><div class="tile-value" id="t-working">—</div><div class="tile-label">Working</div></div>
-          <div class="tile tile-clickable" onclick="switchTab('session-memory')"><div class="tile-value" id="t-session-memory">—</div><div class="tile-label">Session Memory</div></div>
-          <div class="tile"><div class="tile-value" id="t-dbsize">—</div><div class="tile-label">DB Size</div></div>
-          <div class="tile">
-            <div class="tile-value" id="t-recall">—</div>
-            <div class="tile-label">Recall Server</div>
-            <div class="tile-sub" id="t-recall-port">Port: —</div>
-            <div class="tile-sub" id="t-recall-embed">Embedding model: —</div>
-            <div class="tile-sub" id="t-recall-warning"></div>
-            <div class="tile-actions">
-              <button class="action-btn" id="btn-restart-recall" onclick="restartRecallServer()">Restart Recall Server</button>
-              <span class="mono" id="recall-command">python3 memory/ingest_server.py</span>
+        <div class="section-block">
+          <div class="section-head">
+            <div>
+              <div class="section-title">Runtime</div>
+              <div class="section-desc">Core services for retrieval, embeddings, and extraction.</div>
             </div>
           </div>
-          <div class="tile">
-            <div class="tile-value" id="t-ollama">—</div>
-            <div class="tile-label">Ollama</div>
-            <div class="tile-sub" id="t-ollama-model">Checking status…</div>
-            <div class="tile-sub" id="t-ollama-default-model">Default model: —</div>
-            <div class="tile-sub" id="t-ollama-installed-models">Installed models: —</div>
-            <div class="tile-sub" id="t-ollama-warning"></div>
-            <div class="tile-actions">
-              <button class="action-btn" id="btn-start-ollama" onclick="startOllama()">Start Ollama</button>
-              <span class="mono" id="ollama-command">ollama serve</span>
+          <div class="runtime-row">
+            <div class="tile">
+              <div class="tile-value" id="t-recall">—</div>
+              <div class="tile-label">Memory API</div>
+              <div class="tile-sub" id="t-recall-port">Port: —</div>
+              <div class="tile-sub" id="t-recall-embed-name">Embedding model: —</div>
+              <div class="tile-sub" id="t-recall-embed-status">Embedding warmup: —</div>
+              <div class="tile-sub" id="t-recall-warning"></div>
+              <div class="tile-actions">
+                <button class="action-btn" id="btn-restart-recall" onclick="restartRecallServer()">Restart Memory API</button>
+                <span class="mono" id="recall-command">python3 memory/ingest_server.py</span>
+              </div>
+            </div>
+            <div class="tile">
+              <div class="tile-value" id="t-ollama">—</div>
+              <div class="tile-label">Ollama</div>
+              <div class="tile-sub" id="t-ollama-model">Checking status…</div>
+              <div class="tile-sub" id="t-ollama-default-model">Default model: —</div>
+              <div class="tile-sub" id="t-ollama-installed-models">Installed models: —</div>
+              <div class="tile-sub" id="t-ollama-warning"></div>
+              <div class="tile-actions">
+                <button class="action-btn" id="btn-start-ollama" onclick="startOllama()">Start Ollama</button>
+                <span class="mono" id="ollama-command">ollama serve</span>
+              </div>
+            </div>
+            <div class="tile">
+              <div class="tile-value" id="t-daemon">—</div>
+              <div class="tile-label">Daemon</div>
+              <div class="tile-sub" id="t-daemon-pending">Pending sessions: —</div>
+              <div class="tile-sub" id="t-daemon-last-run">Last run: —</div>
+              <div class="tile-sub" id="t-daemon-facts">Facts extracted: —</div>
+              <div class="tile-actions">
+                <button class="action-btn" id="btn-process-daemon" onclick="processOneDaemonSession()">Process One Session</button>
+              </div>
             </div>
           </div>
         </div>
+
+        <div class="section-block">
+          <div class="section-head">
+            <div>
+              <div class="section-title">Savings</div>
+              <div class="section-desc">Estimated savings from direct answers returned by memory.</div>
+            </div>
+          </div>
+          <div class="tiles-row">
+            <div class="tile"><div class="tile-value" id="t-memory-answers">—</div><div class="tile-label">LLM Calls Avoided</div><div class="tile-sub">Direct answers from memory</div></div>
+            <div class="tile"><div class="tile-value" id="t-token-saved">—</div><div class="tile-label">Est. Tokens Saved</div><div class="tile-sub">Prompt + answer, ~chars/4</div></div>
+          </div>
+        </div>
+
+        <div class="section-block">
+          <div class="section-head">
+            <div>
+              <div class="section-title">Memory</div>
+              <div class="section-desc">Stored sessions and extracted memory artifacts.</div>
+            </div>
+          </div>
+          <div class="tiles-row">
+            <div class="tile tile-clickable" onclick="switchTab('sessions')"><div class="tile-value" id="t-sessions">—</div><div class="tile-label">Sessions</div></div>
+            <div class="tile tile-clickable" onclick="switchTab('facts')"><div class="tile-value" id="t-facts">—</div><div class="tile-label">Facts</div></div>
+            <div class="tile tile-clickable" onclick="switchTab('episodes')"><div class="tile-value" id="t-episodes">—</div><div class="tile-label">Episodes</div></div>
+            <div class="tile tile-clickable" onclick="switchTab('procedural')"><div class="tile-value" id="t-procedural">—</div><div class="tile-label">Procedural</div></div>
+            <div class="tile tile-clickable" onclick="switchTab('working')"><div class="tile-value" id="t-working">—</div><div class="tile-label">Working</div></div>
+            <div class="tile tile-clickable" onclick="switchTab('session-memory')"><div class="tile-value" id="t-session-memory">—</div><div class="tile-label">Session Memory</div></div>
+            <div class="tile"><div class="tile-value" id="t-dbsize">—</div><div class="tile-label">DB Size</div></div>
+          </div>
+        </div>
+
         <div class="charts-row">
           <div class="chart-card"><div class="chart-title">Sessions per Day</div><div id="ch-sessions"></div></div>
           <div class="chart-card"><div class="chart-title">Facts per Day</div><div id="ch-facts"></div></div>
           <div class="chart-card"><div class="chart-title">Episodes per Day</div><div id="ch-episodes"></div></div>
         </div>
         <div class="overview-copy">
-          This dashboard is intentionally trimmed down. The database keeps only <strong>sessions</strong>, <strong>facts</strong>, <strong>episodes</strong>, <strong>procedural memory</strong>, <strong>working memory</strong>, and <strong>session memory</strong>. The visible logs are <strong>daemon</strong>, <strong>recall</strong>, <strong>wake up</strong>, <strong>save hook</strong>, <strong>facts</strong>, <strong>episodes</strong>, <strong>procedural</strong>, <strong>working memory</strong>, and <strong>session memory</strong>. Recall server status is shown above, and the <strong>Restart Recall Server</strong> button restarts the singleton embedding/recall process. Ollama status is also shown for extraction-time model work, and the <strong>Start Ollama</strong> button calls the local dashboard endpoint if the server is down. Click any overview count tile to jump to that memory tab, or click any row in a database tab to inspect its full details in the panel below the table.
+          <strong>Memory API</strong> is the service formerly shown as “Recall Server.” It serves retrieval requests and warms the local embedding model used for semantic lookup. The <strong>Process One Session</strong> button asks the daemon pipeline to pick the next unprocessed session and run one extraction pass immediately. Savings metrics are approximate and come from direct memory-answer hits logged in <span class="mono">~/.memory/activity.log</span> using a rough <span class="mono">chars / 4</span> heuristic. Click any memory count tile to jump to that table, or click any row in a memory table to inspect full details below it.
         </div>
       </div>
 
@@ -307,21 +347,22 @@ async function loadServices() {
     const mem = d.memory || {};
     const recall = d.recall || {};
     const ollama = d.ollama || {};
+    const efficiency = d.efficiency || {};
     set('t-sessions', fmt(mem.total_sessions));
     set('t-facts', fmt(mem.total_facts));
     set('t-episodes', fmt(mem.total_episodes));
     set('t-procedural', fmt(mem.total_procedures));
     set('t-working', fmt(mem.total_working_memory));
     set('t-session-memory', fmt(mem.total_session_memory));
+    set('t-memory-answers', fmt(efficiency.llm_calls_avoided ?? 0));
+    set('t-token-saved', fmt(efficiency.est_tokens_saved ?? 0));
     set('t-dbsize', fmtBytes(mem.db_size_bytes));
     setDot('recall', !!recall.running);
     set('t-recall', recall.running ? (recall.status === 'degraded' ? 'Degraded' : 'Running') : 'Stopped');
     set('t-recall-port', `Port: ${recall.port || '7747'}`);
-    set('t-recall-embed', recall.embed_model_ready ? 'Embedding model: ready' : 'Embedding model: not ready');
+    set('t-recall-embed-name', `Embedding model: ${recall.embed_model_name || 'unknown'}`);
+    set('t-recall-embed-status', recall.embed_model_ready ? 'Embedding warmup: ready' : 'Embedding warmup: not ready');
     set('t-recall-warning', recall.embed_model_error || '');
-    set('svc-desc-recall', recall.running
-      ? (recall.status === 'degraded' ? 'Running · embedding warmup failed' : 'Running · singleton embeddings loaded')
-      : 'Stopped · click Restart Recall Server');
     set('recall-command', recall.restart_command || 'python3 memory/ingest_server.py');
     const recallBtn = document.getElementById('btn-restart-recall');
     if (recallBtn) recallBtn.disabled = false;
@@ -331,12 +372,16 @@ async function loadServices() {
     set('t-ollama-default-model', `Default model: ${ollama.default_model || 'qwen2.5:7b'}`);
     set('t-ollama-installed-models', `Installed models: ${(ollama.installed_models || []).join(', ') || 'none detected'}`);
     set('t-ollama-warning', ollama.warning || '');
-    set('svc-desc-ollama', ollama.running
-      ? (ollama.model ? `Running · ${ollama.model}` : 'Running')
-      : 'Stopped · click Start Ollama or run ollama serve');
     set('ollama-command', ollama.start_command || 'ollama serve');
     const startBtn = document.getElementById('btn-start-ollama');
     if (startBtn) startBtn.disabled = !!ollama.running;
+    const daemon = d.daemon || {};
+    set('t-daemon', daemon.running ? 'Running' : 'Idle');
+    set('t-daemon-pending', `Pending sessions: ${fmt(daemon.unprocessed_sessions ?? 0)}`);
+    set('t-daemon-last-run', `Last run: ${daemon.last_run || 'never'}`);
+    set('t-daemon-facts', `Facts extracted: ${fmt(daemon.facts_extracted ?? 0)}`);
+    const daemonBtn = document.getElementById('btn-process-daemon');
+    if (daemonBtn) daemonBtn.disabled = (daemon.unprocessed_sessions ?? 0) === 0;
     const now = new Date().toLocaleTimeString();
     set('tab-updated', 'updated ' + now);
     set('sidebar-note', 'Updated ' + now);
@@ -361,9 +406,31 @@ async function restartRecallServer() {
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.textContent = 'Restart Recall Server';
+      btn.textContent = 'Restart Memory API';
     }
     await loadServices();
+  }
+}
+
+async function processOneDaemonSession() {
+  const btn = document.getElementById('btn-process-daemon');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Processing…';
+  }
+  try {
+    await fetch(BASE + '/ops/daemon/process-one', { method: 'POST' });
+  } catch (_) {
+  } finally {
+    if (btn) btn.textContent = 'Process One Session';
+    await loadServices();
+    await loadCharts();
+    if (_loaded.sessions) await loadSessions();
+    if (_loaded.facts) await loadFacts();
+    if (_loaded.episodes) await loadEpisodes();
+    if (_loaded.procedural) await loadProcedural();
+    if (_loaded.working) await loadWorking();
+    if (_loaded['session-memory']) await loadSessionMemory();
   }
 }
 
@@ -785,7 +852,7 @@ function esc(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt
 function fmt(n) { return n == null ? '—' : n.toLocaleString(); }
 function fmtBytes(b) { if (!b) return '—'; if (b >= 1073741824) return (b / 1073741824).toFixed(1) + ' GB'; if (b >= 1048576) return (b / 1048576).toFixed(1) + ' MB'; if (b >= 1024) return (b / 1024).toFixed(1) + ' KB'; return b + ' B'; }
 function fmtDate(iso) { if (!iso) return '—'; try { return new Date(iso).toLocaleString(undefined, { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }); } catch (_) { return String(iso).slice(0, 16); } }
-function svcLabel(s) { return { daemon:'Daemon', recall:'Recall', wake_up:'Wake Up', save_hook:'Save Hook', facts:'Facts', episodic:'Episodes', procedural:'Procedural', working_memory:'Working Memory', session_memory:'Session Memory' }[s] || s; }
+function svcLabel(s) { return { daemon:'Daemon', recall:'Memory API', wake_up:'Wake Up', save_hook:'Save Hook', facts:'Facts', episodic:'Episodes', procedural:'Procedural', working_memory:'Working Memory', session_memory:'Session Memory' }[s] || s; }
 </script>
 </body>
 </html>

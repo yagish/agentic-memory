@@ -62,7 +62,8 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
              ]) as search_facts_semantic, \
              patch("memory.retrieval.retrieve_procedural_memories", return_value=[
                  {"id": "proc-1", "title": "Deploy service", "summary": "Use this when releasing the auth service.", "steps": ["Build the image"], "similarity": 0.88}
-             ]) as retrieve_procedural:
+             ]) as retrieve_procedural, \
+             patch("memory.retrieval.retrieve_session_memories", return_value=[]) as retrieve_session:
             context = retrieve_wake_up_context(
                 conn,
                 "how do i deploy the auth service?",
@@ -82,18 +83,28 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
             "how do i deploy the auth service?",
             query_vector=[0.1, 0.2],
             embed_fn=unittest.mock.ANY,
-            min_similarity=0.72,
-            limit=3,
+            min_similarity=0.58,
+            limit=8,
             source="wake_up",
         )
         search_facts_semantic.assert_called_once_with(conn, [0.1, 0.2], limit=5)
+        retrieve_session.assert_called_once_with(
+            conn,
+            "how do i deploy the auth service?",
+            query_vector=[0.1, 0.2],
+            embed_fn=unittest.mock.ANY,
+            min_similarity=0.6,
+            limit=4,
+            source="wake_up",
+            exclude_session_id=None,
+        )
         retrieve_procedural.assert_called_once_with(
             conn,
             "how do i deploy the auth service?",
             query_vector=[0.1, 0.2],
             embed_fn=unittest.mock.ANY,
-            min_similarity=0.74,
-            limit=2,
+            min_similarity=0.58,
+            limit=4,
             source="wake_up",
         )
 
@@ -101,7 +112,9 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
         conn = MagicMock()
 
         with patch("memory.retrieval.retrieve_episodic_memories", return_value=[]), \
-             patch("memory.retrieval.search_facts_semantic", return_value=[]):
+             patch("memory.retrieval.search_facts_semantic", return_value=[]), \
+             patch("memory.retrieval.retrieve_procedural_memories", return_value=[]), \
+             patch("memory.retrieval.retrieve_session_memories", return_value=[]):
             context = retrieve_wake_up_context(
                 conn,
                 "what is my favorite language?",
@@ -143,7 +156,9 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
 
         with patch("memory.retrieval.retrieve_episodic_memories", return_value=[]), \
              patch("memory.retrieval.list_recent_episodic_memories", return_value=recent_rows) as list_recent, \
-             patch("memory.retrieval.search_facts_semantic", return_value=[]):
+             patch("memory.retrieval.search_facts_semantic", return_value=[]), \
+             patch("memory.retrieval.retrieve_procedural_memories", return_value=[]), \
+             patch("memory.retrieval.retrieve_session_memories", return_value=[]):
             context = retrieve_wake_up_context(
                 conn,
                 "what was i working on last",
@@ -199,11 +214,72 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
             "pick up where i left off on the auth middleware work",
             query_vector=[0.1, 0.2],
             embed_fn=unittest.mock.ANY,
-            min_similarity=0.78,
-            limit=2,
+            min_similarity=0.6,
+            limit=4,
             source="wake_up",
             exclude_session_id="session-123",
         )
+
+    def test_retrieval_searches_broadly_without_prompt_gating(self):
+        conn = MagicMock()
+
+        with patch("memory.retrieval.retrieve_episodic_memories", return_value=[]), \
+             patch("memory.retrieval.search_facts_semantic", return_value=[]), \
+             patch("memory.retrieval.retrieve_procedural_memories", return_value=[]) as retrieve_procedural, \
+             patch("memory.retrieval.retrieve_session_memories", return_value=[]) as retrieve_session:
+            retrieve_wake_up_context(
+                conn,
+                "what did we decide about auth middleware?",
+                include_working_memory=False,
+                embed_fn=lambda prompt: [0.1],
+            )
+
+        retrieve_procedural.assert_called_once()
+        retrieve_session.assert_called_once()
+
+    def test_ranked_episodic_results_filter_missing_memory_artifacts(self):
+        conn = MagicMock()
+
+        with patch("memory.retrieval.retrieve_episodic_memories", return_value=[
+            {
+                "id": "ep-noise",
+                "title": "Name inquiry",
+                "abstract": "The user asked about their name, but it was not stored in the assistant's memory.",
+                "decisions": [],
+                "outcomes": [],
+                "follow_ups": [],
+                "similarity": 0.95,
+            },
+            {
+                "id": "ep-1",
+                "title": "Auth middleware decision",
+                "abstract": "Moved token validation into shared middleware.",
+                "decisions": ["Move token validation into shared middleware"],
+                "outcomes": ["Login loop fixed"],
+                "follow_ups": ["Add regression coverage"],
+                "similarity": 0.74,
+            },
+            {
+                "id": "ep-2",
+                "title": "Refresh token regression",
+                "abstract": "Added regression coverage for expired-session flows.",
+                "decisions": ["Cover expired-session flows"],
+                "outcomes": ["Regression test added"],
+                "follow_ups": [],
+                "similarity": 0.73,
+            },
+        ]), \
+             patch("memory.retrieval.search_facts_semantic", return_value=[]), \
+             patch("memory.retrieval.retrieve_procedural_memories", return_value=[]), \
+             patch("memory.retrieval.retrieve_session_memories", return_value=[]):
+            context = retrieve_wake_up_context(
+                conn,
+                "what did we decide about auth middleware?",
+                include_working_memory=False,
+                embed_fn=lambda prompt: [0.1],
+            )
+
+        self.assertEqual([item["id"] for item in context.episodic], ["ep-1", "ep-2"])
 
     def test_non_fatal_layer_errors_become_warnings(self):
         conn = MagicMock()

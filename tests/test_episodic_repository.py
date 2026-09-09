@@ -3,6 +3,7 @@ import unittest
 from memory.contracts import ExtractedEpisode
 from memory.db import init_db
 from memory.episodic_repository import (
+    build_episodic_semantic_text,
     list_session_episodes,
     retrieve_episodic_memories,
     save_extracted_episode,
@@ -15,6 +16,23 @@ class TestEpisodicRepository(unittest.TestCase):
 
     def tearDown(self):
         self.conn.close()
+
+    def test_build_semantic_text_is_deterministic(self):
+        episode = ExtractedEpisode(
+            title="Auth middleware decision",
+            abstract="Moved token validation into shared middleware. Login loop is fixed.",
+            participants=("pi", "claude"),
+            decisions=("Move token validation into shared middleware",),
+            outcomes=("Login loop fixed",),
+            follow_ups=("Add regression tests",),
+        )
+
+        semantic_text = build_episodic_semantic_text(episode)
+        self.assertIn("Auth middleware decision", semantic_text)
+        self.assertIn("Participants: pi; claude", semantic_text)
+        self.assertIn("Decisions: Move token validation into shared middleware", semantic_text)
+        self.assertIn("Outcomes: Login loop fixed", semantic_text)
+        self.assertIn("Follow-ups: Add regression tests", semantic_text)
 
     def test_save_extracted_episode_persists_structured_episode(self):
         episode = ExtractedEpisode(
@@ -44,6 +62,7 @@ class TestEpisodicRepository(unittest.TestCase):
         self.assertEqual(rows[0]["outcomes"], ["Login loop fixed"])
         self.assertEqual(rows[0]["follow_ups"], ["Add regression tests"])
         self.assertEqual(rows[0]["source"], "episodic_test")
+        self.assertIn("Decisions: Move token validation into shared middleware", rows[0]["semantic_text"])
 
     def test_retrieve_episodic_memories_filters_by_similarity(self):
         save_extracted_episode(

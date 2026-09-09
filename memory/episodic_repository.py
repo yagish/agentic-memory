@@ -11,6 +11,19 @@ from memory.episodic import log_episodic_event
 from memory.inference import embed_text
 
 
+def build_episodic_semantic_text(episode: ExtractedEpisode) -> str:
+    parts = [episode.title.strip(), episode.abstract.strip()]
+    if episode.participants:
+        parts.append("Participants: " + "; ".join(item.strip() for item in episode.participants if item.strip()))
+    if episode.decisions:
+        parts.append("Decisions: " + "; ".join(item.strip() for item in episode.decisions if item.strip()))
+    if episode.outcomes:
+        parts.append("Outcomes: " + "; ".join(item.strip() for item in episode.outcomes if item.strip()))
+    if episode.follow_ups:
+        parts.append("Follow-ups: " + "; ".join(item.strip() for item in episode.follow_ups if item.strip()))
+    return ". ".join(part.rstrip(". ") for part in parts if part.strip()) + "."
+
+
 def save_extracted_episode(
     conn: sqlite3.Connection,
     episode: ExtractedEpisode,
@@ -34,9 +47,10 @@ def save_extracted_episode(
         happened_at=happened_at,
     )
 
+    semantic_text = build_episodic_semantic_text(episode)
     embedding = None
     try:
-        embedding = embed_fn(f"{memory.title}\n{memory.abstract}")
+        embedding = embed_fn(semantic_text)
     except Exception as exc:
         log_episodic_event(
             "validation_error",
@@ -59,6 +73,7 @@ def save_extracted_episode(
             "confidence": memory.confidence,
             "source_quote": memory.source_quote,
             "source": source,
+            "semantic_text": semantic_text,
         },
         embedding=embedding,
     )
@@ -101,6 +116,7 @@ def list_session_episodes(conn: sqlite3.Connection, *, session_id: str) -> list[
                 "confidence": details.get("confidence"),
                 "source_quote": details.get("source_quote"),
                 "source": details.get("source", "episodic_extractor"),
+                "semantic_text": details.get("semantic_text", ""),
             }
         )
     return result

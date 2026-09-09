@@ -247,12 +247,13 @@ class TestSaveSession(unittest.TestCase):
 
         conn = init_db(self.tmp_db.name)
         row = conn.execute(
-            "SELECT session_id, turn_count, transcript FROM sessions WHERE session_id = 'sess-abc'"
+            "SELECT session_id, agent, turn_count, transcript FROM sessions WHERE session_id = 'sess-abc'"
         ).fetchone()
         conn.close()
 
         self.assertIsNotNone(row, "session row was not written to DB")
         self.assertEqual(row["session_id"], "sess-abc")
+        self.assertEqual(row["agent"], "claude")
         self.assertEqual(row["turn_count"], 4)
 
         stored = json.loads(row["transcript"])

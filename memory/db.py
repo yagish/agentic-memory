@@ -521,6 +521,7 @@ def _episodic_row_to_memory_row(row: sqlite3.Row, *, similarity: float | None = 
         "confidence": details.get("confidence"),
         "source_quote": details.get("source_quote"),
         "source": details.get("source"),
+        "semantic_text": details.get("semantic_text", ""),
     }
     if similarity is not None:
         payload["similarity"] = round(similarity, 4)

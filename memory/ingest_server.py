@@ -23,9 +23,10 @@ from uvicorn.config import LOGGING_CONFIG as UVICORN_LOGGING_CONFIG
 from integrations.common import build_recall_response, retrieve_prompt_memory
 from memory.db import bootstrap_db, open_db
 from memory.ingest_pipeline import ingest_session
-from memory.logger import error_log
+from memory.logger import error_log, log_memory_answer
 from memory.debug import enable_debug
 from memory.inference import embed_text
+from memory.vectors import _MODEL_NAME as EMBED_MODEL_NAME
 
 
 DB_PATH = os.path.expanduser("~/.memory/memory.db")
@@ -126,6 +127,7 @@ class RecallRequest(BaseModel):
     prompt: str
     include_working_memory: bool = False
     session_id: str | None = None
+    agent: str | None = None
 
 
 @app.get("/status")
@@ -135,6 +137,7 @@ def get_status() -> dict:
         "db_path": DB_PATH,
         "db_exists": os.path.exists(DB_PATH),
         "embed_model_ready": _EMBED_MODEL_READY,
+        "embed_model_name": EMBED_MODEL_NAME,
         "embed_model_error": _EMBED_MODEL_ERROR,
     }
 
@@ -153,7 +156,17 @@ def post_recall(request: RecallRequest) -> dict:
             include_working_memory=request.include_working_memory,
             session_id=request.session_id,
         )
-        return build_recall_response(prompt, context)
+        response = build_recall_response(prompt, context)
+        if response.get("action") == "answer":
+            log_memory_answer(
+                "recall_server",
+                prompt=prompt,
+                answer=str(response.get("answer", "")),
+                session_id=request.session_id,
+                agent=request.agent,
+                response=response,
+            )
+        return response
     except Exception as exc:
         error_log("ingest", f"unhandled error in POST /recall: {exc}", exc=exc)
         raise

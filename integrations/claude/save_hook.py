@@ -27,6 +27,7 @@ from memory.debug import enable_debug
 
 DB_PATH = DEFAULT_DB_PATH
 SAVE_HOOK_LOG_PATH = os.path.expanduser("~/.memory/save_hook.log")
+AGENT_NAME = "claude"
 
 
 def _setup_logging() -> None:
@@ -175,7 +176,7 @@ def save_session(payload: dict, dry_run: bool = False) -> None:
         return
 
     conn = open_memory_db_for_ingest(DB_PATH)
-    agent_name = os.environ.get("MEMORY_AGENT_NAME", "assistant")
+    agent_name = os.environ.get("MEMORY_AGENT_NAME", AGENT_NAME)
     outcome = save_session_to_memory(
         conn,
         session_id=session_id,
@@ -184,15 +185,15 @@ def save_session(payload: dict, dry_run: bool = False) -> None:
         started_at=started_at or updated_at,
         updated_at=updated_at,
     )
-    activity_log("save_hook", "upsert_session", session=session_id, turns=outcome.turn_count)
+    activity_log("save_hook", "upsert_session", session=session_id, agent=agent_name, turns=outcome.turn_count)
 
     warning_by_stage = {warning.stage: warning for warning in outcome.warnings}
     for warning in warning_by_stage.values():
         logging.warning("%s skipped: %s", warning.stage, warning.message)
-        error_log("save_hook", f"{warning.stage} failed for session {session_id}: {warning.message}")
+        error_log("save_hook", f"agent={agent_name} {warning.stage} failed for session {session_id}: {warning.message}")
 
     conn.close()
-    logging.info("saved session %s (%d turns)", session_id, outcome.turn_count)
+    logging.info("agent=%s saved session %s (%d turns)", agent_name, session_id, outcome.turn_count)
 
 
 def main() -> None:

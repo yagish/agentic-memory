@@ -13,7 +13,15 @@ This folder contains the pi-specific memory integration.
 
 ## Usage
 
-Run pi with the extension:
+The repo installer writes a global wrapper to:
+
+```text
+~/.pi/agent/extensions/agentic-memory.ts
+```
+
+So after `./install.sh`, Pi auto-loads agentic-memory in any project.
+
+For manual testing, run pi with the extension:
 
 ```bash
 pi -e /absolute/path/to/agentic-memory/integrations/pi/extension.ts

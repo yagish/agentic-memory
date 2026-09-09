@@ -48,6 +48,13 @@ if os.path.exists(SETTINGS_PATH):
     print(f"  - Removed UserPromptSubmit hook: {r2} entr{'y' if r2==1 else 'ies'}")
 PYEOF
 
+    # Remove Pi extension wrapper if it points at this install.
+    PI_EXT="$HOME/.pi/agent/extensions/agentic-memory.ts"
+    if [ -f "$PI_EXT" ] && grep -Fq "$INSTALL_DIR/integrations/pi/extension.ts" "$PI_EXT"; then
+        rm -f "$PI_EXT"
+        echo "  - Removed Pi extension: $PI_EXT"
+    fi
+
     # Unload and remove launchd plists
     for LABEL in com.memory.daemon com.memory.ingest com.memory.query; do
         PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
@@ -60,7 +67,7 @@ PYEOF
 
     echo ""
     echo "Uninstall complete. ~/.memory/ data preserved."
-    echo "Restart Claude Code to apply changes."
+    echo "Restart Claude Code / Pi to apply changes."
     exit 0
 fi
 
@@ -246,7 +253,19 @@ else:
     print(f"  = UserPromptSubmit hook already present (no change)")
 PYEOF
 
-# ── Step 7: launchd — background daemon ─────────────────────────────────────
+# ── Step 7: Pi extension ─────────────────────────────────────────────────────
+echo ""
+echo "Configuring Pi extension..."
+mkdir -p "$HOME/.pi/agent/extensions"
+cat > "$HOME/.pi/agent/extensions/agentic-memory.ts" << PI_EXT_EOF
+import agenticMemoryExtension from "$INSTALL_DIR/integrations/pi/extension.ts";
+
+export default agenticMemoryExtension;
+PI_EXT_EOF
+
+echo "  + Pi extension installed: $HOME/.pi/agent/extensions/agentic-memory.ts"
+
+# ── Step 8: launchd — background daemon ─────────────────────────────────────
 echo ""
 echo "Installing background daemon (auto-extracts facts and episodes)..."
 
@@ -427,6 +446,7 @@ echo "  Daemon log:       $HOME/.memory/daemon.log"
 echo "  Recall log:       $HOME/.memory/ingest.log"
 echo "  Query log:        $HOME/.memory/query.log"
 echo "  Log archive:      $HOME/.memory/log-archive"
+echo "  Pi extension:     $HOME/.pi/agent/extensions/agentic-memory.ts"
 echo ""
 echo "  Daemon:           running (auto-restarts on login)"
 echo "  Recall server:    port 7747 — singleton embeddings + /ingest + /recall"
@@ -436,7 +456,7 @@ echo "  Default model:    $OLLAMA_MODEL"
 echo "================================================================"
 echo ""
 echo "One step remaining:"
-echo "  Restart your AI coding assistant for hooks to take effect."
+echo "  Restart Claude Code / Pi for hooks and extensions to take effect."
 echo ""
 echo "  After that — every session is saved automatically."
 echo "  Dashboard: http://localhost:7748"

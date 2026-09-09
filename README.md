@@ -156,11 +156,15 @@ Or use the helper scripts:
 
 ### Pi
 
-This repo includes a project-local auto-discovered wrapper at:
+`install.sh` installs a global Pi wrapper at:
+
+- `~/.pi/agent/extensions/agentic-memory.ts`
+
+This repo also includes a project-local auto-discovered wrapper at:
 
 - `.pi/extensions/agentic-memory.ts`
 
-So inside this project you can just run:
+So after install you can run `pi` anywhere, and inside this project you can also just run:
 
 ```bash
 pi

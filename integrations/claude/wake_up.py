@@ -32,6 +32,7 @@ from memory.retrieval import build_wake_up_injection as _build_injection
 
 DB_PATH = DEFAULT_DB_PATH
 WAKE_UP_LOG_PATH = os.path.expanduser("~/.memory/wake_up.log")
+AGENT_NAME = "claude"
 
 
 @dataclass(frozen=True)
@@ -67,7 +68,7 @@ def _log_info(msg: str) -> None:
 
 
 def _emit_hook_response(payload: dict) -> None:
-    _log_info("returning hook response=" + json.dumps(payload, ensure_ascii=False))
+    _log_info(f"agent={AGENT_NAME} returning hook response=" + json.dumps(payload, ensure_ascii=False))
     print(json.dumps(payload))
     sys.exit(0)
 
@@ -129,13 +130,13 @@ def _parse_request() -> HookRequest:
 
 
 def _open_connection():
-    _log_info(f"opening memory db at {DB_PATH}")
+    _log_info(f"agent={AGENT_NAME} opening memory db at {DB_PATH}")
     return open_existing_memory_db(DB_PATH)
 
 
 def _retrieve_context(conn, request: HookRequest, *, include_working_memory: bool):
     _log_info(
-        f"running semantic search for prompt={request.prompt!r}, "
+        f"agent={AGENT_NAME} running semantic search for prompt={request.prompt!r}, "
         f"include_working_memory={include_working_memory}"
     )
     return retrieve_prompt_memory(
@@ -148,27 +149,28 @@ def _retrieve_context(conn, request: HookRequest, *, include_working_memory: boo
 def _recall_via_server(request: HookRequest, *, include_working_memory: bool) -> dict | None:
     try:
         _log_info(
-            f"calling recall server for prompt={request.prompt!r}, "
-            f"include_working_memory={include_working_memory}"
+            f"agent={AGENT_NAME} calling recall server for prompt={request.prompt!r}, "
+            f"include_working_memory={include_working_memory}, session_id={request.session_id}"
         )
         return MemoryClient(port=int(os.environ.get("MEMORY_INGEST_PORT", "7747"))).recall(
             request.prompt,
             include_working_memory=include_working_memory,
             session_id=request.session_id,
+            agent="claude",
         )
     except (ConnectionError, RuntimeError) as exc:
-        _log_info(f"recall server unavailable ({exc})")
+        _log_info(f"agent={AGENT_NAME} recall server unavailable ({exc})")
         return None
 
 
 def _log_context_warnings(context) -> None:
     for warning in context.warnings:
-        _log_error(f"{warning.stage} failed: {warning.message}")
+        _log_error(f"agent={AGENT_NAME} {warning.stage} failed: {warning.message}")
 
 
 def _log_response_warnings(response: dict) -> None:
     for warning in response.get("warnings", []):
-        _log_error(f"{warning.get('stage')} failed: {warning.get('message')}")
+        _log_error(f"agent={AGENT_NAME} {warning.get('stage')} failed: {warning.get('message')}")
 
 
 def _log_fact_lookup_details(_request: HookRequest, context) -> None:
@@ -179,7 +181,7 @@ def _log_fact_lookup_details(_request: HookRequest, context) -> None:
             "similarity": fact.get("similarity"),
             "id": fact.get("id"),
         })
-    _log_info(f"fact lookup results={json.dumps(results, ensure_ascii=False)}")
+    _log_info(f"agent={AGENT_NAME} fact lookup results={json.dumps(results, ensure_ascii=False)}")
 
 
 def _log_response_fact_lookup_details(response: dict) -> None:
@@ -190,30 +192,30 @@ def _log_response_fact_lookup_details(response: dict) -> None:
             "similarity": fact.get("similarity"),
             "id": fact.get("id"),
         })
-    _log_info(f"fact lookup results={json.dumps(results, ensure_ascii=False)}")
+    _log_info(f"agent={AGENT_NAME} fact lookup results={json.dumps(results, ensure_ascii=False)}")
 
 
 def _log_context_details(context) -> None:
     if getattr(context, "working_mem", None):
-        _log_info("working_mem=" + json.dumps(context.working_mem, ensure_ascii=False))
+        _log_info(f"agent={AGENT_NAME} working_mem=" + json.dumps(context.working_mem, ensure_ascii=False))
     if context.episodic:
-        _log_info("episodic=" + json.dumps(context.episodic, ensure_ascii=False))
+        _log_info(f"agent={AGENT_NAME} episodic=" + json.dumps(context.episodic, ensure_ascii=False))
     if context.procedural:
-        _log_info("procedural=" + json.dumps(context.procedural, ensure_ascii=False))
+        _log_info(f"agent={AGENT_NAME} procedural=" + json.dumps(context.procedural, ensure_ascii=False))
     if getattr(context, "session_memory", None):
-        _log_info("session_memory=" + json.dumps(context.session_memory, ensure_ascii=False))
+        _log_info(f"agent={AGENT_NAME} session_memory=" + json.dumps(context.session_memory, ensure_ascii=False))
 
 
 def _log_response_context_details(response: dict) -> None:
     context = response.get("context", {})
     if context.get("working_mem"):
-        _log_info("working_mem=" + json.dumps(context["working_mem"], ensure_ascii=False))
+        _log_info(f"agent={AGENT_NAME} working_mem=" + json.dumps(context["working_mem"], ensure_ascii=False))
     if context.get("episodic"):
-        _log_info("episodic=" + json.dumps(context["episodic"], ensure_ascii=False))
+        _log_info(f"agent={AGENT_NAME} episodic=" + json.dumps(context["episodic"], ensure_ascii=False))
     if context.get("procedural"):
-        _log_info("procedural=" + json.dumps(context["procedural"], ensure_ascii=False))
+        _log_info(f"agent={AGENT_NAME} procedural=" + json.dumps(context["procedural"], ensure_ascii=False))
     if context.get("session_memory"):
-        _log_info("session_memory=" + json.dumps(context["session_memory"], ensure_ascii=False))
+        _log_info(f"agent={AGENT_NAME} session_memory=" + json.dumps(context["session_memory"], ensure_ascii=False))
 
 
 def _compose_enriched_prompt(prompt: str, injection: str) -> str:
@@ -229,9 +231,9 @@ def _compose_enriched_prompt(prompt: str, injection: str) -> str:
 def _log_prompt_enrichment(request: HookRequest, injection: str) -> None:
     if not injection:
         return
-    _log_info(f"prompt enrichment context for session={request.session_id}: {injection}")
+    _log_info(f"agent={AGENT_NAME} prompt enrichment context for session={request.session_id}: {injection}")
     enriched_prompt = _compose_enriched_prompt(request.prompt, injection)
-    _log_info("effective prompt to Claude=" + repr(enriched_prompt))
+    _log_info(f"agent={AGENT_NAME} effective prompt to Claude=" + repr(enriched_prompt))
 
 
 def _log_retrieval_metrics(
@@ -264,7 +266,7 @@ def _log_retrieval_metrics(
 def main() -> None:
     enable_debug("wake_up")
     _log_info("=" * 60)
-    _log_info("HOOK INVOKED BY CLAUDE CODE")
+    _log_info(f"HOOK INVOKED BY CLAUDE CODE agent={AGENT_NAME}")
 
     try:
         request = _parse_request()
@@ -272,17 +274,17 @@ def main() -> None:
         _log_error(f"failed to parse stdin: {exc}")
         _allow()
 
-    _log_info(f"hook invoked, prompt={request.prompt!r}")
+    _log_info(f"agent={AGENT_NAME} hook invoked, prompt={request.prompt!r}, session_id={request.session_id}")
 
     if not request.prompt:
-        _log_info("empty prompt, skipping wake_up injection")
+        _log_info(f"agent={AGENT_NAME} empty prompt, skipping wake_up injection")
         _allow()
 
     include_working_memory = _is_first_message(request.session_id)
 
     server_response = _recall_via_server(request, include_working_memory=include_working_memory)
     if server_response is None:
-        _log_info("recall server unavailable; allowing prompt through")
+        _log_info(f"agent={AGENT_NAME} recall server unavailable; allowing prompt through")
         _allow()
 
     conn = None
@@ -303,9 +305,9 @@ def main() -> None:
                 for fact in server_response.get("context", {}).get("facts", [])
                 if str(fact.get("content", "")).strip()
             ]
-            _log_info(f"fact renderer input={json.dumps(canonical_facts, ensure_ascii=False)}")
-            _log_info(f"fact renderer output={answer!r}")
-            _log_info("fact lookup hit; rendered answer deterministically from stored facts")
+            _log_info(f"agent={AGENT_NAME} fact renderer input={json.dumps(canonical_facts, ensure_ascii=False)}")
+            _log_info(f"agent={AGENT_NAME} fact renderer output={answer!r}")
+            _log_info(f"agent={AGENT_NAME} fact lookup hit; rendered answer deterministically from stored facts")
             if conn is not None:
                 _log_retrieval_metrics(
                     conn,
@@ -331,7 +333,7 @@ def main() -> None:
                 )
             _respond_with_additional_context(injection)
         else:
-            _log_info("no wake-up memory found; allowing prompt through")
+            _log_info(f"agent={AGENT_NAME} no wake-up memory found; allowing prompt through")
             if conn is not None:
                 _log_retrieval_metrics(
                     conn,
