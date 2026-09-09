@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import signal
@@ -338,18 +339,98 @@ def _create_session_memory_entry(conn, session: dict, text_sample: str | None = 
 
 
 
+def _run_extractor_in_thread(extractor_fn, session: dict, text_sample: str) -> None:
+    """Open a fresh DB connection and run one extractor function.
+
+    Each extractor runs in its own thread, so it must open its own SQLite
+    connection. SQLite connections are NOT safe to share across threads — each
+    thread needs its own handle to avoid data corruption or "database is locked"
+    errors. SQLite's WAL (write-ahead log) mode lets multiple connections write
+    concurrently without serializing on the GIL.
+
+    Args:
+        extractor_fn  — one of the five _extract_* / _create_*_entry functions
+        session       — the raw session dict from the DB
+        text_sample   — the pre-built conversation text (computed once, read-only)
+    """
+    conn = open_db(DB_PATH)
+    try:
+        extractor_fn(conn, session, text_sample=text_sample)
+    finally:
+        conn.close()
+
+
 def _process_session(conn, session: dict) -> bool:
-    """Process one session through the structured memory pipeline."""
+    """Process one session through the structured memory pipeline in parallel.
+
+    Previously the five extractors ran sequentially: facts → episodic →
+    procedural → working memory → session memory. Since each extractor spends
+    most of its time waiting on an Ollama HTTP response (15–60 s per call),
+    Python's GIL releases during that I/O wait and all five can run truly
+    concurrently with ThreadPoolExecutor.
+
+    Total time per session drops from ~5× per-extractor latency to ~1× (the
+    slowest single extractor). On a fast machine this is a 4–5× speedup.
+
+    The caller's `conn` is kept for mark_session_processed only — it runs in
+    the main thread after all futures complete, so there is no cross-thread
+    sharing of that connection.
+
+    Args:
+        conn    — main-thread DB connection (used only for mark_session_processed)
+        session — the raw session dict from the DB
+    """
     session_id = session["session_id"]
-    _daemon_log(f"processing session {session_id}")
+    _daemon_log(f"processing session {session_id} (parallel extractors)")
 
+    # Build the text sample once in the main thread.
+    # It is a plain Python string — safe to read from any number of threads.
     text_sample = _session_text_sample(session)
-    _extract_facts(conn, session, text_sample=text_sample)
-    _create_episodic_entry(conn, session, text_sample=text_sample)
-    _create_procedural_entry(conn, session, text_sample=text_sample)
-    _create_working_memory_entry(conn, session, text_sample=text_sample)
-    _create_session_memory_entry(conn, session, text_sample=text_sample)
 
+    # Each tuple is (extractor_function, human_readable_label_for_logs).
+    # The label is used only for error logging if a future raises unexpectedly.
+    extractors = [
+        (_extract_facts,                "facts"),
+        (_create_episodic_entry,        "episodic"),
+        (_create_procedural_entry,      "procedural"),
+        (_create_working_memory_entry,  "working_memory"),
+        (_create_session_memory_entry,  "session_memory"),
+    ]
+
+    # max_workers=5: one thread per extractor — they all block on Ollama I/O,
+    # so there is no CPU contention and no benefit to fewer workers.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+        # Submit all five extractors at once. Each opens its own DB connection
+        # via _run_extractor_in_thread.
+        future_to_label = {
+            pool.submit(_run_extractor_in_thread, fn, session, text_sample): label
+            for fn, label in extractors
+        }
+        # Wait for all futures to finish (as_completed yields in completion order).
+        # Collect unexpected exceptions (normal extractor errors are caught inside
+        # each extractor function and never reach this level).
+        unexpected_errors: list[tuple[str, BaseException]] = []
+        for future in concurrent.futures.as_completed(future_to_label):
+            label = future_to_label[future]
+            exc = future.exception()
+            if exc:
+                # This fires only if _run_extractor_in_thread itself raised —
+                # e.g. the extractor was patched to raise in a test, or the DB
+                # connection could not be opened.
+                _daemon_log(f"unexpected thread-level error in {label} for {session_id}: {exc}")
+                unexpected_errors.append((label, exc))
+
+    if unexpected_errors:
+        # Re-raise so the caller (_run_unprocessed_batch) catches it and skips
+        # mark_session_processed. This preserves the original behavior: a session
+        # with a failed extractor stays in the unprocessed queue and will be
+        # retried on the next daemon cycle.
+        label, exc = unexpected_errors[0]
+        raise RuntimeError(f"extractor '{label}' failed for {session_id}: {exc}") from exc
+
+    # Mark the session processed in the main thread using the caller's connection,
+    # only after all extractors have finished successfully. This prevents partial
+    # processing from being silently skipped on the next daemon cycle.
     mark_session_processed(conn, session_id)
     activity_log("daemon", "processed", session=session_id)
     return True

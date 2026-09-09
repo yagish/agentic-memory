@@ -78,9 +78,9 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
       <span class="svc-dot" id="dot-daemon"></span>
       <div class="svc-body"><div class="svc-name">Daemon</div><div class="svc-desc">Background extraction log</div></div>
     </div>
-    <div class="svc-item" id="svc-recall" onclick="selectLog('recall')">
-      <span class="svc-dot" id="dot-recall-log"></span>
-      <div class="svc-body"><div class="svc-name">Memory API</div><div class="svc-desc">Memory API log</div></div>
+    <div class="svc-item" id="svc-memory_search_engine" onclick="selectLog('memory_search_engine')">
+      <span class="svc-dot" id="dot-memory_search_engine"></span>
+      <div class="svc-body"><div class="svc-name">Memory Search Engine</div><div class="svc-desc">Memory search engine log</div></div>
     </div>
     <div class="svc-item" id="svc-wake_up" onclick="selectLog('wake_up')">
       <span class="svc-dot" id="dot-wake_up"></span>
@@ -147,13 +147,13 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
           <div class="runtime-row">
             <div class="tile">
               <div class="tile-value" id="t-recall">—</div>
-              <div class="tile-label">Memory API</div>
+              <div class="tile-label">Memory Search Engine</div>
               <div class="tile-sub" id="t-recall-port">Port: —</div>
               <div class="tile-sub" id="t-recall-embed-name">Embedding model: —</div>
               <div class="tile-sub" id="t-recall-embed-status">Embedding warmup: —</div>
               <div class="tile-sub" id="t-recall-warning"></div>
               <div class="tile-actions">
-                <button class="action-btn" id="btn-restart-recall" onclick="restartRecallServer()">Restart Memory API</button>
+                <button class="action-btn" id="btn-restart-recall" onclick="restartRecallServer()">Restart Memory Search Engine</button>
                 <span class="mono" id="recall-command">python3 memory/ingest_server.py</span>
               </div>
             </div>
@@ -219,7 +219,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
           <div class="chart-card"><div class="chart-title">Episodes per Day</div><div id="ch-episodes"></div></div>
         </div>
         <div class="overview-copy">
-          <strong>Memory API</strong> is the service formerly shown as “Recall Server.” It serves retrieval requests and warms the local embedding model used for semantic lookup. The <strong>Process One Session</strong> button asks the daemon pipeline to pick the next unprocessed session and run one extraction pass immediately. Savings metrics are approximate and come from direct memory-answer hits logged in <span class="mono">~/.memory/activity.log</span> using a rough <span class="mono">chars / 4</span> heuristic. Click any memory count tile to jump to that table, or click any row in a memory table to inspect full details below it.
+          <strong>Memory Search Engine</strong> is the service formerly shown as “Recall Server.” It serves retrieval requests and warms the local embedding model used for semantic lookup. The <strong>Process One Session</strong> button asks the daemon pipeline to pick the next unprocessed session and run one extraction pass immediately. Savings metrics are approximate and come from direct memory-answer hits logged in <span class="mono">~/.memory/activity.log</span> using a rough <span class="mono">chars / 4</span> heuristic. Click any memory count tile to jump to that table, or click any row in a memory table to inspect full details below it.
         </div>
       </div>
 
@@ -343,9 +343,9 @@ async function loadServices() {
     if (!r.ok) return;
     const d = await r.json();
     const logs = d.logs || [];
-    logs.forEach(log => setDot(log.name === 'recall' ? 'recall-log' : log.name, !!log.exists));
+    logs.forEach(log => setDot(log.name, !!log.exists));
     const mem = d.memory || {};
-    const recall = d.recall || {};
+    const memorySearchEngine = d.memory_search_engine || {};
     const ollama = d.ollama || {};
     const efficiency = d.efficiency || {};
     set('t-sessions', fmt(mem.total_sessions));
@@ -357,13 +357,12 @@ async function loadServices() {
     set('t-memory-answers', fmt(efficiency.llm_calls_avoided ?? 0));
     set('t-token-saved', fmt(efficiency.est_tokens_saved ?? 0));
     set('t-dbsize', fmtBytes(mem.db_size_bytes));
-    setDot('recall', !!recall.running);
-    set('t-recall', recall.running ? (recall.status === 'degraded' ? 'Degraded' : 'Running') : 'Stopped');
-    set('t-recall-port', `Port: ${recall.port || '7747'}`);
-    set('t-recall-embed-name', `Embedding model: ${recall.embed_model_name || 'unknown'}`);
-    set('t-recall-embed-status', recall.embed_model_ready ? 'Embedding warmup: ready' : 'Embedding warmup: not ready');
-    set('t-recall-warning', recall.embed_model_error || '');
-    set('recall-command', recall.restart_command || 'python3 memory/ingest_server.py');
+    set('t-recall', memorySearchEngine.running ? (memorySearchEngine.status === 'degraded' ? 'Degraded' : 'Running') : 'Stopped');
+    set('t-recall-port', `Port: ${memorySearchEngine.port || '7747'}`);
+    set('t-recall-embed-name', `Embedding model: ${memorySearchEngine.embed_model_name || 'unknown'}`);
+    set('t-recall-embed-status', memorySearchEngine.embed_model_ready ? 'Embedding warmup: ready' : 'Embedding warmup: not ready');
+    set('t-recall-warning', memorySearchEngine.embed_model_error || '');
+    set('recall-command', memorySearchEngine.restart_command || 'python3 memory/ingest_server.py');
     const recallBtn = document.getElementById('btn-restart-recall');
     if (recallBtn) recallBtn.disabled = false;
     setDot('ollama', !!ollama.running);
@@ -401,12 +400,12 @@ async function restartRecallServer() {
     btn.textContent = 'Restarting…';
   }
   try {
-    await fetch(BASE + '/ops/recall/restart', { method: 'POST' });
+    await fetch(BASE + '/ops/memory-search-engine/restart', { method: 'POST' });
   } catch (_) {
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.textContent = 'Restart Memory API';
+      btn.textContent = 'Restart Memory Search Engine';
     }
     await loadServices();
   }
@@ -852,7 +851,7 @@ function esc(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt
 function fmt(n) { return n == null ? '—' : n.toLocaleString(); }
 function fmtBytes(b) { if (!b) return '—'; if (b >= 1073741824) return (b / 1073741824).toFixed(1) + ' GB'; if (b >= 1048576) return (b / 1048576).toFixed(1) + ' MB'; if (b >= 1024) return (b / 1024).toFixed(1) + ' KB'; return b + ' B'; }
 function fmtDate(iso) { if (!iso) return '—'; try { return new Date(iso).toLocaleString(undefined, { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }); } catch (_) { return String(iso).slice(0, 16); } }
-function svcLabel(s) { return { daemon:'Daemon', recall:'Memory API', wake_up:'Wake Up', save_hook:'Save Hook', facts:'Facts', episodic:'Episodes', procedural:'Procedural', working_memory:'Working Memory', session_memory:'Session Memory' }[s] || s; }
+function svcLabel(s) { return { daemon:'Daemon', memory_search_engine:'Memory Search Engine', wake_up:'Wake Up', save_hook:'Save Hook', facts:'Facts', episodic:'Episodes', procedural:'Procedural', working_memory:'Working Memory', session_memory:'Session Memory' }[s] || s; }
 </script>
 </body>
 </html>

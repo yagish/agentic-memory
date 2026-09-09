@@ -28,7 +28,7 @@ PORT = int(os.environ.get("MEMORY_QUERY_PORT", "7748"))
 RECALL_PORT = int(os.environ.get("MEMORY_INGEST_PORT", "7747"))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RECALL_SERVER_URL = f"http://127.0.0.1:{RECALL_PORT}"
-MEMORY_API_LABEL = "Memory API"
+MEMORY_API_LABEL = "Memory Search Engine"
 _ACTIVITY_LOG_PATH = os.path.expanduser("~/.memory/activity.log")
 _ACTIVITY_STATS_CACHE = {
     "mtime": None,
@@ -42,9 +42,9 @@ _LOG_SOURCES: dict[str, dict[str, object]] = {
         "description": "Background extraction log",
         "paths": [os.path.expanduser("~/.memory/daemon.log")],
     },
-    "recall": {
-        "label": "Memory API",
-        "description": "Memory API log",
+    "memory_search_engine": {
+        "label": "Memory Search Engine",
+        "description": "Memory search engine log",
         "paths": [os.path.expanduser("~/.memory/ingest.log")],
     },
     "wake_up": {
@@ -286,7 +286,7 @@ def dashboard() -> HTMLResponse:
 def get_services() -> dict:
     daemon_running, daemon_pid = _check_daemon()
     ollama_running, ollama_model, ollama_installed_models = _check_ollama()
-    recall = _check_recall_server()
+    memory_search_engine = _check_recall_server()
     last_run_iso, facts_extracted_total = _parse_daemon_log()
     efficiency = _parse_activity_log()
 
@@ -336,11 +336,11 @@ def get_services() -> dict:
             "start_command": "ollama serve",
             "start_endpoint": "/ops/ollama/start",
         },
-        "recall": {
-            **recall,
+        "memory_search_engine": {
+            **memory_search_engine,
             "display_name": MEMORY_API_LABEL,
             "restart_command": f"{sys.executable} memory/ingest_server.py",
-            "restart_endpoint": "/ops/recall/restart",
+            "restart_endpoint": "/ops/memory-search-engine/restart",
         },
         "logs": _list_logs(),
         "efficiency": {
@@ -715,7 +715,7 @@ def process_one_daemon_session() -> dict:
     return result
 
 
-@ops_router.post("/ops/recall/restart")
+@ops_router.post("/ops/memory-search-engine/restart")
 def restart_recall_server() -> dict:
     script = _recall_server_script()
     command = [sys.executable, script]

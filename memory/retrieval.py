@@ -15,6 +15,8 @@ The extra fields on ``WakeUpContext`` remain for caller compatibility.
 
 from __future__ import annotations
 
+import functools
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -67,6 +69,10 @@ class WakeUpContext:
     procedural: list[MemoryRow]
     session_memory: list[MemoryRow] = field(default_factory=list)
     warnings: list[RetrievalWarning] = field(default_factory=list)
+    # The prompt's embedding vector, stored here so build_wake_up_injection can
+    # classify intent for adaptive budget without re-embedding. None in tests or
+    # when called from an older adapter that doesn't pass embeddings.
+    prompt_vec: list[float] | None = field(default=None)
 
 
 WORD_RE = re.compile(r"[a-z0-9_]{2,}")
@@ -96,12 +102,101 @@ def _append_warning(warnings: list[RetrievalWarning], stage: str, exc: Exception
     warnings.append(RetrievalWarning(stage, str(exc)))
 
 
-def _prompt_requests_recent_episode_summary(prompt: str) -> bool:
+# ── Section 1: Semantic intent detection ──────────────────────────────────
+#
+# These exemplar phrases represent "the user wants to resume or review recent
+# work." We compare the prompt's embedding against these phrases using cosine
+# similarity instead of a fragile keyword list.
+#
+# functools.cache stores the computed vectors for the lifetime of the process.
+# The ingest server is long-lived, so these vectors are computed exactly once
+# at first call and reused on every subsequent prompt — zero extra embedding
+# cost after the first wake-up call.
+
+_RESUME_INTENT_EXEMPLARS = [
+    "what were we working on last time",
+    "continue where we left off",
+    "remind me what we were doing",
+    "what happened in the last session",
+    "resume our previous work",
+    "where did we leave off",
+    "catch me up on recent progress",
+    "what did we discuss before",
+    "pick up from last time",
+    "summarize recent work",
+    "what is the current state of the project",
+    "fill me in on what was done",
+]
+
+# Threshold for resume-intent detection. 0.45 is intentionally loose — we
+# prefer to fetch recent episodes when the user might be resuming, since the
+# episode will simply be ignored if it is not relevant.
+_RESUME_SIMILARITY_THRESHOLD = 0.45
+
+
+@functools.cache
+def _get_resume_exemplar_vecs() -> tuple[list[float], ...]:
+    """Embed the resume-intent exemplar phrases and cache the result forever.
+
+    Returns a tuple (hashable, so functools.cache works on it) of embedding
+    vectors. Called once on the first wake-up invocation; every later call
+    returns the same cached tuple instantly.
+    """
+    # embed_text returns list[float]; we convert to tuple so functools.cache
+    # can store the result (lists are not hashable and cannot be cached).
+    return tuple(embed_text(phrase) for phrase in _RESUME_INTENT_EXEMPLARS)
+
+
+def _cosine_sim(a: list[float], b) -> float:
+    """Compute cosine similarity between two embedding vectors.
+
+    Cosine similarity measures directional closeness: 1.0 = identical direction
+    (semantically very similar), 0.0 = orthogonal (unrelated), -1.0 = opposite.
+
+    We use plain Python arithmetic here rather than numpy because this function
+    runs in the fast-path of every prompt and importing numpy adds startup cost
+    for the wake-up hook subprocess. The math is trivial for 384-dim vectors.
+
+    Args:
+        a — first vector (list or tuple of floats)
+        b — second vector (list or tuple of floats)
+
+    Returns:
+        Cosine similarity as a float.
+    """
+    dot = sum(x * y for x, y in zip(a, b))      # element-wise product sum
+    mag_a = math.sqrt(sum(x * x for x in a))     # magnitude of a
+    mag_b = math.sqrt(sum(y * y for y in b))     # magnitude of b
+    if mag_a == 0 or mag_b == 0:
+        return 0.0  # zero vector has no direction — treat as dissimilar
+    return dot / (mag_a * mag_b)
+
+
+def _prompt_requests_recent_episode_summary(prompt: str, prompt_vec: list[float] | None = None) -> bool:
+    """Return True when the prompt asks to resume or review recent work.
+
+    Uses semantic exemplars when a prompt embedding is available, but keeps a
+    lightweight lexical fallback so tests and degraded embedding paths still
+    behave sensibly.
+    """
     normalized = prompt.lower()
     time_words = {"last", "latest", "recent", "recently", "previous", "before"}
     topic_words = {"work", "working", "worked", "doing", "did", "task", "project", "session", "chat", "conversation", "discuss", "discussed", "talk", "talked"}
     tokens = set(re.findall(r"[a-z0-9]+", normalized))
-    return bool(tokens & time_words) and bool(tokens & topic_words)
+    if bool(tokens & time_words) and bool(tokens & topic_words):
+        return True
+
+    if prompt_vec is None:
+        return False
+
+    try:
+        exemplar_vecs = _get_resume_exemplar_vecs()
+        return any(
+            _cosine_sim(prompt_vec, ex_vec) >= _RESUME_SIMILARITY_THRESHOLD
+            for ex_vec in exemplar_vecs
+        )
+    except Exception:
+        return False
 
 
 def _looks_like_missing_memory_episode(item: MemoryRow) -> bool:
@@ -211,15 +306,82 @@ def _memory_text(item: MemoryRow, kind: str) -> str:
     return _normalize_text(str(item))
 
 
+# ── Section 2: Recency weighting ──────────────────────────────────────────
+#
+# Without recency, a 6-month-old episode with similarity 0.62 beats a
+# 3-day-old episode with similarity 0.60. Recency decay fixes this by adding
+# a small bonus that favors newer memories when similarity scores are close.
+#
+# Decay rate: a memory from today scores 1.0; one from 90 days ago scores
+# ~0.37 (= e^-1, the natural exponential half-life). After ~270 days the
+# bonus is negligible (<0.05), so truly old memories are not unfairly penalized
+# when they're the only matching content.
+
+_RECENCY_DECAY_DAYS = 90.0
+
+
+def _recency_score(item: MemoryRow) -> float:
+    """Compute an exponential recency score (0.0–1.0) for a memory row.
+
+    Returns 1.0 for a memory created today, decaying toward 0.0 for old ones.
+    Falls back to 0.5 (neutral) when no parseable timestamp is found.
+
+    Uses the most granular timestamp available: updated_at > happened_at >
+    started_at, in that order. All timestamps are expected to be ISO-8601 strings
+    (with or without a 'Z' suffix).
+    """
+    from datetime import datetime, timezone  # local import avoids module-level circular risk
+
+    # Pick the best available timestamp from the memory row
+    timestamp_str = (
+        item.get("updated_at")
+        or item.get("happened_at")
+        or item.get("started_at")
+        or ""
+    )
+    if not timestamp_str:
+        return 0.5  # no timestamp available — neutral recency, no penalty or bonus
+
+    try:
+        # Normalize the "Z" UTC suffix to "+00:00" which fromisoformat() understands.
+        # Python < 3.11 does not parse the trailing "Z" natively.
+        if isinstance(timestamp_str, str) and timestamp_str.endswith("Z"):
+            timestamp_str = timestamp_str[:-1] + "+00:00"
+        ts = datetime.fromisoformat(str(timestamp_str))
+        # If the stored timestamp has no timezone info, assume UTC
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        days_old = max(0.0, (now - ts).total_seconds() / 86400.0)
+        # Exponential decay: e^(-days_old / DECAY_DAYS)
+        return math.exp(-days_old / _RECENCY_DECAY_DAYS)
+    except Exception:
+        return 0.5  # any parse error → neutral
+
+
 def _row_score(item: MemoryRow, kind: str, prompt_tokens: set[str]) -> float:
+    """Compute a composite ranking score for one memory row.
+
+    Combines three signals:
+    - similarity (0–1): cosine similarity from the embedding search — dominant signal
+    - overlap (0–1): fraction of prompt tokens that appear in the memory text — lexical bonus
+    - recency (0–1): exponential decay based on memory age — tie-breaker for equal similarity
+
+    Weights: similarity is ~10× more important than overlap, and ~20× more
+    important than recency. Recency only matters when similarity scores are close.
+    """
     similarity = float(item.get("similarity", 0.0) or 0.0)
+    # Lexical overlap: gives a small bonus when specific terms (e.g. project names,
+    # file names) appear in both the prompt and the memory text
     memory_tokens = _tokenize(_memory_text(item, kind))
     overlap = len(prompt_tokens & memory_tokens) / max(len(prompt_tokens), 1)
-    score = similarity + (0.15 * overlap)
+    # Recency bonus: recent memories rank slightly higher when similarity is equal
+    recency = _recency_score(item)
+    score = similarity + (0.10 * overlap) + (0.05 * recency)
     if kind == "episodic" and _is_substantive_episode(item):
-        score += 0.03
+        score += 0.03  # small bonus for well-structured episodes
     if kind == "episodic" and _looks_like_missing_memory_episode(item):
-        score -= 0.25
+        score -= 0.25  # large penalty for LLM-generated "no memory" placeholders
     return score
 
 
@@ -381,12 +543,101 @@ def _fit_context_to_budget(sections: list[str], *, char_budget: int) -> str:
     return _normalize_text(" ".join(kept))
 
 
-def build_wake_up_injection(context: WakeUpContext) -> str:
-    """Assemble the wake-up memory block within the char budget.
+# ── Section 3: Adaptive token budget ──────────────────────────────────────
+#
+# A flat 500-token budget is wasteful for simple questions and insufficient for
+# "resume where we left off" requests that benefit from the full session handoff.
+# We classify the prompt intent semantically and pick an appropriate budget.
+#
+# Budget tiers:
+#   quick  → ~200 tokens: single-answer questions don't need much context
+#   task   → ~500 tokens: standard continuation (previous default)
+#   resume → ~1500 tokens: full handoff — session summary, last steps, next steps
 
-    This path is intentionally deterministic and model-free.
+_QUICK_INTENT_EXEMPLARS = [
+    "what is",
+    "define this",
+    "what does this mean",
+    "quick question",
+    "just tell me",
+    "what language is this written in",
+    "how do you spell",
+    "what is the syntax for",
+    "can you explain briefly",
+    "in one sentence",
+]
+
+# Higher threshold for "quick" intent — we want confidence before we truncate context.
+_QUICK_SIMILARITY_THRESHOLD = 0.55
+
+# Budget in characters (tokens * 4) for each intent class
+_BUDGET_BY_INTENT = {
+    "quick": 200 * 4,    # ~200 tokens = 800 chars
+    "task": 500 * 4,     # ~500 tokens = 2000 chars (the previous hardcoded default)
+    "resume": 1500 * 4,  # ~1500 tokens = 6000 chars — full handoff context
+}
+
+
+@functools.cache
+def _get_quick_exemplar_vecs() -> tuple[list[float], ...]:
+    """Embed the quick-question exemplar phrases and cache the result forever.
+
+    Works the same way as _get_resume_exemplar_vecs — computed once on first
+    call, reused on every subsequent call in the same process.
     """
-    body = _fit_context_to_budget(_context_sections(context), char_budget=CHARS_BUDGET)
+    return tuple(embed_text(phrase) for phrase in _QUICK_INTENT_EXEMPLARS)
+
+
+def _classify_prompt_intent(prompt_vec: list[float]) -> str:
+    """Classify the prompt as 'resume', 'quick', or 'task' for budget selection.
+
+    Uses semantic similarity against two sets of exemplar phrases. 'resume' is
+    checked before 'quick' because a resume request benefits more from a larger
+    budget than a quick question suffers from a smaller one.
+
+    Args:
+        prompt_vec — the prompt's embedding vector (already computed during retrieval)
+
+    Returns:
+        One of: 'resume', 'quick', 'task' (default when neither matches).
+    """
+    try:
+        # Check resume intent first — it overrides quick even if both match
+        resume_vecs = _get_resume_exemplar_vecs()
+        if any(_cosine_sim(prompt_vec, v) >= _RESUME_SIMILARITY_THRESHOLD for v in resume_vecs):
+            return "resume"
+        # Check if this is a short, simple question
+        quick_vecs = _get_quick_exemplar_vecs()
+        if any(_cosine_sim(prompt_vec, v) >= _QUICK_SIMILARITY_THRESHOLD for v in quick_vecs):
+            return "quick"
+    except Exception:
+        pass  # exemplar embedding failed — fall through to default
+    return "task"
+
+
+def build_wake_up_injection(context: WakeUpContext) -> str:
+    """Assemble the wake-up memory block within an adaptive char budget.
+
+    This path is intentionally deterministic and model-free. The only "smart"
+    step is the intent classification, which is pure cosine similarity arithmetic
+    against pre-embedded exemplar phrases — no LLM call.
+
+    When context.prompt_vec is available (set by retrieve_wake_up_context),
+    classifies the prompt intent and picks the right budget:
+    - 'resume' requests get 1500 tokens — enough for a full session handoff
+    - 'quick' questions get 200 tokens — avoids padding simple answers with noise
+    - 'task' (default) gets 500 tokens — the original hardcoded budget
+
+    Falls back to the standard 500-token budget when prompt_vec is None
+    (e.g. in tests or when called from an older adapter).
+    """
+    if context.prompt_vec is not None:
+        intent = _classify_prompt_intent(context.prompt_vec)
+        char_budget = _BUDGET_BY_INTENT[intent]
+    else:
+        char_budget = CHARS_BUDGET  # standard fallback — matches the old hardcoded value
+
+    body = _fit_context_to_budget(_context_sections(context), char_budget=char_budget)
     if not body:
         return ""
     return _build_context_envelope(body)
@@ -520,7 +771,10 @@ def retrieve_wake_up_context(
         limit=SESSION_MEMORY_LIMIT,
     )
 
-    if not episodic and not session_memory and _prompt_requests_recent_episode_summary(prompt):
+    # Fallback: if semantic search found no episodes or session memories, check
+    # whether the prompt is semantically asking to resume/review recent work.
+    # We pass the already-computed prompt_vec — no extra embedding call needed.
+    if not episodic and not session_memory and _prompt_requests_recent_episode_summary(prompt, prompt_vec):
         episodic = _rank_rows(_retrieve_recent_episodic(conn, warnings), "episodic", prompt, limit=EPISODIC_LIMIT)
 
     return WakeUpContext(
@@ -532,4 +786,7 @@ def retrieve_wake_up_context(
         procedural=procedural,
         session_memory=session_memory,
         warnings=warnings,
+        # Store the prompt's embedding vector so build_wake_up_injection can
+        # classify prompt intent for adaptive budget without re-embedding.
+        prompt_vec=prompt_vec,
     )

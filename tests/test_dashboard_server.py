@@ -38,14 +38,14 @@ class TestDashboardServices(unittest.TestCase):
             "unprocessed_sessions": 4,
             "process_one_endpoint": "/ops/daemon/process-one",
         })
-        self.assertEqual(payload["recall"]["running"], True)
-        self.assertEqual(payload["recall"]["status"], "running")
-        self.assertEqual(payload["recall"]["port"], 7747)
-        self.assertEqual(payload["recall"]["embed_model_ready"], True)
-        self.assertEqual(payload["recall"]["embed_model_name"], "all-MiniLM-L6-v2")
-        self.assertEqual(payload["recall"]["display_name"], "Memory API")
-        self.assertEqual(payload["recall"]["restart_endpoint"], "/ops/recall/restart")
-        self.assertIn("memory/ingest_server.py", payload["recall"]["restart_command"])
+        self.assertEqual(payload["memory_search_engine"]["running"], True)
+        self.assertEqual(payload["memory_search_engine"]["status"], "running")
+        self.assertEqual(payload["memory_search_engine"]["port"], 7747)
+        self.assertEqual(payload["memory_search_engine"]["embed_model_ready"], True)
+        self.assertEqual(payload["memory_search_engine"]["embed_model_name"], "all-MiniLM-L6-v2")
+        self.assertEqual(payload["memory_search_engine"]["display_name"], "Memory Search Engine")
+        self.assertEqual(payload["memory_search_engine"]["restart_endpoint"], "/ops/memory-search-engine/restart")
+        self.assertIn("memory/ingest_server.py", payload["memory_search_engine"]["restart_command"])
         self.assertEqual(payload["ollama"]["running"], True)
         self.assertEqual(payload["ollama"]["model"], "qwen2.5:3b")
         self.assertEqual(payload["ollama"]["installed_models"], ["qwen2.5:3b"])
@@ -146,15 +146,15 @@ class TestDashboardActivityStats(unittest.TestCase):
 
 
 class TestDashboardHtml(unittest.TestCase):
-    def test_dashboard_html_mentions_memory_api_ollama_and_daemon_runtime_sections(self):
+    def test_dashboard_html_mentions_memory_search_engine_ollama_and_daemon_runtime_sections(self):
         html = dashboard_server.dashboard().body.decode("utf-8")
-        self.assertIn("Restart Memory API", html)
+        self.assertIn("Restart Memory Search Engine", html)
         self.assertIn("Process One Session", html)
         self.assertIn("id=\"t-recall\"", html)
         self.assertIn("id=\"t-recall-port\"", html)
         self.assertIn("id=\"t-recall-embed-name\"", html)
         self.assertIn("id=\"t-recall-embed-status\"", html)
-        self.assertIn("id=\"svc-recall\"", html)
+        self.assertIn("id=\"svc-memory_search_engine\"", html)
         self.assertIn("id=\"panel-procedural\"", html)
         self.assertIn("id=\"tb-procedural\"", html)
         self.assertIn("id=\"t-procedural\"", html)
