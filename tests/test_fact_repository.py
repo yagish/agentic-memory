@@ -5,7 +5,7 @@ from memory.inference import GenerationResult
 
 from memory.contracts import ExtractedFact
 from memory.db import init_db
-from memory.fact_repository import (
+from memory.facts.repository import (
     build_fact_content,
     build_fact_semantic_content,
     build_fact_tags,

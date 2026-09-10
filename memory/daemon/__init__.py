@@ -62,8 +62,8 @@ from memory.db import (
 # These names are imported into the memory.daemon namespace so that
 # patch.object(daemon_module, "extract_episode_from_session_text", ...) works.
 from memory.episodic import extract_episode_from_session_text
-from memory.episodic_repository import save_extracted_episode
-from memory.fact_repository import build_fact_content, save_extracted_facts
+from memory.episodic.repository import save_extracted_episode
+from memory.facts.repository import build_fact_content, save_extracted_facts
 from memory.facts import extract_facts_from_session_text, normalize_extracted_facts
 from memory.logger import activity_log, error_log
 from memory.ollama import (
@@ -71,12 +71,12 @@ from memory.ollama import (
     stop_ollama as _stop_ollama,
 )
 from memory.procedural import extract_procedure_from_session_text
-from memory.procedural_repository import save_extracted_procedure
-from memory.session_memory import extract_session_memory_from_session_text
-from memory.session_memory_repository import save_extracted_session_memory
+from memory.procedural.repository import save_extracted_procedure
+from memory.session import extract_session_memory_from_session_text
+from memory.session.repository import save_extracted_session_memory
 from memory.vectors import embed
 from memory.working_memory import extract_working_memory_from_session_text
-from memory.working_memory_repository import save_extracted_working_memory
+from memory.working_memory.repository import save_extracted_working_memory
 
 # --- Shutdown flag and signal handling ---
 

@@ -22,7 +22,7 @@ from uvicorn.config import LOGGING_CONFIG as UVICORN_LOGGING_CONFIG
 
 from integrations.common import build_recall_response, retrieve_prompt_memory
 from memory.db import bootstrap_db, open_db
-from memory.ingest_pipeline import ingest_session
+from memory.servers.ingest_pipeline import ingest_session
 from memory.logger import error_log, log_memory_answer
 from memory.debug import enable_debug
 from memory.inference import embed_text

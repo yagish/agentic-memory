@@ -2,7 +2,7 @@ import json
 import unittest
 
 from memory.db import init_db
-from memory.ingest_pipeline import ingest_session
+from memory.servers.ingest_pipeline import ingest_session
 
 
 class TestIngestPipeline(unittest.TestCase):

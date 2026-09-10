@@ -22,11 +22,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from memory.db import search_facts_semantic
-from memory.episodic_repository import list_recent_episodic_memories, retrieve_episodic_memories
+from memory.episodic.repository import list_recent_episodic_memories, retrieve_episodic_memories
 from memory.inference import embed_text
-from memory.procedural_repository import retrieve_procedural_memories
-from memory.session_memory_repository import retrieve_session_memories
-from memory.working_memory_repository import retrieve_working_memory
+from memory.procedural.repository import retrieve_procedural_memories
+from memory.session.repository import retrieve_session_memories
+from memory.working_memory.repository import retrieve_working_memory
 
 MemoryRow = dict[str, Any]
 

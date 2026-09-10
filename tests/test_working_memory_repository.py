@@ -2,7 +2,7 @@ import unittest
 
 from memory.contracts import ExtractedWorkingMemory
 from memory.db import init_db
-from memory.working_memory_repository import (
+from memory.working_memory.repository import (
     build_working_memory_semantic_text,
     list_working_memories,
     retrieve_working_memory,

@@ -4,7 +4,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from memory.fact_renderer import (
+from memory.facts.renderer import (
     _canonical_fallback,
     _normalize_rendered_answer,
     build_fact_render_prompt,

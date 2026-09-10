@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from memory.ollama import is_ollama_running
-from memory.session_memory import (
+from memory.session import (
     discover_session_memory_fixture_cases,
     extract_session_memory_from_session_text,
     normalized_contains,

@@ -32,7 +32,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from memory.db import embed, open_db, pack_vector  # noqa: E402
-from memory.fact_text import generate_semantic_fact_text  # noqa: E402
+from memory.facts.text import generate_semantic_fact_text  # noqa: E402
 
 
 DEFAULT_DB_PATH = os.path.expanduser("~/.memory/memory.db")

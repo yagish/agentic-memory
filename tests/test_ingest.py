@@ -9,8 +9,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi.testclient import TestClient
 
-import memory.ingest_server as ingest_server_module
-from memory.ingest_server import app
+import memory.servers.ingest_server as ingest_server_module
+from memory.servers.ingest_server import app
 from memory.db import init_db
 from memory.retrieval import WakeUpContext
 

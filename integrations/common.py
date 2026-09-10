@@ -11,8 +11,8 @@ from dataclasses import dataclass
 import os
 
 from memory.db import bootstrap_db, open_db
-from memory.fact_renderer import render_fact_answer
-from memory.ingest_pipeline import IngestOutcome, ingest_session
+from memory.facts.renderer import render_fact_answer
+from memory.servers.ingest_pipeline import IngestOutcome, ingest_session
 from memory.retrieval import WakeUpContext, build_wake_up_injection, retrieve_wake_up_context
 
 

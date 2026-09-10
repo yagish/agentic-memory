@@ -5,12 +5,12 @@ import unittest
 
 from memory.contracts import ExtractedProcedure
 from memory.db import init_db, insert_procedural, open_db, upsert_session
-from memory.procedural_backfill import (
+from memory.procedural.backfill import (
     _transcript_json_to_text,
     backfill_procedural_memory,
     list_backfill_candidate_sessions,
 )
-from memory.procedural_repository import list_session_procedures
+from memory.procedural.repository import list_session_procedures
 
 
 class TestProceduralBackfill(unittest.TestCase):

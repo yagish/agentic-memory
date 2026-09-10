@@ -2,7 +2,7 @@ import unittest
 
 from memory.contracts import ExtractedEpisode
 from memory.db import init_db
-from memory.episodic_repository import (
+from memory.episodic.repository import (
     build_episodic_semantic_text,
     list_session_episodes,
     retrieve_episodic_memories,

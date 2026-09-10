@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
-from memory import dashboard_server
+from memory.servers import dashboard_server
 
 
 class TestDashboardServices(unittest.TestCase):
@@ -26,8 +26,8 @@ class TestDashboardServices(unittest.TestCase):
              patch.object(dashboard_server, "_parse_activity_log", return_value={"llm_calls_avoided": 9, "est_tokens_saved": 3210}), \
              patch.object(dashboard_server, "_list_logs", return_value=[]), \
              patch.object(dashboard_server, "open_db", return_value=conn), \
-             patch("memory.dashboard_server.os.path.exists", return_value=True), \
-             patch("memory.dashboard_server.os.path.getsize", return_value=2048):
+             patch("memory.servers.dashboard_server.os.path.exists", return_value=True), \
+             patch("memory.servers.dashboard_server.os.path.getsize", return_value=2048):
             payload = dashboard_server.get_services()
 
         self.assertEqual(payload["daemon"], {
@@ -87,7 +87,7 @@ class TestDashboardServices(unittest.TestCase):
         proc = MagicMock(pid=9876)
         with patch.object(dashboard_server.subprocess, "run", return_value=MagicMock(returncode=0)), \
              patch.object(dashboard_server.subprocess, "Popen", return_value=proc), \
-             patch("memory.dashboard_server.os.path.exists", return_value=False), \
+             patch("memory.servers.dashboard_server.os.path.exists", return_value=False), \
              patch.object(dashboard_server, "_check_recall_server", side_effect=[
                  {"running": True, "status": "running", "port": 7747, "embed_model_ready": True, "embed_model_name": "all-MiniLM-L6-v2", "embed_model_error": ""},
              ]):

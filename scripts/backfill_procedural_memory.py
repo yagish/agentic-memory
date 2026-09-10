@@ -19,7 +19,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from memory.procedural_backfill import DEFAULT_DB_PATH, backfill_procedural_memory  # noqa: E402
+from memory.procedural.backfill import DEFAULT_DB_PATH, backfill_procedural_memory  # noqa: E402
 
 
 def main() -> None:

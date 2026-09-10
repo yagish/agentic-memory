@@ -2,7 +2,7 @@ import unittest
 
 from memory.contracts import ExtractedSessionMemory
 from memory.db import init_db
-from memory.session_memory_repository import (
+from memory.session.repository import (
     build_session_memory_semantic_text,
     list_session_memory_rows,
     retrieve_session_memories,

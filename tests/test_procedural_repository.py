@@ -2,7 +2,7 @@ import unittest
 
 from memory.contracts import ExtractedProcedure
 from memory.db import init_db
-from memory.procedural_repository import (
+from memory.procedural.repository import (
     build_procedural_semantic_text,
     list_session_procedures,
     retrieve_procedural_memories,
