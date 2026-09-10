@@ -18,7 +18,7 @@ import json
 import os
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from memory.fact_text import build_canonical_fact_content, build_semantic_fact_text
 from memory.vectors import cosine_distance, embed, pack_vector
@@ -181,6 +181,32 @@ def bootstrap_db(path: str) -> sqlite3.Connection:
 def init_db(path: str) -> sqlite3.Connection:
     return bootstrap_db(path)
 
+
+
+def prune_stale_facts(conn: sqlite3.Connection, *, days: int = 180) -> int:
+    """Delete facts not updated in the last `days` days. Returns count deleted.
+
+    Facts are kept alive by upsert_fact each time the same entity+attribute
+    is seen. A fact that hasn't been mentioned in `days` days is stale and
+    safe to drop. Configurable via MEMORY_FACT_TTL_DAYS.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    cursor = conn.execute("DELETE FROM facts WHERE updated_at < ?", (cutoff,))
+    conn.commit()
+    return cursor.rowcount
+
+
+def prune_stale_episodic(conn: sqlite3.Connection, *, days: int = 90) -> int:
+    """Delete episodic memories older than `days` days. Returns count deleted.
+
+    Episodes are tied to a specific point in time; after `days` days they are
+    unlikely to be retrieved and just inflate the vector search space.
+    Configurable via MEMORY_EPISODIC_TTL_DAYS.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    cursor = conn.execute("DELETE FROM episodic_memory WHERE happened_at < ?", (cutoff,))
+    conn.commit()
+    return cursor.rowcount
 
 
 def log_retrieval(conn: sqlite3.Connection, tool: str, query: str | None, result_size: int) -> None:

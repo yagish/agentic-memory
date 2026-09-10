@@ -37,6 +37,8 @@ from memory.db import (
     get_unprocessed_sessions,
     mark_session_processed,
     open_db,
+    prune_stale_episodic,
+    prune_stale_facts,
 )
 from memory.debug import enable_debug
 from memory.episodic import extract_episode_from_session_text
@@ -63,6 +65,9 @@ _DAEMON_LOG_PATH = os.path.expanduser("~/.memory/daemon.log")
 POLL_INTERVAL = 5 * 60
 LONG_POLL_INTERVAL = 30 * 60
 CPU_THRESHOLD = 70
+_MAX_SESSION_CHARS = int(os.environ.get("MEMORY_MAX_SESSION_CHARS", "60000"))
+_FACT_TTL_DAYS = int(os.environ.get("MEMORY_FACT_TTL_DAYS", "180"))
+_EPISODIC_TTL_DAYS = int(os.environ.get("MEMORY_EPISODIC_TTL_DAYS", "90"))
 
 _shutdown = False
 
@@ -383,9 +388,9 @@ def _process_session(conn, session: dict) -> bool:
     session_id = session["session_id"]
     _daemon_log(f"processing session {session_id} (parallel extractors)")
 
-    # Build the text sample once in the main thread.
-    # It is a plain Python string — safe to read from any number of threads.
-    text_sample = _session_text_sample(session)
+    # Build the text sample once in the main thread, capped to avoid hitting
+    # Ollama's context limit on very long sessions.
+    text_sample = _session_text_sample(session, max_chars=_MAX_SESSION_CHARS)
 
     # Each tuple is (extractor_function, human_readable_label_for_logs).
     # The label is used only for error logging if a future raises unexpectedly.
@@ -436,7 +441,29 @@ def _process_session(conn, session: dict) -> bool:
     return True
 
 
+def _prune_stale_memories(conn) -> None:
+    """Remove old facts and episodic memories to keep the DB lean."""
+    try:
+        deleted_facts = prune_stale_facts(conn, days=_FACT_TTL_DAYS)
+        deleted_episodes = prune_stale_episodic(conn, days=_EPISODIC_TTL_DAYS)
+        if deleted_facts or deleted_episodes:
+            _daemon_log(f"pruned {deleted_facts} stale facts, {deleted_episodes} stale episodes")
+            activity_log("daemon", "prune", deleted_facts=deleted_facts, deleted_episodes=deleted_episodes)
+    except Exception as exc:
+        error_log("daemon", f"pruning failed (non-fatal): {exc}", exc=exc)
+
+
+def _warm_up_embedding() -> None:
+    """Load the sentence-transformer model before the first real embed call."""
+    try:
+        embed("warmup")
+        _daemon_log("embedding model warmed up")
+    except Exception as exc:
+        _daemon_log(f"embedding warm-up failed (non-fatal): {exc}")
+
+
 def _run_unprocessed_batch(conn) -> int:
+    _prune_stale_memories(conn)
     sessions = get_unprocessed_sessions(conn, limit=10)
     if not sessions:
         _daemon_log("no new sessions; backing off")
@@ -505,6 +532,7 @@ def run(once: bool = False) -> None:
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     bootstrap_conn = bootstrap_db(DB_PATH)
     bootstrap_conn.close()
+    _warm_up_embedding()
 
     while not _shutdown:
         if not once:

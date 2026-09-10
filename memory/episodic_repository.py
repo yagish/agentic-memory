@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 
 from memory.contracts import EpisodicMemory, ExtractedEpisode
 from memory.db import insert_episodic, list_recent_episodic, search_episodic_semantic
 from memory.episodic import log_episodic_event
 from memory.inference import embed_text
+
+_MIN_SIMILARITY = float(os.environ.get("MEMORY_MIN_SIMILARITY", "0.72"))
 
 
 def build_episodic_semantic_text(episode: ExtractedEpisode) -> str:
@@ -145,7 +148,7 @@ def retrieve_episodic_memories(
     *,
     query_vector: list[float] | None = None,
     embed_fn=embed_text,
-    min_similarity: float = 0.72,
+    min_similarity: float = _MIN_SIMILARITY,
     limit: int = 3,
     source: str = "manual_debug",
 ) -> list[dict]:

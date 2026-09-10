@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ from memory.vectors import embed as _embed_text
 _OLLAMA_URL = "http://localhost:11434/api/generate"
 _DEFAULT_MODEL = os.environ.get("MEMORY_OLLAMA_MODEL", "qwen2.5:7b")
 _DEFAULT_TIMEOUT = 120
+_MAX_RETRIES = int(os.environ.get("MEMORY_OLLAMA_RETRIES", "3"))
 
 
 @dataclass(frozen=True)
@@ -48,7 +50,12 @@ class InferenceError(RuntimeError):
 
 
 def generate_text(request: GenerationRequest) -> GenerationResult:
-    """Generate text via the local Ollama HTTP API."""
+    """Generate text via the local Ollama HTTP API.
+
+    Retries up to MEMORY_OLLAMA_RETRIES times (default 3) with exponential
+    backoff (1 s, 2 s, 4 s …) on transient network errors. Raises the last
+    InferenceError if all attempts fail.
+    """
     model = request.model or _DEFAULT_MODEL
     body = json.dumps({
         "model": model,
@@ -57,28 +64,34 @@ def generate_text(request: GenerationRequest) -> GenerationResult:
         "options": {"temperature": request.temperature},
     }).encode("utf-8")
 
-    req = urllib.request.Request(
-        _OLLAMA_URL,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    last_exc: InferenceError | None = None
+    for attempt in range(_MAX_RETRIES):
+        req = urllib.request.Request(
+            _OLLAMA_URL,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=request.timeout_seconds) as resp:
+                raw = resp.read().decode("utf-8")
+        except urllib.error.URLError as exc:
+            last_exc = InferenceError(f"Ollama unavailable: {exc}")
+            if attempt < _MAX_RETRIES - 1:
+                time.sleep(2 ** attempt)
+            continue
 
-    try:
-        with urllib.request.urlopen(req, timeout=request.timeout_seconds) as resp:
-            raw = resp.read().decode("utf-8")
-    except urllib.error.URLError as exc:
-        raise InferenceError(f"Ollama unavailable: {exc}") from exc
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise InferenceError(f"Invalid Ollama JSON response: {raw[:200]}") from exc
 
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise InferenceError(f"Invalid Ollama JSON response: {raw[:200]}") from exc
+        if "response" not in data:
+            raise InferenceError(f"Unexpected Ollama response: {raw[:200]}")
 
-    if "response" not in data:
-        raise InferenceError(f"Unexpected Ollama response: {raw[:200]}")
+        return GenerationResult(text=data["response"], model=model)
 
-    return GenerationResult(text=data["response"], model=model)
+    raise last_exc or InferenceError("generate_text failed with no attempts")
 
 
 def parse_json_payload(raw: str) -> list | dict:
