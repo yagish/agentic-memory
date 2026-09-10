@@ -66,14 +66,15 @@ _DAEMON_LOG_PATH = os.path.expanduser("~/.memory/daemon.log")
 POLL_INTERVAL = 5 * 60
 LONG_POLL_INTERVAL = 30 * 60
 CPU_THRESHOLD = 70
-_MAX_SESSION_CHARS = int(os.environ.get("MEMORY_MAX_SESSION_CHARS", "60000"))
 _FACT_TTL_DAYS = int(os.environ.get("MEMORY_FACT_TTL_DAYS", "180"))
 _EPISODIC_TTL_DAYS = int(os.environ.get("MEMORY_EPISODIC_TTL_DAYS", "90"))
-# Compaction: long sessions are summarized via Ollama before extraction.
+# Compaction: every session is summarized via Ollama before extraction.
 # MEMORY_COMPACT_INPUT_CHARS caps how much raw transcript the summarizer sees
-# (Ollama context limit). The summary is saved to the DB and reused on re-runs.
+# (Ollama context limit). MEMORY_COMPACT_OUTPUT_CHARS is passed verbatim in the
+# prompt so the model knows the target size of the output it should produce.
+# The summary is saved to the DB and reused on re-runs.
 _COMPACT_INPUT_CHARS = int(os.environ.get("MEMORY_COMPACT_INPUT_CHARS", "40000"))
-_COMPACT_TARGET_WORDS = int(os.environ.get("MEMORY_COMPACT_TARGET_WORDS", "800"))
+_COMPACT_OUTPUT_CHARS = int(os.environ.get("MEMORY_COMPACT_OUTPUT_CHARS", "5000"))
 
 _shutdown = False
 
@@ -162,7 +163,7 @@ def _compact_session_text(full_text: str) -> str:
         "- Decisions made and their rationale\n"
         "- Steps taken or discussed\n"
         "- Outcomes reached and open questions\n"
-        f"Target: under {_COMPACT_TARGET_WORDS} words. "
+        f"Your output must be under {_COMPACT_OUTPUT_CHARS} characters. "
         "Output only the summary — no preamble, no closing remark.\n\n"
         "TRANSCRIPT:\n" + input_text
     )
@@ -173,17 +174,18 @@ def _compact_session_text(full_text: str) -> str:
 
 
 def _get_or_compact_session_text(conn, session: dict) -> str:
-    """Return the text to feed to all extractors for this session.
+    """Return the compacted text to feed to all extractors for this session.
+
+    Every session is compacted — short or long — so extractors always receive a
+    consistent, model-shaped summary rather than raw transcript turns.
 
     - Sessions already compacted: return the stored compacted_text directly.
-    - Short sessions (under _MAX_SESSION_CHARS): return the full transcript text.
-    - Long sessions not yet compacted: call Ollama to summarize, save the result
-      to the DB for reuse, then return the summary.
+    - All other sessions: call Ollama to summarize, save the result to the DB
+      for reuse, then return the summary.
 
-    If Ollama fails during compaction the error propagates — the session stays
-    unprocessed and will be retried on the next daemon cycle.
+    If Ollama fails the error propagates — the session stays unprocessed and will
+    be retried on the next daemon cycle.
     """
-    # Reuse a compaction saved from a previous daemon cycle.
     cached = session.get("compacted_text")
     if cached:
         _daemon_log(f"reusing stored compaction for {session['session_id']}")
@@ -195,10 +197,6 @@ def _get_or_compact_session_text(conn, session: dict) -> str:
         turns = []
 
     full_text = _build_session_text(turns)
-
-    if len(full_text) <= _MAX_SESSION_CHARS:
-        return full_text
-
     compacted = _compact_session_text(full_text)
     save_session_compaction(conn, session["session_id"], compacted)
     return compacted
