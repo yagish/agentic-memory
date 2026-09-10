@@ -545,73 +545,37 @@ def _fit_context_to_budget(sections: list[str], *, char_budget: int) -> str:
 
 # ── Section 3: Adaptive token budget ──────────────────────────────────────
 #
-# A flat 500-token budget is wasteful for simple questions and insufficient for
-# "resume where we left off" requests that benefit from the full session handoff.
-# We classify the prompt intent semantically and pick an appropriate budget.
+# A flat 500-token budget is insufficient for "resume where we left off"
+# requests that benefit from the full session handoff. We detect resume intent
+# semantically and expand the budget; everything else gets the standard budget.
 #
 # Budget tiers:
-#   quick  → ~200 tokens: single-answer questions don't need much context
-#   task   → ~500 tokens: standard continuation (previous default)
+#   task   → ~500 tokens: standard (default)
 #   resume → ~1500 tokens: full handoff — session summary, last steps, next steps
-
-_QUICK_INTENT_EXEMPLARS = [
-    "what is",
-    "define this",
-    "what does this mean",
-    "quick question",
-    "just tell me",
-    "what language is this written in",
-    "how do you spell",
-    "what is the syntax for",
-    "can you explain briefly",
-    "in one sentence",
-]
-
-# Higher threshold for "quick" intent — we want confidence before we truncate context.
-_QUICK_SIMILARITY_THRESHOLD = 0.55
 
 # Budget in characters (tokens * 4) for each intent class
 _BUDGET_BY_INTENT = {
-    "quick": 200 * 4,    # ~200 tokens = 800 chars
-    "task": 500 * 4,     # ~500 tokens = 2000 chars (the previous hardcoded default)
+    "task": 500 * 4,     # ~500 tokens = 2000 chars
     "resume": 1500 * 4,  # ~1500 tokens = 6000 chars — full handoff context
 }
 
 
-@functools.cache
-def _get_quick_exemplar_vecs() -> tuple[list[float], ...]:
-    """Embed the quick-question exemplar phrases and cache the result forever.
-
-    Works the same way as _get_resume_exemplar_vecs — computed once on first
-    call, reused on every subsequent call in the same process.
-    """
-    return tuple(embed_text(phrase) for phrase in _QUICK_INTENT_EXEMPLARS)
-
-
 def _classify_prompt_intent(prompt_vec: list[float]) -> str:
-    """Classify the prompt as 'resume', 'quick', or 'task' for budget selection.
-
-    Uses semantic similarity against two sets of exemplar phrases. 'resume' is
-    checked before 'quick' because a resume request benefits more from a larger
-    budget than a quick question suffers from a smaller one.
+    """Classify the prompt as 'resume' or 'task' for budget selection.
 
     Args:
         prompt_vec — the prompt's embedding vector (already computed during retrieval)
 
     Returns:
-        One of: 'resume', 'quick', 'task' (default when neither matches).
+        'resume' when the prompt semantically asks to resume/review recent work,
+        'task' otherwise.
     """
     try:
-        # Check resume intent first — it overrides quick even if both match
         resume_vecs = _get_resume_exemplar_vecs()
         if any(_cosine_sim(prompt_vec, v) >= _RESUME_SIMILARITY_THRESHOLD for v in resume_vecs):
             return "resume"
-        # Check if this is a short, simple question
-        quick_vecs = _get_quick_exemplar_vecs()
-        if any(_cosine_sim(prompt_vec, v) >= _QUICK_SIMILARITY_THRESHOLD for v in quick_vecs):
-            return "quick"
     except Exception:
-        pass  # exemplar embedding failed — fall through to default
+        pass
     return "task"
 
 
@@ -625,8 +589,7 @@ def build_wake_up_injection(context: WakeUpContext) -> str:
     When context.prompt_vec is available (set by retrieve_wake_up_context),
     classifies the prompt intent and picks the right budget:
     - 'resume' requests get 1500 tokens — enough for a full session handoff
-    - 'quick' questions get 200 tokens — avoids padding simple answers with noise
-    - 'task' (default) gets 500 tokens — the original hardcoded budget
+    - 'task' (default) gets 500 tokens
 
     Falls back to the standard 500-token budget when prompt_vec is None
     (e.g. in tests or when called from an older adapter).
