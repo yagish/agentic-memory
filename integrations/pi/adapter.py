@@ -124,6 +124,7 @@ def handle_recall(payload: dict, *, db_path: str = DB_PATH) -> dict:
 
     session_id = payload.get("session_id")
     include_working_memory = bool(payload.get("include_working_memory", False))
+    _wake_log_info("=" * 60)
     _wake_log_info(
         f"agent={AGENT_NAME} recall invoked, prompt={prompt!r}, include_working_memory={include_working_memory}, session_id={session_id}"
     )

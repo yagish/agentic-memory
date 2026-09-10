@@ -53,17 +53,17 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
     def test_retrieval_fetches_episodic_facts_and_procedural_memory(self):
         conn = MagicMock()
 
-        with patch("memory.retrieval.retrieve_episodic_memories", return_value=[
+        with patch("memory.retrieval._fetch.retrieve_episodic_memories", return_value=[
             {"id": "ep-1", "title": "Resolved auth bug", "abstract": "Fixed the login loop.", "similarity": 0.79}
         ]) as retrieve_episodic, \
-             patch("memory.retrieval.search_facts_semantic", return_value=[
+             patch("memory.retrieval._fetch.search_facts_semantic", return_value=[
                  {"id": "fact-1", "content": "user.name = Yash", "similarity": 0.45},
                  {"id": "fact-2", "content": "user.timezone = EST", "similarity": 0.24},
              ]) as search_facts_semantic, \
-             patch("memory.retrieval.retrieve_procedural_memories", return_value=[
+             patch("memory.retrieval._fetch.retrieve_procedural_memories", return_value=[
                  {"id": "proc-1", "title": "Deploy service", "summary": "Use this when releasing the auth service.", "steps": ["Build the image"], "similarity": 0.88}
              ]) as retrieve_procedural, \
-             patch("memory.retrieval.retrieve_session_memories", return_value=[]) as retrieve_session:
+             patch("memory.retrieval._fetch.retrieve_session_memories", return_value=[]) as retrieve_session:
             context = retrieve_wake_up_context(
                 conn,
                 "how do i deploy the auth service?",
@@ -111,10 +111,10 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
     def test_fact_retrieval_returns_no_hits_when_semantic_search_misses(self):
         conn = MagicMock()
 
-        with patch("memory.retrieval.retrieve_episodic_memories", return_value=[]), \
-             patch("memory.retrieval.search_facts_semantic", return_value=[]), \
-             patch("memory.retrieval.retrieve_procedural_memories", return_value=[]), \
-             patch("memory.retrieval.retrieve_session_memories", return_value=[]):
+        with patch("memory.retrieval._fetch.retrieve_episodic_memories", return_value=[]), \
+             patch("memory.retrieval._fetch.search_facts_semantic", return_value=[]), \
+             patch("memory.retrieval._fetch.retrieve_procedural_memories", return_value=[]), \
+             patch("memory.retrieval._fetch.retrieve_session_memories", return_value=[]):
             context = retrieve_wake_up_context(
                 conn,
                 "what is my favorite language?",
@@ -159,12 +159,12 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
         # vector so that cosine similarity equals 1.0 and the fallback triggers.
         # This tests that the FALLBACK MECHANISM works correctly; a separate unit
         # test of _prompt_requests_recent_episode_summary covers the classifier itself.
-        with patch("memory.retrieval.retrieve_episodic_memories", return_value=[]), \
-             patch("memory.retrieval.list_recent_episodic_memories", return_value=recent_rows) as list_recent, \
-             patch("memory.retrieval.search_facts_semantic", return_value=[]), \
-             patch("memory.retrieval.retrieve_procedural_memories", return_value=[]), \
-             patch("memory.retrieval.retrieve_session_memories", return_value=[]), \
-             patch("memory.retrieval._get_resume_exemplar_vecs", return_value=([0.1],)):
+        with patch("memory.retrieval._fetch.retrieve_episodic_memories", return_value=[]), \
+             patch("memory.retrieval._fetch.list_recent_episodic_memories", return_value=recent_rows) as list_recent, \
+             patch("memory.retrieval._fetch.search_facts_semantic", return_value=[]), \
+             patch("memory.retrieval._fetch.retrieve_procedural_memories", return_value=[]), \
+             patch("memory.retrieval._fetch.retrieve_session_memories", return_value=[]), \
+             patch("memory.retrieval._intent._get_resume_exemplar_vecs", return_value=([0.1],)):
             context = retrieve_wake_up_context(
                 conn,
                 "what was i working on last",
@@ -178,7 +178,7 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
     def test_retrieval_fetches_working_and_session_memory_when_prompt_requests_resume_context(self):
         conn = MagicMock()
 
-        with patch("memory.retrieval.retrieve_working_memory", return_value={
+        with patch("memory.retrieval._fetch._retrieve_wm", return_value={
             "id": "wm-1",
             "session_id": "session-123",
             "current_goal": "Finish auth middleware refactor",
@@ -189,10 +189,10 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
             "status": "ready_to_resume",
             "similarity": 1.0,
         }) as retrieve_working, \
-             patch("memory.retrieval.retrieve_episodic_memories", return_value=[]), \
-             patch("memory.retrieval.search_facts_semantic", return_value=[]), \
-             patch("memory.retrieval.retrieve_procedural_memories", return_value=[]), \
-             patch("memory.retrieval.retrieve_session_memories", return_value=[
+             patch("memory.retrieval._fetch.retrieve_episodic_memories", return_value=[]), \
+             patch("memory.retrieval._fetch.search_facts_semantic", return_value=[]), \
+             patch("memory.retrieval._fetch.retrieve_procedural_memories", return_value=[]), \
+             patch("memory.retrieval._fetch.retrieve_session_memories", return_value=[
                  {
                      "id": "sm-1",
                      "session_id": "session-old",
@@ -214,7 +214,7 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
         self.assertIsNotNone(context.working_mem)
         self.assertEqual(context.working_mem["id"], "wm-1")
         self.assertEqual([item["id"] for item in context.session_memory], ["sm-1"])
-        retrieve_working.assert_called_once_with(conn, session_id="session-123", source="wake_up")
+        retrieve_working.assert_called_once_with(conn, session_id="session-123", source="wake_up")  # patched as _retrieve_wm
         retrieve_session.assert_called_once_with(
             conn,
             "pick up where i left off on the auth middleware work",
@@ -229,10 +229,10 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
     def test_retrieval_searches_broadly_without_prompt_gating(self):
         conn = MagicMock()
 
-        with patch("memory.retrieval.retrieve_episodic_memories", return_value=[]), \
-             patch("memory.retrieval.search_facts_semantic", return_value=[]), \
-             patch("memory.retrieval.retrieve_procedural_memories", return_value=[]) as retrieve_procedural, \
-             patch("memory.retrieval.retrieve_session_memories", return_value=[]) as retrieve_session:
+        with patch("memory.retrieval._fetch.retrieve_episodic_memories", return_value=[]), \
+             patch("memory.retrieval._fetch.search_facts_semantic", return_value=[]), \
+             patch("memory.retrieval._fetch.retrieve_procedural_memories", return_value=[]) as retrieve_procedural, \
+             patch("memory.retrieval._fetch.retrieve_session_memories", return_value=[]) as retrieve_session:
             retrieve_wake_up_context(
                 conn,
                 "what did we decide about auth middleware?",
@@ -246,7 +246,7 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
     def test_ranked_episodic_results_filter_missing_memory_artifacts(self):
         conn = MagicMock()
 
-        with patch("memory.retrieval.retrieve_episodic_memories", return_value=[
+        with patch("memory.retrieval._fetch.retrieve_episodic_memories", return_value=[
             {
                 "id": "ep-noise",
                 "title": "Name inquiry",
@@ -275,9 +275,9 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
                 "similarity": 0.73,
             },
         ]), \
-             patch("memory.retrieval.search_facts_semantic", return_value=[]), \
-             patch("memory.retrieval.retrieve_procedural_memories", return_value=[]), \
-             patch("memory.retrieval.retrieve_session_memories", return_value=[]):
+             patch("memory.retrieval._fetch.search_facts_semantic", return_value=[]), \
+             patch("memory.retrieval._fetch.retrieve_procedural_memories", return_value=[]), \
+             patch("memory.retrieval._fetch.retrieve_session_memories", return_value=[]):
             context = retrieve_wake_up_context(
                 conn,
                 "what did we decide about auth middleware?",
@@ -290,11 +290,11 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
     def test_non_fatal_layer_errors_become_warnings(self):
         conn = MagicMock()
 
-        with patch("memory.retrieval.retrieve_working_memory", side_effect=RuntimeError("working boom")), \
-             patch("memory.retrieval.retrieve_episodic_memories", side_effect=RuntimeError("episodic boom")), \
-             patch("memory.retrieval.search_facts_semantic", side_effect=RuntimeError("facts boom")), \
-             patch("memory.retrieval.retrieve_procedural_memories", side_effect=RuntimeError("procedural boom")), \
-             patch("memory.retrieval.retrieve_session_memories", side_effect=RuntimeError("session boom")):
+        with patch("memory.retrieval._fetch._retrieve_wm", side_effect=RuntimeError("working boom")), \
+             patch("memory.retrieval._fetch.retrieve_episodic_memories", side_effect=RuntimeError("episodic boom")), \
+             patch("memory.retrieval._fetch.search_facts_semantic", side_effect=RuntimeError("facts boom")), \
+             patch("memory.retrieval._fetch.retrieve_procedural_memories", side_effect=RuntimeError("procedural boom")), \
+             patch("memory.retrieval._fetch.retrieve_session_memories", side_effect=RuntimeError("session boom")):
             context = retrieve_wake_up_context(
                 conn,
                 "pick up where i left off and how do i deploy?",
