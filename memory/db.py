@@ -157,9 +157,28 @@ def _fact_dict_from_row(row: sqlite3.Row | dict) -> dict:
 
 
 
+_MIGRATIONS = [
+    # 2026-09-10: store Ollama-generated compaction alongside the raw transcript
+    "ALTER TABLE sessions ADD COLUMN compacted_text TEXT",
+]
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    """Run forward-only schema migrations. Each statement is tried once;
+    OperationalError (column already exists) is silently ignored so the
+    function is safe to call on an existing database."""
+    for sql in _MIGRATIONS:
+        try:
+            conn.execute(sql)
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
+
+
 def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA)
     conn.commit()
+    _apply_migrations(conn)
 
 
 
@@ -532,7 +551,8 @@ def search_facts_semantic(conn: sqlite3.Connection, query_vector: list[float], l
 def get_unprocessed_sessions(conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
     rows = conn.execute(
         """
-        SELECT session_id, agent, started_at, updated_at, turn_count, transcript, metadata, daemon_processed_at
+        SELECT session_id, agent, started_at, updated_at, turn_count, transcript,
+               metadata, daemon_processed_at, compacted_text
         FROM sessions
         WHERE daemon_processed_at IS NULL
         ORDER BY updated_at ASC
@@ -559,6 +579,16 @@ def get_latest_session(conn: sqlite3.Connection) -> dict | None:
     ).fetchone()
     return dict(row) if row else None
 
+
+
+def save_session_compaction(conn: sqlite3.Connection, session_id: str, compacted_text: str) -> None:
+    """Persist the Ollama-generated compaction for a session so later daemon
+    cycles can reuse it without calling the model again."""
+    conn.execute(
+        "UPDATE sessions SET compacted_text = ? WHERE session_id = ?",
+        (compacted_text, session_id),
+    )
+    conn.commit()
 
 
 def mark_session_processed(conn: sqlite3.Connection, session_id: str) -> None:

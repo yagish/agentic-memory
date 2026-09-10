@@ -39,6 +39,7 @@ from memory.db import (
     open_db,
     prune_stale_episodic,
     prune_stale_facts,
+    save_session_compaction,
 )
 from memory.debug import enable_debug
 from memory.episodic import extract_episode_from_session_text
@@ -68,10 +69,9 @@ CPU_THRESHOLD = 70
 _MAX_SESSION_CHARS = int(os.environ.get("MEMORY_MAX_SESSION_CHARS", "60000"))
 _FACT_TTL_DAYS = int(os.environ.get("MEMORY_FACT_TTL_DAYS", "180"))
 _EPISODIC_TTL_DAYS = int(os.environ.get("MEMORY_EPISODIC_TTL_DAYS", "90"))
-# Compaction: summarize long sessions instead of truncating them.
-# MEMORY_COMPACT_INPUT_CHARS caps how much of the raw transcript the summarizer
-# sees (Ollama context limit). The summary replaces the raw text fed to extractors.
-_COMPACT_SESSION = os.environ.get("MEMORY_SESSION_COMPACT", "1") == "1"
+# Compaction: long sessions are summarized via Ollama before extraction.
+# MEMORY_COMPACT_INPUT_CHARS caps how much raw transcript the summarizer sees
+# (Ollama context limit). The summary is saved to the DB and reused on re-runs.
 _COMPACT_INPUT_CHARS = int(os.environ.get("MEMORY_COMPACT_INPUT_CHARS", "40000"))
 _COMPACT_TARGET_WORDS = int(os.environ.get("MEMORY_COMPACT_TARGET_WORDS", "800"))
 
@@ -127,19 +127,31 @@ def _build_session_text(turns: list[dict], max_chars: int | None = None) -> str:
     return "\n".join(lines)
 
 
+def _session_text_sample(session: dict) -> str:
+    """Return the full raw session text with no size limit and no compaction.
+
+    Used as a fallback when individual extractor functions are called directly
+    (e.g. from tests or manual scripts) without a pre-built text_sample argument.
+    The daemon's normal code path goes through _get_or_compact_session_text instead.
+    """
+    try:
+        turns = json.loads(session.get("transcript") or "[]")
+    except json.JSONDecodeError:
+        turns = []
+    return _build_session_text(turns)
+
+
 def _compact_session_text(full_text: str) -> str:
-    """Summarize a long session transcript via Ollama, falling back to truncation.
+    """Summarize a long session transcript via Ollama.
 
     Passes up to _COMPACT_INPUT_CHARS of the raw text to the model and asks for
-    a dense summary. The summary is returned instead of the truncated original,
-    so extractors see a condensed view of the full session rather than just its
-    first N characters.
+    a dense summary. The summary is saved to the DB and reused on subsequent
+    daemon cycles so the model is only called once per session.
 
-    Falls back to simple truncation if Ollama is unavailable or returns an error.
+    Raises InferenceError if Ollama is unavailable — callers decide how to handle.
     """
-    from memory.inference import GenerationRequest, InferenceError, generate_text
+    from memory.inference import GenerationRequest, generate_text
 
-    # Cap what we send to Ollama to avoid exceeding its context window.
     input_text = full_text[:_COMPACT_INPUT_CHARS]
 
     prompt = (
@@ -155,30 +167,41 @@ def _compact_session_text(full_text: str) -> str:
         "TRANSCRIPT:\n" + input_text
     )
 
-    try:
-        result = generate_text(GenerationRequest(prompt=prompt, timeout_seconds=120))
-        _daemon_log(
-            f"compacted session: {len(full_text)} → {len(result.text)} chars"
-        )
-        return result.text
-    except (InferenceError, Exception) as exc:
-        _daemon_log(f"session compaction failed, falling back to truncation: {exc}")
-        return full_text[:_MAX_SESSION_CHARS]
+    result = generate_text(GenerationRequest(prompt=prompt, timeout_seconds=120))
+    _daemon_log(f"compacted session: {len(full_text)} → {len(result.text)} chars")
+    return result.text
 
 
-def _session_text_sample(session: dict, max_chars: int | None = None) -> str:
+def _get_or_compact_session_text(conn, session: dict) -> str:
+    """Return the text to feed to all extractors for this session.
+
+    - Sessions already compacted: return the stored compacted_text directly.
+    - Short sessions (under _MAX_SESSION_CHARS): return the full transcript text.
+    - Long sessions not yet compacted: call Ollama to summarize, save the result
+      to the DB for reuse, then return the summary.
+
+    If Ollama fails during compaction the error propagates — the session stays
+    unprocessed and will be retried on the next daemon cycle.
+    """
+    # Reuse a compaction saved from a previous daemon cycle.
+    cached = session.get("compacted_text")
+    if cached:
+        _daemon_log(f"reusing stored compaction for {session['session_id']}")
+        return cached
+
     try:
         turns = json.loads(session.get("transcript") or "[]")
     except json.JSONDecodeError:
         turns = []
-    # Build the full text first so compaction can see the whole transcript.
+
     full_text = _build_session_text(turns)
-    if max_chars is not None and len(full_text) > max_chars:
-        if _COMPACT_SESSION:
-            return _compact_session_text(full_text)
-        # Compaction disabled: fall back to hard truncation.
-        return _build_session_text(turns, max_chars=max_chars)
-    return full_text
+
+    if len(full_text) <= _MAX_SESSION_CHARS:
+        return full_text
+
+    compacted = _compact_session_text(full_text)
+    save_session_compaction(conn, session["session_id"], compacted)
+    return compacted
 
 
 def _log_episode_details(session_id: str, episode) -> None:
@@ -440,9 +463,9 @@ def _process_session(conn, session: dict) -> bool:
     session_id = session["session_id"]
     _daemon_log(f"processing session {session_id} (parallel extractors)")
 
-    # Build the text sample once in the main thread, capped to avoid hitting
-    # Ollama's context limit on very long sessions.
-    text_sample = _session_text_sample(session, max_chars=_MAX_SESSION_CHARS)
+    # Build or retrieve the compacted text once in the main thread.
+    # All five parallel extractors share this single pre-processed input.
+    text_sample = _get_or_compact_session_text(conn, session)
 
     # Each tuple is (extractor_function, human_readable_label_for_logs).
     # The label is used only for error logging if a future raises unexpectedly.
