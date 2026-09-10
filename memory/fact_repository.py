@@ -12,7 +12,7 @@ import sqlite3
 from collections.abc import Iterable
 
 from memory.contracts import ExtractedFact
-from memory.db import insert_fact
+from memory.db import upsert_fact
 from memory.fact_text import build_canonical_fact_content, generate_semantic_fact_text
 from memory.facts import normalize_extracted_facts
 
@@ -67,7 +67,7 @@ def save_extracted_facts(
     """
     saved_ids: list[str] = []
     for fact in normalize_extracted_facts(list(facts)):
-        fact_id = insert_fact(
+        fact_id = upsert_fact(
             conn,
             tags=build_fact_tags(fact),
             source=source,

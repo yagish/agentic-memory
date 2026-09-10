@@ -13,6 +13,18 @@ Current runtime scope is intentionally small:
 
 Everything else from the older design was removed.
 
+## Design Strengths
+
+- **Async extraction pipeline** — `save_hook.py` writes the transcript immediately (cheap SQLite write); the daemon does all LLM extraction after the session ends. Claude sessions are never blocked.
+- **Adaptive token budget** — the intent classifier (`resume` / `quick` / `task`) adjusts context size: 200 tokens for trivial questions, 500 for normal work, 1 500 for "where did we leave off." Exemplar embeddings are cached after the first call so subsequent prompts pay zero extra embedding cost.
+- **Composite retrieval ranking** — `_row_score` blends semantic similarity (dominant), lexical token overlap (small bonus), and exponential recency decay (tie-breaker). A memory from three days ago at similarity 0.61 beats a six-month-old one at 0.62.
+- **Model-free retrieval path** — wake-up injection requires no LLM call at runtime: one embedding, a vector search, and string formatting. The only "intelligence" is pre-baked into the stored extraction.
+- **Parallel session processing** — `ThreadPoolExecutor(max_workers=5)` runs all five extractors concurrently per session. Since each extractor blocks on an Ollama HTTP response, the GIL releases and they run in true parallel; wall-clock time drops from ~5× to ~1× the slowest extractor.
+- **CPU gate** — the daemon checks `psutil.cpu_percent` before each polling cycle and skips processing when usage exceeds 70 %, preventing background extraction from interfering with active work.
+- **Five complementary memory types** — facts (durable key-value), episodic (what happened), procedural (how-to patterns with trigger phrases), working memory (current goal/tasks), and session memory (handoff: `left_off_at` + `next_steps`). Each type covers a different recovery dimension.
+- **Graceful degradation** — every retrieval step is wrapped in `try/except` producing a `RetrievalWarning` instead of a crash. The "resume" intent fallback retrieves recent episodes when semantic search returns nothing.
+- **Good test coverage** — fixture-based extraction tests, contract tests for each memory type, semantic search tests, and a dedicated token-economics test.
+
 ## Components
 
 ### 1. Claude integration

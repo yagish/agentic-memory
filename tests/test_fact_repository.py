@@ -93,7 +93,10 @@ class TestFactRepository(unittest.TestCase):
         ],
     )
     @patch("memory.inference.embed_text", return_value=[0.1, 0.2, 0.3])
-    def test_save_extracted_facts_preserves_conflicts_in_order(self, _mock_embed, _mock_generate):
+    def test_save_extracted_facts_merges_conflicts_last_value_wins(self, _mock_embed, _mock_generate):
+        # When the same (entity, attribute) appears twice in one extraction pass,
+        # upsert_fact merges them: the second value overwrites the first in place,
+        # keeping exactly one row. Both inputs return the same row id.
         saved_ids = save_extracted_facts(
             self.conn,
             [
@@ -104,11 +107,10 @@ class TestFactRepository(unittest.TestCase):
         )
 
         self.assertEqual(len(saved_ids), 2)
+        self.assertEqual(saved_ids[0], saved_ids[1])
         rows = list_session_facts(self.conn, session_id="session-conflict")
-        self.assertEqual(
-            [row["content"] for row in rows],
-            ["user.timezone = PST", "user.timezone = EST"],
-        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["content"], "user.timezone = EST")
 
 
 if __name__ == "__main__":

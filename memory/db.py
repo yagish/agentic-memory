@@ -310,6 +310,75 @@ def insert_fact(
     return fact_id
 
 
+def upsert_fact(
+    conn: sqlite3.Connection,
+    *,
+    entity: str,
+    attribute: str,
+    value: str,
+    semantic_content: str | None = None,
+    tags: list[str] | None = None,
+    source: str = "manual",
+    session_id: str | None = None,
+) -> str:
+    """Insert or merge a fact by (entity, attribute).
+
+    - New pair: insert a fresh row.
+    - Same value: touch updated_at only (no write amplification).
+    - Changed value: overwrite value, semantic_content, and embedding in place.
+
+    Returns the fact id.
+    """
+    entity, attribute, value, semantic = _fact_payload(
+        entity=entity, attribute=attribute, value=value, semantic_content=semantic_content
+    )
+    now = _utc_now()
+
+    existing = conn.execute(
+        "SELECT id, value FROM facts WHERE entity = ? AND attribute = ?",
+        (entity, attribute),
+    ).fetchone()
+
+    if existing is None:
+        fact_id = str(uuid.uuid4())
+        embedding_blob = None
+        try:
+            embedding_blob = pack_vector(embed(semantic))
+        except Exception:
+            pass
+        conn.execute(
+            """
+            INSERT INTO facts (id, entity, attribute, value, semantic_content, tags, source, session_id, created_at, updated_at, embedding)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (fact_id, entity, attribute, value, semantic, json.dumps(tags or []), source, session_id, now, now, embedding_blob),
+        )
+        conn.commit()
+        return fact_id
+
+    fact_id = existing["id"]
+
+    if existing["value"] == value:
+        conn.execute("UPDATE facts SET updated_at = ? WHERE id = ?", (now, fact_id))
+    else:
+        embedding_blob = None
+        try:
+            embedding_blob = pack_vector(embed(semantic))
+        except Exception:
+            pass
+        conn.execute(
+            """
+            UPDATE facts
+            SET value = ?, semantic_content = ?, updated_at = ?, session_id = ?, embedding = ?
+            WHERE id = ?
+            """,
+            (value, semantic, now, session_id, embedding_blob, fact_id),
+        )
+
+    conn.commit()
+    return fact_id
+
+
 
 def update_fact(
     conn: sqlite3.Connection,
