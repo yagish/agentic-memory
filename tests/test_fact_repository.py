@@ -21,7 +21,7 @@ class TestFactRepository(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
 
-    @patch("memory.fact_text.generate_text", return_value=GenerationResult(text="My name is Yash. What is my name? Yash.", model="test-model"))
+    @patch("memory.facts.text.generate_text", return_value=GenerationResult(text="My name is Yash. What is my name? Yash.", model="test-model"))
     def test_build_fact_content_and_tags_are_deterministic(self, _mock_generate):
         fact = ExtractedFact(
             entity="User",
@@ -45,7 +45,7 @@ class TestFactRepository(unittest.TestCase):
             ],
         )
 
-    @patch("memory.fact_text.generate_text", return_value=GenerationResult(text="My name is Yash. What is my name? Yash.", model="test-model"))
+    @patch("memory.facts.text.generate_text", return_value=GenerationResult(text="My name is Yash. What is my name? Yash.", model="test-model"))
     @patch("memory.inference.embed_text", return_value=[0.1, 0.2, 0.3])
     def test_save_extracted_facts_persists_one_fact(self, _mock_embed, _mock_generate):
         fact = ExtractedFact(entity="user", attribute="name", value="Yash")
@@ -68,7 +68,7 @@ class TestFactRepository(unittest.TestCase):
         self.assertIn("entity:user", rows[0]["tags"])
         self.assertIn("attribute:name", rows[0]["tags"])
 
-    @patch("memory.fact_text.generate_text", return_value=GenerationResult(text="My name is Yash. What is my name? Yash.", model="test-model"))
+    @patch("memory.facts.text.generate_text", return_value=GenerationResult(text="My name is Yash. What is my name? Yash.", model="test-model"))
     @patch("memory.inference.embed_text", return_value=[0.1, 0.2, 0.3])
     def test_save_extracted_facts_dedupes_semantic_duplicates(self, _mock_embed, _mock_generate):
         saved_ids = save_extracted_facts(
@@ -86,7 +86,7 @@ class TestFactRepository(unittest.TestCase):
         self.assertEqual(rows[0]["content"], "user.name = Yash")
 
     @patch(
-        "memory.fact_text.generate_text",
+        "memory.facts.text.generate_text",
         side_effect=[
             GenerationResult(text="My timezone is PST. What is my timezone? PST.", model="test-model"),
             GenerationResult(text="My timezone is EST. What is my timezone? EST.", model="test-model"),

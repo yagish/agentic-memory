@@ -20,7 +20,6 @@ import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from memory.fact_text import build_canonical_fact_content, build_semantic_fact_text
 from memory.vectors import cosine_distance, embed, pack_vector
 
 
@@ -145,12 +144,14 @@ def _fact_payload(
 ) -> tuple[str, str, str, str]:
     if not entity or not attribute or value is None:
         raise ValueError("fact requires entity, attribute, and value")
+    from memory.facts.text import build_semantic_fact_text  # lazy: avoids circular import
     semantic = (semantic_content or build_semantic_fact_text(entity, attribute, value)).strip()
     return entity, attribute, value.strip(), semantic
 
 
 
 def _fact_dict_from_row(row: sqlite3.Row | dict) -> dict:
+    from memory.facts.text import build_canonical_fact_content  # lazy: avoids circular import
     data = dict(row)
     data["content"] = build_canonical_fact_content(data["entity"], data["attribute"], data["value"])
     return data
@@ -521,6 +522,7 @@ def search_facts(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[
 
 
 def search_facts_semantic(conn: sqlite3.Connection, query_vector: list[float], limit: int = 5) -> list[dict]:
+    from memory.facts.text import build_canonical_fact_content  # lazy: avoids circular import
     rows = conn.execute(
         "SELECT id, entity, attribute, value, semantic_content, tags, source, session_id, created_at, updated_at, embedding FROM facts WHERE embedding IS NOT NULL"
     ).fetchall()

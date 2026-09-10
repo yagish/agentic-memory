@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse
 import uvicorn
 
 from memory.db import bootstrap_db, open_db
-from memory.fact_text import build_canonical_fact_content
+from memory.facts.text import build_canonical_fact_content
 from memory.debug import enable_debug
 from memory.ollama import is_ollama_running, start_ollama_if_needed
 

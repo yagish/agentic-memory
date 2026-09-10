@@ -1,80 +1,84 @@
-# daemon.py — background daemon for structured memory extraction.
-#
-# Runs as a long-lived process. Every poll cycle:
-#   1. finds unprocessed sessions
-#   2. extracts durable facts from the session
-#   3. extracts one episodic memory from the session
-#   4. extracts one procedural memory from the session
-#   5. extracts one working-memory snapshot from the session
-#   6. extracts one compacted session memory from the session
-#   7. marks the session processed
-#
-# Run:
-#   python3 memory/daemon.py        # runs forever
-#   python3 memory/daemon.py --once # force one extraction pass now
-#
-# When --once is used, the daemon skips the CPU gate and immediately processes
-# the current unprocessed batch.
-#
-# Stop: SIGTERM — the daemon exits cleanly after the current session.
+"""Background daemon for structured memory extraction.
+
+Runs as a long-lived process. Every poll cycle:
+  1. finds unprocessed sessions
+  2. compact each session via Ollama (cached in the DB)
+  3. runs five extractors in parallel: facts, episodic, procedural,
+     working-memory, session-memory
+  4. marks each session processed
+
+Run:
+  python3 -m memory.daemon        # runs forever
+  python3 -m memory.daemon --once # one extraction pass, then exit
+
+Stop: SIGTERM — exits cleanly after the current session.
+"""
 
 from __future__ import annotations
 
 import concurrent.futures
-import json
 import os
 import signal
-import sys
 import time
 from datetime import datetime, timezone
 
 import psutil
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# --- Core constants and logger (re-exported for backward compat and patchability) ---
+from memory.daemon._core import (  # noqa: F401
+    CPU_THRESHOLD,
+    DB_PATH,
+    LONG_POLL_INTERVAL,
+    POLL_INTERVAL,
+    _COMPACT_INPUT_CHARS,
+    _COMPACT_OUTPUT_CHARS,
+    _DAEMON_LOG_PATH,
+    _EPISODIC_TTL_DAYS,
+    _FACT_TTL_DAYS,
+    _daemon_log,
+    _should_write_log_file,
+)
 
+# --- Compaction helpers (re-exported for patchability) ---
+from memory.daemon.compaction import (  # noqa: F401
+    _build_session_text,
+    _compact_session_text,
+    _get_or_compact_session_text,
+    _session_text_sample,
+)
+
+# --- Pruning helpers (re-exported for patchability) ---
+from memory.daemon.pruning import _prune_stale_memories, _warm_up_embedding  # noqa: F401
+
+# --- DB layer ---
 from memory.db import (
     bootstrap_db,
     get_unprocessed_sessions,
     mark_session_processed,
     open_db,
-    prune_stale_episodic,
-    prune_stale_facts,
-    save_session_compaction,
 )
-from memory.debug import enable_debug
+
+# --- Memory-type extractors and repositories ---
+# These names are imported into the memory.daemon namespace so that
+# patch.object(daemon_module, "extract_episode_from_session_text", ...) works.
 from memory.episodic import extract_episode_from_session_text
 from memory.episodic_repository import save_extracted_episode
 from memory.fact_repository import build_fact_content, save_extracted_facts
 from memory.facts import extract_facts_from_session_text, normalize_extracted_facts
 from memory.logger import activity_log, error_log
-from memory.procedural import extract_procedure_from_session_text
-from memory.procedural_repository import save_extracted_procedure
-from memory.session_memory import extract_session_memory_from_session_text
-from memory.session_memory_repository import save_extracted_session_memory
-from memory.working_memory import extract_working_memory_from_session_text
-from memory.working_memory_repository import save_extracted_working_memory
 from memory.ollama import (
     start_ollama_if_needed as _start_ollama_if_needed,
     stop_ollama as _stop_ollama,
 )
+from memory.procedural import extract_procedure_from_session_text
+from memory.procedural_repository import save_extracted_procedure
+from memory.session_memory import extract_session_memory_from_session_text
+from memory.session_memory_repository import save_extracted_session_memory
 from memory.vectors import embed
+from memory.working_memory import extract_working_memory_from_session_text
+from memory.working_memory_repository import save_extracted_working_memory
 
-
-DB_PATH = os.path.expanduser("~/.memory/memory.db")
-_DAEMON_LOG_PATH = os.path.expanduser("~/.memory/daemon.log")
-
-POLL_INTERVAL = 5 * 60
-LONG_POLL_INTERVAL = 30 * 60
-CPU_THRESHOLD = 70
-_FACT_TTL_DAYS = int(os.environ.get("MEMORY_FACT_TTL_DAYS", "180"))
-_EPISODIC_TTL_DAYS = int(os.environ.get("MEMORY_EPISODIC_TTL_DAYS", "90"))
-# Compaction: every session is summarized via Ollama before extraction.
-# MEMORY_COMPACT_INPUT_CHARS caps how much raw transcript the summarizer sees
-# (Ollama context limit). MEMORY_COMPACT_OUTPUT_CHARS is passed verbatim in the
-# prompt so the model knows the target size of the output it should produce.
-# The summary is saved to the DB and reused on re-runs.
-_COMPACT_INPUT_CHARS = int(os.environ.get("MEMORY_COMPACT_INPUT_CHARS", "40000"))
-_COMPACT_OUTPUT_CHARS = int(os.environ.get("MEMORY_COMPACT_OUTPUT_CHARS", "5000"))
+# --- Shutdown flag and signal handling ---
 
 _shutdown = False
 
@@ -89,117 +93,14 @@ signal.signal(signal.SIGTERM, _handle_sigterm)
 signal.signal(signal.SIGINT, _handle_sigterm)
 
 
-def _should_write_log_file() -> bool:
-    if os.environ.get("MEMORY_DISABLE_FILE_LOGS") == "1":
-        return False
-    if os.environ.get("PYTEST_CURRENT_TEST"):
-        return False
-    if "pytest" in sys.modules:
-        return False
-    return True
-
-
-def _daemon_log(message: str) -> None:
-    if not _should_write_log_file():
-        return
-    ts = datetime.now(timezone.utc).isoformat()
-    try:
-        os.makedirs(os.path.dirname(_DAEMON_LOG_PATH), exist_ok=True)
-        with open(_DAEMON_LOG_PATH, "a") as f:
-            f.write(f"{ts} [daemon] {message}\n")
-    except Exception:
-        pass
-
-
-def _build_session_text(turns: list[dict], max_chars: int | None = None) -> str:
-    """Concatenate turn content into a readable text sample."""
-    lines: list[str] = []
-    chars = 0
-    for turn in turns:
-        content = turn.get("content", "")
-        if not isinstance(content, str) or not content.strip():
-            continue
-        role = turn.get("role", "")
-        line = f"{role}: {content}"
-        if max_chars is not None and chars + len(line) > max_chars:
-            break
-        lines.append(line)
-        chars += len(line)
-    return "\n".join(lines)
-
-
-def _session_text_sample(session: dict) -> str:
-    """Return the full raw session text with no size limit and no compaction.
-
-    Used as a fallback when individual extractor functions are called directly
-    (e.g. from tests or manual scripts) without a pre-built text_sample argument.
-    The daemon's normal code path goes through _get_or_compact_session_text instead.
-    """
-    try:
-        turns = json.loads(session.get("transcript") or "[]")
-    except json.JSONDecodeError:
-        turns = []
-    return _build_session_text(turns)
-
-
-def _compact_session_text(full_text: str) -> str:
-    """Summarize a long session transcript via Ollama.
-
-    Passes up to _COMPACT_INPUT_CHARS of the raw text to the model and asks for
-    a dense summary. The summary is saved to the DB and reused on subsequent
-    daemon cycles so the model is only called once per session.
-
-    Raises InferenceError if Ollama is unavailable — callers decide how to handle.
-    """
-    from memory.inference import GenerationRequest, generate_text
-
-    input_text = full_text[:_COMPACT_INPUT_CHARS]
-
-    prompt = (
-        "You are a session summarizer. Condense the following conversation transcript "
-        "into a concise but complete summary.\n"
-        "Include:\n"
-        "- All key facts (names, settings, preferences, technical details)\n"
-        "- Decisions made and their rationale\n"
-        "- Steps taken or discussed\n"
-        "- Outcomes reached and open questions\n"
-        f"Your output must be under {_COMPACT_OUTPUT_CHARS} characters. "
-        "Output only the summary — no preamble, no closing remark.\n\n"
-        "TRANSCRIPT:\n" + input_text
-    )
-
-    result = generate_text(GenerationRequest(prompt=prompt, timeout_seconds=120))
-    _daemon_log(f"compacted session: {len(full_text)} → {len(result.text)} chars")
-    return result.text
-
-
-def _get_or_compact_session_text(conn, session: dict) -> str:
-    """Return the compacted text to feed to all extractors for this session.
-
-    Every session is compacted — short or long — so extractors always receive a
-    consistent, model-shaped summary rather than raw transcript turns.
-
-    - Sessions already compacted: return the stored compacted_text directly.
-    - All other sessions: call Ollama to summarize, save the result to the DB
-      for reuse, then return the summary.
-
-    If Ollama fails the error propagates — the session stays unprocessed and will
-    be retried on the next daemon cycle.
-    """
-    cached = session.get("compacted_text")
-    if cached:
-        _daemon_log(f"reusing stored compaction for {session['session_id']}")
-        return cached
-
-    try:
-        turns = json.loads(session.get("transcript") or "[]")
-    except json.JSONDecodeError:
-        turns = []
-
-    full_text = _build_session_text(turns)
-    compacted = _compact_session_text(full_text)
-    save_session_compaction(conn, session["session_id"], compacted)
-    return compacted
+# ---------------------------------------------------------------------------
+# Extractor functions
+#
+# These are defined in this module (not in a submodule) so that tests using
+# patch.object(daemon_module, "extract_episode_from_session_text", ...) and
+# patch.object(daemon_module, "_daemon_log", ...) intercept the correct
+# name-lookups that happen inside each function's body.
+# ---------------------------------------------------------------------------
 
 
 def _log_episode_details(session_id: str, episode) -> None:
@@ -278,7 +179,6 @@ def _extract_facts(conn, session: dict, text_sample: str | None = None) -> list[
         return []
 
 
-
 def _log_procedure_details(session_id: str, procedure) -> None:
     _daemon_log(
         f"procedure extracted for {session_id}: title={procedure.title} | summary={procedure.summary}"
@@ -287,7 +187,6 @@ def _log_procedure_details(session_id: str, procedure) -> None:
         _daemon_log(f"procedure steps for {session_id}: {'; '.join(procedure.steps)}")
     if getattr(procedure, "trigger_phrases", None):
         _daemon_log(f"procedure triggers for {session_id}: {'; '.join(procedure.trigger_phrases)}")
-
 
 
 def _create_procedural_entry(conn, session: dict, text_sample: str | None = None):
@@ -324,16 +223,16 @@ def _create_procedural_entry(conn, session: dict, text_sample: str | None = None
         return None
 
 
-
 def _log_working_memory_details(session_id: str, working_memory) -> None:
     _daemon_log(
-        f"working memory extracted for {session_id}: goal={working_memory.current_goal} | next_step={working_memory.next_step} | status={working_memory.status}"
+        f"working memory extracted for {session_id}: "
+        f"goal={working_memory.current_goal} | next_step={working_memory.next_step} | "
+        f"status={working_memory.status}"
     )
     if getattr(working_memory, "active_tasks", None):
         _daemon_log(f"working memory tasks for {session_id}: {'; '.join(working_memory.active_tasks)}")
     if getattr(working_memory, "constraints", None):
         _daemon_log(f"working memory constraints for {session_id}: {'; '.join(working_memory.constraints)}")
-
 
 
 def _create_working_memory_entry(conn, session: dict, text_sample: str | None = None):
@@ -370,16 +269,15 @@ def _create_working_memory_entry(conn, session: dict, text_sample: str | None = 
         return None
 
 
-
 def _log_session_memory_details(session_id: str, session_memory) -> None:
     _daemon_log(
-        f"session memory extracted for {session_id}: title={session_memory.title} | left_off_at={session_memory.left_off_at}"
+        f"session memory extracted for {session_id}: "
+        f"title={session_memory.title} | left_off_at={session_memory.left_off_at}"
     )
     if getattr(session_memory, "outcomes", None):
         _daemon_log(f"session memory outcomes for {session_id}: {'; '.join(session_memory.outcomes)}")
     if getattr(session_memory, "next_steps", None):
         _daemon_log(f"session memory next steps for {session_id}: {'; '.join(session_memory.next_steps)}")
-
 
 
 def _create_session_memory_entry(conn, session: dict, text_sample: str | None = None):
@@ -416,20 +314,17 @@ def _create_session_memory_entry(conn, session: dict, text_sample: str | None = 
         return None
 
 
+# ---------------------------------------------------------------------------
+# Parallel extraction pipeline
+# ---------------------------------------------------------------------------
+
 
 def _run_extractor_in_thread(extractor_fn, session: dict, text_sample: str) -> None:
     """Open a fresh DB connection and run one extractor function.
 
     Each extractor runs in its own thread, so it must open its own SQLite
-    connection. SQLite connections are NOT safe to share across threads — each
-    thread needs its own handle to avoid data corruption or "database is locked"
-    errors. SQLite's WAL (write-ahead log) mode lets multiple connections write
-    concurrently without serializing on the GIL.
-
-    Args:
-        extractor_fn  — one of the five _extract_* / _create_*_entry functions
-        session       — the raw session dict from the DB
-        text_sample   — the pre-built conversation text (computed once, read-only)
+    connection — connections are NOT safe to share across threads.  SQLite's WAL
+    mode lets multiple connections write concurrently.
     """
     conn = open_db(DB_PATH)
     try:
@@ -441,32 +336,20 @@ def _run_extractor_in_thread(extractor_fn, session: dict, text_sample: str) -> N
 def _process_session(conn, session: dict) -> bool:
     """Process one session through the structured memory pipeline in parallel.
 
-    Previously the five extractors ran sequentially: facts → episodic →
-    procedural → working memory → session memory. Since each extractor spends
-    most of its time waiting on an Ollama HTTP response (15–60 s per call),
-    Python's GIL releases during that I/O wait and all five can run truly
-    concurrently with ThreadPoolExecutor.
+    All five extractors run concurrently in a ThreadPoolExecutor. Each spends
+    most of its time waiting on an Ollama HTTP response, so Python's GIL
+    releases during I/O and true concurrency is achieved. Total time drops from
+    ~5× per-extractor latency to ~1× (slowest single extractor).
 
-    Total time per session drops from ~5× per-extractor latency to ~1× (the
-    slowest single extractor). On a fast machine this is a 4–5× speedup.
-
-    The caller's `conn` is kept for mark_session_processed only — it runs in
-    the main thread after all futures complete, so there is no cross-thread
-    sharing of that connection.
-
-    Args:
-        conn    — main-thread DB connection (used only for mark_session_processed)
-        session — the raw session dict from the DB
+    The caller's `conn` is used only for mark_session_processed after all
+    futures complete — never shared across threads.
     """
     session_id = session["session_id"]
     _daemon_log(f"processing session {session_id} (parallel extractors)")
 
-    # Build or retrieve the compacted text once in the main thread.
-    # All five parallel extractors share this single pre-processed input.
+    # Compact once in the main thread; all five extractors share this text.
     text_sample = _get_or_compact_session_text(conn, session)
 
-    # Each tuple is (extractor_function, human_readable_label_for_logs).
-    # The label is used only for error logging if a future raises unexpectedly.
     extractors = [
         (_extract_facts,                "facts"),
         (_create_episodic_entry,        "episodic"),
@@ -475,64 +358,31 @@ def _process_session(conn, session: dict) -> bool:
         (_create_session_memory_entry,  "session_memory"),
     ]
 
-    # max_workers=5: one thread per extractor — they all block on Ollama I/O,
-    # so there is no CPU contention and no benefit to fewer workers.
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
-        # Submit all five extractors at once. Each opens its own DB connection
-        # via _run_extractor_in_thread.
         future_to_label = {
             pool.submit(_run_extractor_in_thread, fn, session, text_sample): label
             for fn, label in extractors
         }
-        # Wait for all futures to finish (as_completed yields in completion order).
-        # Collect unexpected exceptions (normal extractor errors are caught inside
-        # each extractor function and never reach this level).
         unexpected_errors: list[tuple[str, BaseException]] = []
         for future in concurrent.futures.as_completed(future_to_label):
             label = future_to_label[future]
             exc = future.exception()
             if exc:
-                # This fires only if _run_extractor_in_thread itself raised —
-                # e.g. the extractor was patched to raise in a test, or the DB
-                # connection could not be opened.
                 _daemon_log(f"unexpected thread-level error in {label} for {session_id}: {exc}")
                 unexpected_errors.append((label, exc))
 
     if unexpected_errors:
-        # Re-raise so the caller (_run_unprocessed_batch) catches it and skips
-        # mark_session_processed. This preserves the original behavior: a session
-        # with a failed extractor stays in the unprocessed queue and will be
-        # retried on the next daemon cycle.
         label, exc = unexpected_errors[0]
         raise RuntimeError(f"extractor '{label}' failed for {session_id}: {exc}") from exc
 
-    # Mark the session processed in the main thread using the caller's connection,
-    # only after all extractors have finished successfully. This prevents partial
-    # processing from being silently skipped on the next daemon cycle.
     mark_session_processed(conn, session_id)
     activity_log("daemon", "processed", session=session_id)
     return True
 
 
-def _prune_stale_memories(conn) -> None:
-    """Remove old facts and episodic memories to keep the DB lean."""
-    try:
-        deleted_facts = prune_stale_facts(conn, days=_FACT_TTL_DAYS)
-        deleted_episodes = prune_stale_episodic(conn, days=_EPISODIC_TTL_DAYS)
-        if deleted_facts or deleted_episodes:
-            _daemon_log(f"pruned {deleted_facts} stale facts, {deleted_episodes} stale episodes")
-            activity_log("daemon", "prune", deleted_facts=deleted_facts, deleted_episodes=deleted_episodes)
-    except Exception as exc:
-        error_log("daemon", f"pruning failed (non-fatal): {exc}", exc=exc)
-
-
-def _warm_up_embedding() -> None:
-    """Load the sentence-transformer model before the first real embed call."""
-    try:
-        embed("warmup")
-        _daemon_log("embedding model warmed up")
-    except Exception as exc:
-        _daemon_log(f"embedding warm-up failed (non-fatal): {exc}")
+# ---------------------------------------------------------------------------
+# Daemon main loop
+# ---------------------------------------------------------------------------
 
 
 def _run_unprocessed_batch(conn) -> int:
@@ -566,8 +416,13 @@ def _run_unprocessed_batch(conn) -> int:
 
 
 def process_one_unprocessed_session() -> dict:
+    """Process a single unprocessed session.  Used by the dashboard / API."""
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = bootstrap_db(DB_PATH) if not os.path.exists(DB_PATH) or os.path.getsize(DB_PATH) == 0 else open_db(DB_PATH)
+    conn = (
+        bootstrap_db(DB_PATH)
+        if not os.path.exists(DB_PATH) or os.path.getsize(DB_PATH) == 0
+        else open_db(DB_PATH)
+    )
     try:
         sessions = get_unprocessed_sessions(conn, limit=1)
         if not sessions:
@@ -626,23 +481,3 @@ def run(once: bool = False) -> None:
             conn.close()
 
     _daemon_log("daemon stopped")
-
-
-if __name__ == "__main__":
-    import argparse
-    import setproctitle
-
-    setproctitle.setproctitle("AgenticMemoryDaemon")
-    enable_debug("daemon")
-
-    parser = argparse.ArgumentParser(
-        description="Background memory daemon for fact and episodic extraction."
-    )
-    parser.add_argument(
-        "--once",
-        action="store_true",
-        help="Force one extraction pass immediately, then exit.",
-    )
-    args = parser.parse_args()
-
-    run(once=args.once)
