@@ -68,6 +68,12 @@ CPU_THRESHOLD = 70
 _MAX_SESSION_CHARS = int(os.environ.get("MEMORY_MAX_SESSION_CHARS", "60000"))
 _FACT_TTL_DAYS = int(os.environ.get("MEMORY_FACT_TTL_DAYS", "180"))
 _EPISODIC_TTL_DAYS = int(os.environ.get("MEMORY_EPISODIC_TTL_DAYS", "90"))
+# Compaction: summarize long sessions instead of truncating them.
+# MEMORY_COMPACT_INPUT_CHARS caps how much of the raw transcript the summarizer
+# sees (Ollama context limit). The summary replaces the raw text fed to extractors.
+_COMPACT_SESSION = os.environ.get("MEMORY_SESSION_COMPACT", "1") == "1"
+_COMPACT_INPUT_CHARS = int(os.environ.get("MEMORY_COMPACT_INPUT_CHARS", "40000"))
+_COMPACT_TARGET_WORDS = int(os.environ.get("MEMORY_COMPACT_TARGET_WORDS", "800"))
 
 _shutdown = False
 
@@ -121,12 +127,58 @@ def _build_session_text(turns: list[dict], max_chars: int | None = None) -> str:
     return "\n".join(lines)
 
 
+def _compact_session_text(full_text: str) -> str:
+    """Summarize a long session transcript via Ollama, falling back to truncation.
+
+    Passes up to _COMPACT_INPUT_CHARS of the raw text to the model and asks for
+    a dense summary. The summary is returned instead of the truncated original,
+    so extractors see a condensed view of the full session rather than just its
+    first N characters.
+
+    Falls back to simple truncation if Ollama is unavailable or returns an error.
+    """
+    from memory.inference import GenerationRequest, InferenceError, generate_text
+
+    # Cap what we send to Ollama to avoid exceeding its context window.
+    input_text = full_text[:_COMPACT_INPUT_CHARS]
+
+    prompt = (
+        "You are a session summarizer. Condense the following conversation transcript "
+        "into a concise but complete summary.\n"
+        "Include:\n"
+        "- All key facts (names, settings, preferences, technical details)\n"
+        "- Decisions made and their rationale\n"
+        "- Steps taken or discussed\n"
+        "- Outcomes reached and open questions\n"
+        f"Target: under {_COMPACT_TARGET_WORDS} words. "
+        "Output only the summary — no preamble, no closing remark.\n\n"
+        "TRANSCRIPT:\n" + input_text
+    )
+
+    try:
+        result = generate_text(GenerationRequest(prompt=prompt, timeout_seconds=120))
+        _daemon_log(
+            f"compacted session: {len(full_text)} → {len(result.text)} chars"
+        )
+        return result.text
+    except (InferenceError, Exception) as exc:
+        _daemon_log(f"session compaction failed, falling back to truncation: {exc}")
+        return full_text[:_MAX_SESSION_CHARS]
+
+
 def _session_text_sample(session: dict, max_chars: int | None = None) -> str:
     try:
         turns = json.loads(session.get("transcript") or "[]")
     except json.JSONDecodeError:
         turns = []
-    return _build_session_text(turns, max_chars=max_chars)
+    # Build the full text first so compaction can see the whole transcript.
+    full_text = _build_session_text(turns)
+    if max_chars is not None and len(full_text) > max_chars:
+        if _COMPACT_SESSION:
+            return _compact_session_text(full_text)
+        # Compaction disabled: fall back to hard truncation.
+        return _build_session_text(turns, max_chars=max_chars)
+    return full_text
 
 
 def _log_episode_details(session_id: str, episode) -> None:
