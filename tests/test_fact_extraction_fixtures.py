@@ -8,7 +8,7 @@ from memory.facts import (
     extract_facts_from_session_text,
     facts_to_semantic_core,
 )
-from memory.ollama import is_ollama_running
+from memory.llm.ollama import is_ollama_running
 
 
 _FIXTURES_ROOT = Path(__file__).parent / "fixtures" / "facts"

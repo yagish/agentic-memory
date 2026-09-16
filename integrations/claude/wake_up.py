@@ -24,10 +24,10 @@ from integrations.common import (
     open_existing_memory_db,
     retrieve_prompt_memory,
 )
-from memory.client import MemoryClient
+from memory.servers.client import MemoryClient
 from memory.db import log_retrieval
-from memory.logger import activity_log
-from memory.debug import enable_debug
+from memory.utils.logger import activity_log
+from memory.utils.debug import enable_debug
 from memory.retrieval import build_wake_up_injection as _build_injection
 
 DB_PATH = DEFAULT_DB_PATH

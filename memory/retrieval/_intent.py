@@ -30,7 +30,7 @@ _BUDGET_BY_INTENT = {
 @functools.cache
 def _get_resume_exemplar_vecs() -> tuple[list[float], ...]:
     """Embed resume-intent exemplars once and cache for the process lifetime."""
-    from memory.inference import embed_text
+    from memory.llm.inference import embed_text
     return tuple(embed_text(phrase) for phrase in _RESUME_INTENT_EXEMPLARS)
 
 

@@ -9,7 +9,7 @@ import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from memory.client import MemoryClient
+from memory.servers.client import MemoryClient
 
 
 def _fake_response(data: dict):

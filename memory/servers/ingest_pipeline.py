@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from memory.db import upsert_session
-from memory.inference import embed_text
+from memory.llm.inference import embed_text
 
 
 @dataclass(frozen=True)

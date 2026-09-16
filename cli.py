@@ -18,7 +18,7 @@ from memory.db import (
     search,
     semantic_search,
 )
-from memory.debug import enable_debug
+from memory.utils.debug import enable_debug
 
 
 DB_PATH = os.path.expanduser("~/.memory/memory.db")

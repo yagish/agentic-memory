@@ -9,7 +9,7 @@ import sqlite3
 from memory.contracts import EpisodicMemory, ExtractedEpisode
 from memory.db import insert_episodic, list_recent_episodic, search_episodic_semantic
 from memory.episodic.extractor import log_episodic_event
-from memory.inference import embed_text
+from memory.llm.inference import embed_text
 
 _MIN_SIMILARITY = float(os.environ.get("MEMORY_MIN_SIMILARITY", "0.72"))
 

@@ -10,7 +10,7 @@ import argparse
 import setproctitle
 
 from memory.daemon import run
-from memory.debug import enable_debug
+from memory.utils.debug import enable_debug
 
 setproctitle.setproctitle("AgenticMemoryDaemon")
 enable_debug("daemon")

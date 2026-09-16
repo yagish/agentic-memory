@@ -1,6 +1,6 @@
 import unittest
 
-from memory.inference import GenerationResult
+from memory.llm.inference import GenerationResult
 from memory.session import (
     build_session_memory_extraction_prompt,
     extract_session_memory_from_session_text,

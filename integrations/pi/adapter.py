@@ -19,7 +19,7 @@ from integrations.common import (
     open_memory_db_for_ingest,
     save_session_to_memory,
 )
-from memory.client import MemoryClient
+from memory.servers.client import MemoryClient
 
 
 DB_PATH = DEFAULT_DB_PATH

@@ -18,8 +18,8 @@ import uvicorn
 
 from memory.db import bootstrap_db, open_db
 from memory.facts.text import build_canonical_fact_content
-from memory.debug import enable_debug
-from memory.ollama import is_ollama_running, start_ollama_if_needed
+from memory.utils.debug import enable_debug
+from memory.llm.ollama import is_ollama_running, start_ollama_if_needed
 
 
 DB_PATH = os.path.expanduser("~/.memory/memory.db")

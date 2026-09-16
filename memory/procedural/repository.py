@@ -7,7 +7,7 @@ import sqlite3
 
 from memory.contracts import ExtractedProcedure, ProceduralMemory
 from memory.db import insert_procedural, search_procedural_semantic
-from memory.inference import embed_text
+from memory.llm.inference import embed_text
 from memory.procedural.extractor import log_procedural_event
 
 

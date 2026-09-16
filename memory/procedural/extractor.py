@@ -13,7 +13,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from memory.contracts import ExtractedProcedure
-from memory.inference import (
+from memory.llm.inference import (
     GenerationRequest,
     GenerationResult,
     InferenceError,

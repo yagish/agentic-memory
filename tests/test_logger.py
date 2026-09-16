@@ -1,6 +1,6 @@
 import unittest
 
-from memory import logger
+import memory.utils.logger as logger
 
 
 class TestLoggerCompatibility(unittest.TestCase):

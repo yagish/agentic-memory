@@ -8,7 +8,7 @@ from memory.episodic import (
     extract_episode_from_session_text,
     normalized_contains,
 )
-from memory.ollama import is_ollama_running
+from memory.llm.ollama import is_ollama_running
 
 
 _FIXTURES_ROOT = Path(__file__).parent / "fixtures" / "episodic"

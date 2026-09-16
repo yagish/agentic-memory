@@ -7,7 +7,7 @@ import sqlite3
 
 from memory.contracts import ExtractedWorkingMemory, WorkingMemory
 from memory.db import get_working_memory, upsert_working_memory
-from memory.inference import embed_text
+from memory.llm.inference import embed_text
 from memory.working_memory.extractor import log_working_memory_event
 
 

@@ -7,7 +7,7 @@ import sqlite3
 
 from memory.contracts import ExtractedSessionMemory, SessionMemory
 from memory.db import search_session_memory_semantic, upsert_session_memory
-from memory.inference import embed_text
+from memory.llm.inference import embed_text
 from memory.session.extractor import log_session_memory_event
 
 

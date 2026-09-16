@@ -29,7 +29,7 @@ from memory.retrieval._intent import _prompt_requests_recent_episode_summary
 
 from memory.db import search_facts_semantic
 from memory.episodic.repository import list_recent_episodic_memories, retrieve_episodic_memories
-from memory.inference import embed_text
+from memory.llm.inference import embed_text
 from memory.procedural.repository import retrieve_procedural_memories
 from memory.session.repository import retrieve_session_memories
 from memory.working_memory.repository import retrieve_working_memory as _retrieve_wm

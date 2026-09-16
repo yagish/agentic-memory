@@ -21,8 +21,8 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from integrations.common import DEFAULT_DB_PATH, open_memory_db_for_ingest, save_session_to_memory
-from memory.logger import activity_log, error_log
-from memory.debug import enable_debug
+from memory.utils.logger import activity_log, error_log
+from memory.utils.debug import enable_debug
 
 
 DB_PATH = DEFAULT_DB_PATH

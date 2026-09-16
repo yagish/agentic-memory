@@ -1,6 +1,6 @@
 import unittest
 
-from memory.inference import GenerationResult
+from memory.llm.inference import GenerationResult
 from memory.procedural import (
     build_procedural_extraction_prompt,
     extract_procedure_from_session_text,

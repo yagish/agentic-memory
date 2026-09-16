@@ -13,7 +13,7 @@ from collections.abc import Callable
 from typing import Any
 
 from memory.db import open_db
-from memory.inference import embed_text
+from memory.llm.inference import embed_text
 from memory.procedural.extractor import extract_procedure_from_session_text
 from memory.procedural.repository import save_extracted_procedure
 

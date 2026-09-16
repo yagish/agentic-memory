@@ -57,7 +57,7 @@ def _compact_session_text(full_text: str) -> str:
 
     Raises InferenceError if Ollama is unavailable — callers decide how to handle.
     """
-    from memory.inference import GenerationRequest, generate_text
+    from memory.llm.inference import GenerationRequest, generate_text
 
     input_text = full_text[:_COMPACT_INPUT_CHARS]
 

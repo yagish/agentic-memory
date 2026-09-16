@@ -65,8 +65,8 @@ from memory.episodic import extract_episode_from_session_text
 from memory.episodic.repository import save_extracted_episode
 from memory.facts.repository import build_fact_content, save_extracted_facts
 from memory.facts import extract_facts_from_session_text, normalize_extracted_facts
-from memory.logger import activity_log, error_log
-from memory.ollama import (
+from memory.utils.logger import activity_log, error_log
+from memory.llm.ollama import (
     start_ollama_if_needed as _start_ollama_if_needed,
     stop_ollama as _stop_ollama,
 )

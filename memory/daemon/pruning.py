@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from memory.daemon._core import _EPISODIC_TTL_DAYS, _FACT_TTL_DAYS, _daemon_log
 from memory.db import prune_stale_episodic, prune_stale_facts
-from memory.logger import activity_log, error_log
+from memory.utils.logger import activity_log, error_log
 from memory.vectors import embed
 
 

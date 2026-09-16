@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from memory.inference import GenerationResult
+from memory.llm.inference import GenerationResult
 
 from memory.contracts import ExtractedFact
 from memory.db import init_db
@@ -46,7 +46,7 @@ class TestFactRepository(unittest.TestCase):
         )
 
     @patch("memory.facts.text.generate_text", return_value=GenerationResult(text="My name is Yash. What is my name? Yash.", model="test-model"))
-    @patch("memory.inference.embed_text", return_value=[0.1, 0.2, 0.3])
+    @patch("memory.llm.inference.embed_text", return_value=[0.1, 0.2, 0.3])
     def test_save_extracted_facts_persists_one_fact(self, _mock_embed, _mock_generate):
         fact = ExtractedFact(entity="user", attribute="name", value="Yash")
 
@@ -69,7 +69,7 @@ class TestFactRepository(unittest.TestCase):
         self.assertIn("attribute:name", rows[0]["tags"])
 
     @patch("memory.facts.text.generate_text", return_value=GenerationResult(text="My name is Yash. What is my name? Yash.", model="test-model"))
-    @patch("memory.inference.embed_text", return_value=[0.1, 0.2, 0.3])
+    @patch("memory.llm.inference.embed_text", return_value=[0.1, 0.2, 0.3])
     def test_save_extracted_facts_dedupes_semantic_duplicates(self, _mock_embed, _mock_generate):
         saved_ids = save_extracted_facts(
             self.conn,
@@ -92,7 +92,7 @@ class TestFactRepository(unittest.TestCase):
             GenerationResult(text="My timezone is EST. What is my timezone? EST.", model="test-model"),
         ],
     )
-    @patch("memory.inference.embed_text", return_value=[0.1, 0.2, 0.3])
+    @patch("memory.llm.inference.embed_text", return_value=[0.1, 0.2, 0.3])
     def test_save_extracted_facts_merges_conflicts_last_value_wins(self, _mock_embed, _mock_generate):
         # When the same (entity, attribute) appears twice in one extraction pass,
         # upsert_fact merges them: the second value overwrites the first in place,

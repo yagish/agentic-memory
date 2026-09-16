@@ -5,7 +5,7 @@ from memory.facts import (
     extract_facts_from_session_text,
     facts_to_semantic_core,
 )
-from memory.inference import GenerationResult
+from memory.llm.inference import GenerationResult
 
 
 class TestFactExtractionHelpers(unittest.TestCase):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from memory.inference import GenerationRequest, InferenceError, generate_text
+from memory.llm.inference import GenerationRequest, InferenceError, generate_text
 
 
 _SEMANTIC_TEXT_TIMEOUT_SECONDS = 20

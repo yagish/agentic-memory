@@ -3,7 +3,7 @@ import os
 import unittest
 from pathlib import Path
 
-from memory.ollama import is_ollama_running
+from memory.llm.ollama import is_ollama_running
 from memory.procedural import (
     discover_procedural_fixture_cases,
     extract_procedure_from_session_text,

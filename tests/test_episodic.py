@@ -5,7 +5,7 @@ from memory.episodic import (
     episode_to_semantic_core,
     extract_episode_from_session_text,
 )
-from memory.inference import GenerationResult
+from memory.llm.inference import GenerationResult
 
 
 class TestEpisodicExtractionHelpers(unittest.TestCase):
