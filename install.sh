@@ -286,12 +286,15 @@ cat > "$HOME/Library/LaunchAgents/com.memory.daemon.plist" << PLIST_EOF
   <key>ProgramArguments</key>
   <array>
     <string>$PYTHON3_EXEC</string>
-    <string>$INSTALL_DIR/memory/daemon.py</string>
+    <string>-m</string>
+    <string>memory.daemon</string>
   </array>
+  <key>WorkingDirectory</key>
+  <string>$INSTALL_DIR</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PYTHONPATH</key>
-    <string>$PYTHON_USER_SITE</string>
+    <string>$INSTALL_DIR:$PYTHON_USER_SITE</string>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>MEMORY_OLLAMA_MODEL</key>
@@ -328,12 +331,15 @@ cat > "$HOME/Library/LaunchAgents/com.memory.ingest.plist" << PLIST_EOF
   <key>ProgramArguments</key>
   <array>
     <string>$PYTHON3_EXEC</string>
-    <string>$INSTALL_DIR/memory/ingest_server.py</string>
+    <string>-m</string>
+    <string>memory.servers.ingest_server</string>
   </array>
+  <key>WorkingDirectory</key>
+  <string>$INSTALL_DIR</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PYTHONPATH</key>
-    <string>$PYTHON_USER_SITE</string>
+    <string>$INSTALL_DIR:$PYTHON_USER_SITE</string>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>MEMORY_OLLAMA_MODEL</key>
@@ -369,12 +375,15 @@ cat > "$HOME/Library/LaunchAgents/com.memory.query.plist" << PLIST_EOF
   <key>ProgramArguments</key>
   <array>
     <string>$PYTHON3_EXEC</string>
-    <string>$INSTALL_DIR/memory/dashboard_server.py</string>
+    <string>-m</string>
+    <string>memory.servers.dashboard_server</string>
   </array>
+  <key>WorkingDirectory</key>
+  <string>$INSTALL_DIR</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PYTHONPATH</key>
-    <string>$PYTHON_USER_SITE</string>
+    <string>$INSTALL_DIR:$PYTHON_USER_SITE</string>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>MEMORY_OLLAMA_MODEL</key>
