@@ -41,11 +41,21 @@ def insert_episodic(
     details: dict | None = None,
     embedding: list[float] | None = None,
 ) -> str:
-    ep_id = str(uuid.uuid4())
+    existing = conn.execute(
+        "SELECT id FROM episodic_memory WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    ep_id = existing["id"] if existing else str(uuid.uuid4())
     conn.execute(
         """
         INSERT INTO episodic_memory (id, session_id, title, abstract, happened_at, details, embedding)
         VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+          title = excluded.title,
+          abstract = excluded.abstract,
+          happened_at = excluded.happened_at,
+          details = excluded.details,
+          embedding = excluded.embedding
         """,
         (
             ep_id,

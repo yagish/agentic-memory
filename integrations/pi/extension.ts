@@ -8,6 +8,11 @@ const EXT_DIR = dirname(fileURLToPath(import.meta.url));
 const ADAPTER_PATH = join(EXT_DIR, "adapter.py");
 const PYTHON_BIN = process.env.MEMORY_PYTHON ?? "python3";
 const MESSAGE_TYPE = "agentic-memory";
+const EXTENSION_SINGLETON_KEY = "__agenticMemoryExtensionRegistered";
+
+type ExtensionGlobalState = typeof globalThis & {
+	[EXTENSION_SINGLETON_KEY]?: boolean;
+};
 
 type SavedTurn = { role: "user" | "assistant"; content: string };
 type RecallResponse =
@@ -114,6 +119,13 @@ function callAdapter<T>(command: "save" | "recall", payload: unknown, signal?: A
 }
 
 export default function agenticMemoryExtension(pi: ExtensionAPI) {
+	const globalState = globalThis as ExtensionGlobalState;
+	if (globalState[EXTENSION_SINGLETON_KEY]) {
+		console.warn("agentic-memory extension already registered; skipping duplicate load");
+		return;
+	}
+	globalState[EXTENSION_SINGLETON_KEY] = true;
+
 	let pendingInjection: { prompt: string; injection: string } | null = null;
 
 	pi.registerCommand("memory-status", {

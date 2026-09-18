@@ -14,6 +14,7 @@ from memory.db import bootstrap_db, open_db
 from memory.facts.renderer import render_fact_answer
 from memory.servers.ingest_pipeline import IngestOutcome, ingest_session
 from memory.retrieval import WakeUpContext, build_wake_up_injection, retrieve_wake_up_context
+from memory.utils.logger import activity_log
 
 
 DEFAULT_DB_PATH = os.path.expanduser("~/.memory/memory.db")
@@ -100,7 +101,25 @@ def retrieve_prompt_memory(
     kwargs = {"include_working_memory": include_working_memory, "session_id": session_id}
     if embed_fn is not None:
         kwargs["embed_fn"] = embed_fn
-    return retrieve_wake_up_context(conn, prompt, **kwargs)
+    context = retrieve_wake_up_context(conn, prompt, **kwargs)
+    timings = dict(getattr(context, "timings", {}) or {})
+    activity_log(
+        "retrieval",
+        "recall_timing",
+        session=session_id,
+        prompt_chars=len(prompt),
+        include_working_memory=include_working_memory,
+        prompt_embedding_ms=timings.get("prompt_embedding_ms"),
+        memory_search_ms=timings.get("memory_search_ms"),
+        retrieval_total_ms=timings.get("retrieval_total_ms"),
+        facts_count=len(context.facts),
+        episodic_count=len(context.episodic),
+        procedural_count=len(context.procedural),
+        session_memory_count=len(context.session_memory),
+        working_memory_count=1 if context.working_mem else 0,
+        warnings_count=len(context.warnings),
+    )
+    return context
 
 
 def decide_prompt_memory_action(prompt: str, context: WakeUpContext) -> RecallOutcome:
@@ -129,6 +148,7 @@ def build_recall_response(prompt: str, context: WakeUpContext) -> dict:
         "session_memory_count": len(context.session_memory),
         "working_memory_count": 1 if context.working_mem else 0,
         "warnings": [warning.__dict__ for warning in context.warnings],
+        "timings": dict(getattr(context, "timings", {}) or {}),
         "context": {
             "facts": context.facts,
             "episodic": context.episodic,

@@ -23,7 +23,7 @@ from memory.llm.inference import (
 
 
 # Keep prompt version explicit so future prompt changes can be tracked in tests.
-_FACT_PROMPT_VERSION = "facts-v6"
+_FACT_PROMPT_VERSION = "facts-v7"
 
 _TOOL_TRACE_RE = re.compile(r"^<(?:bash|tool)-?(?:input|stdout|stderr)[^>]*>[\s\S]*</(?:bash|tool)-?(?:input|stdout|stderr)>$", re.IGNORECASE)
 _COMMAND_LIKE_RE = re.compile(
@@ -167,6 +167,25 @@ Rules:
 - If unsure whether something is a durable fact, return [].
 - If the user says they work at a company as a role/title, extract both company and role.
 
+Recognizing requests — never extract a fact from any of these patterns:
+- "Can we / Could we / Should we / Shall we [do X]" — this is a request, not a fact.
+- "Show / Add / Build / Create / Make / Move / Fix / Implement [X]" — this is a request, not a fact.
+- "I need [X to work / X added / X to be]" — this is a request, not a fact.
+- "It should [show / display / track / be]" — this is a request, not a fact.
+- "Let's [do / add / fix / move / clean up]" — this is a request, not a fact.
+- Any line where the user is telling Claude to do something is a request, regardless of phrasing.
+- The subject of a request is not a user fact. "Can we time prompt embedding?" does not make "performance_metrics" a user fact.
+- Dashboard, UI, feature, and metric requests are requests, not personal profile facts.
+
+Quoted and copied text:
+- If the user quotes or pastes existing text (from a UI, a doc, a previous assistant response, or the codebase) as context for a request, do not extract facts from the quoted material.
+- Only extract from the user's own direct first-person declarations, not from text the user is describing or referencing.
+
+Exact value rule — for role, title, name, and company:
+- Copy the user's exact words. Never substitute synonyms, infer seniority, or elevate the stated role.
+- "Tech lead" stays "Tech lead". It must never become "CTO", "Staff engineer", "Engineering manager", or any other title.
+- "Software engineer" stays "Software engineer". It must never become "developer", "SWE", or "programmer".
+
 Examples:
 Input:
 User: My name is Yash.
@@ -271,6 +290,36 @@ User: Thanks for the help.
 User: Can you debug this?
 Output:
 []
+
+Input:
+User: Can we time how much time each prompt embedding takes, and how long we take to search the memory before returning the response?
+Output:
+[]
+
+Input:
+User: Show a graph for each performance metric in the dashboard so we can adjust the timeout.
+Output:
+[]
+
+Input:
+User: Move the overview text at the bottom of the page into a tooltip for the Process One Session button. The overview shows this: "The Process One Session button asks the daemon pipeline to pick the next unprocessed session."
+Output:
+[]
+
+Input:
+User: I work at Acme as a Tech lead. Can we add a dashboard graph for prompt embedding time?
+Output:
+[
+  {{"entity": "user", "attribute": "company", "value": "Acme", "source_quote": "I work at Acme as a Tech lead."}},
+  {{"entity": "user", "attribute": "role", "value": "Tech lead", "source_quote": "I work at Acme as a Tech lead."}}
+]
+
+Input:
+User: I am the tech lead on this project, not the CTO.
+Output:
+[
+  {{"entity": "user", "attribute": "role", "value": "tech lead", "source_quote": "I am the tech lead on this project, not the CTO."}}
+]
 
 Transcript:
 {user_transcript}

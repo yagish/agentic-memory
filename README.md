@@ -1,136 +1,136 @@
 # Agentic Memory
 
-A simplified persistent memory system with separate integrations for Claude Code and pi.
+A local-first persistent memory system for AI agents. It records every conversation, extracts five complementary memory types via a local LLM, and injects relevant context at the start of each new prompt — without blocking any agent session.
 
-Current runtime scope is intentionally small:
-- store full **sessions**
-- extract durable **facts**
-- extract **episodes** (episodic memory)
-- extract durable **procedures** (procedural memory)
-- extract session-scoped **working memory** snapshots
-- extract compacted **session memory** handoffs
-- retrieve **working memory + session memory + facts + episodes + procedures** during wake-up
+## How it works
 
-Everything else from the older design was removed.
+Every Claude Code session is captured by a **Stop hook** that writes the transcript to SQLite. A **background daemon** then picks up unprocessed sessions and runs five extractors sequentially against each one, calling a local Ollama model to produce structured memory. When a new prompt arrives, a **UserPromptSubmit hook** calls the recall server, embeds the prompt, does a cosine-similarity search over all stored memory, and either answers directly (for simple fact lookups) or prepends retrieved context to the prompt.
 
-## Design Strengths
+```
+Claude session ends
+       │
+       ▼
+save_hook.py  ──── writes turns ──────► sessions table (SQLite)
+                                               │
+                              daemon polls every 5 min
+                                               │
+                                               ▼
+                              five sequential extractors
+                            (facts → working memory → session memory
+                              → episodic → procedural)
+                            each calls Ollama qwen2.5:7b
+                                               │
+                              results written to typed tables
+                                               │
+Next prompt arrives                            │
+       │                                       │
+       ▼                                       │
+wake_up.py  ──── POST /recall ──────► ingest_server
+                                      embeds prompt (all-MiniLM-L6-v2)
+                                      cosine search over all tables
+                                      rank & budget-fit results
+                                               │
+                              ┌────────────────┴───────────────────┐
+                         fact-only hit                      contextual memory
+                              │                                     │
+                         answer directly                   inject as context
+                         (block prompt)                    (additionalContext)
+```
 
-- **Async extraction pipeline** — `save_hook.py` writes the transcript immediately (cheap SQLite write); the daemon does all LLM extraction after the session ends. Claude sessions are never blocked.
-- **Adaptive token budget** — the intent classifier (`resume` / `quick` / `task`) adjusts context size: 200 tokens for trivial questions, 500 for normal work, 1 500 for "where did we leave off." Exemplar embeddings are cached after the first call so subsequent prompts pay zero extra embedding cost.
-- **Composite retrieval ranking** — `_row_score` blends semantic similarity (dominant), lexical token overlap (small bonus), and exponential recency decay (tie-breaker). A memory from three days ago at similarity 0.61 beats a six-month-old one at 0.62.
-- **Model-free retrieval path** — wake-up injection requires no LLM call at runtime: one embedding, a vector search, and string formatting. The only "intelligence" is pre-baked into the stored extraction.
-- **Parallel session processing** — `ThreadPoolExecutor(max_workers=5)` runs all five extractors concurrently per session. Since each extractor blocks on an Ollama HTTP response, the GIL releases and they run in true parallel; wall-clock time drops from ~5× to ~1× the slowest extractor.
-- **CPU gate** — the daemon checks `psutil.cpu_percent` before each polling cycle and skips processing when usage exceeds 70 %, preventing background extraction from interfering with active work.
-- **Five complementary memory types** — facts (durable key-value), episodic (what happened), procedural (how-to patterns with trigger phrases), working memory (current goal/tasks), and session memory (handoff: `left_off_at` + `next_steps`). Each type covers a different recovery dimension.
+## Memory types
+
+| Type | What it stores | Table |
+|---|---|---|
+| **Facts** | Durable key-value triples: `entity.attribute = value` | `facts` |
+| **Episodic** | Narrative summaries: title, abstract, decisions, outcomes, follow-ups | `episodic_memory` |
+| **Procedural** | How-to patterns with trigger phrases and step-by-step instructions | `procedural_memory` |
+| **Working memory** | Point-in-time snapshot: current goal, focus, next step, status | `working_memory` |
+| **Session memory** | Compacted handoff: `left_off_at` + `next_steps` for session continuity | `session_memory` |
+
+## Architecture
+
+### Components
+
+```
+integrations/
+  claude/save_hook.py      — Claude Code Stop hook (writes session to DB)
+  claude/wake_up.py        — Claude Code UserPromptSubmit hook (retrieves memory)
+  pi/extension.ts          — Pi agent extension (TypeScript)
+  pi/adapter.py            — Python bridge for the Pi extension
+  common.py                — Shared save/retrieve policy (seam for all adapters)
+
+memory/
+  servers/
+    ingest_server.py       — FastAPI server, port 7747 (POST /ingest, POST /recall, GET /status)
+    dashboard_server.py    — FastAPI server, port 7748 (dashboard API + static UI)
+    client.py              — Stdlib HTTP client for the ingest server
+    ingest_pipeline.py     — Session upsert logic
+  daemon/
+    __init__.py            — Main loop, five extractors, run() and process_one()
+    _core.py               — Constants: CPU_THRESHOLD=70%, POLL_INTERVAL=5min, TTLs
+    compaction.py          — Optional transcript summarisation before LLM extraction
+    pruning.py             — TTL-based pruning for facts (180d) and episodic (90d)
+  retrieval/
+    _fetch.py              — Per-type DB queries, graceful degradation
+    _rank.py               — Composite score: similarity + lexical overlap + recency decay
+    _intent.py             — "Resume" intent detection for recent-episode fallback
+    _format.py             — Format retrieved rows into injection text
+    _models.py             — WakeUpContext, RetrievalWarning, similarity thresholds
+  facts/ episodic/ procedural/ working_memory/ session/
+                           — Per-type extractor + repository modules
+  llm/
+    inference.py           — Ollama text generation seam (retry with exponential backoff)
+    ollama.py              — Ollama process lifecycle (start/stop)
+  vectors/
+    _model.py              — sentence-transformers all-MiniLM-L6-v2, 384-dim, offline
+    _ops.py                — Cosine distance in pure Python (no sqlite-vec dependency)
+  db/
+    schema.py              — SQLite schema + bootstrap + forward-only migrations
+    *.py                   — Per-table query helpers
+
+cli.py                     — Nine-command CLI (bootstrap, status, search, semantic, …)
+dashboard.html             — Single-page dashboard UI
+install.sh                 — Wires hooks, launchd plists, Pi extension
+```
+
+### Design decisions
+
+- **Async write path** — `save_hook.py` writes the transcript immediately (cheap SQLite write); the daemon does all LLM extraction after the session ends. Claude sessions are never blocked.
+- **Sequential extraction** — the daemon runs all five extractors one after the other in a plain `for` loop. Each extractor is independently fault-tolerant; an error in one does not skip the rest.
+- **CPU gate** — the daemon checks `psutil.cpu_percent` before each polling cycle and skips when CPU usage exceeds 70%, preventing background extraction from interfering with active work.
+- **Model-free retrieval** — wake-up injection requires no LLM call at runtime: one embedding, a vector search, and string formatting. All "intelligence" is pre-baked into the stored extraction.
+- **Composite ranking** — `_row_score` blends semantic similarity (dominant), lexical token overlap (small bonus), and exponential recency decay (tie-breaker). A memory from three days ago at 0.61 similarity beats a six-month-old one at 0.62.
 - **Graceful degradation** — every retrieval step is wrapped in `try/except` producing a `RetrievalWarning` instead of a crash. The "resume" intent fallback retrieves recent episodes when semantic search returns nothing.
-- **Good test coverage** — fixture-based extraction tests, contract tests for each memory type, semantic search tests, and a dedicated token-economics test.
+- **Linear vector scan** — embeddings are stored as BLOB in SQLite and compared in Python with a hand-rolled cosine function. There is no vector index; retrieval scans all rows at query time.
+- **Two Ollama calls per fact** — each fact runs one call to extract the structured triple and a second call to generate the `semantic_content` text used for embedding-based search.
 
-## Components
+### Retrieval thresholds (hardcoded)
 
-### 1. Claude integration
-`integrations/claude/save_hook.py`
-- Claude Stop hook adapter
-- reads Claude Code transcript JSONL
-- stores the session in SQLite
-
-`integrations/claude/wake_up.py`
-- Claude UserPromptSubmit hook adapter
-- searches memory on each prompt
-- deterministically answers from fact-only hits
-- returns prompt enrichment with `hookSpecificOutput.additionalContext` when contextual memory exists
-
-### 2. Pi integration
-`integrations/pi/extension.ts`
-- pi extension adapter
-- searches memory on each prompt
-- either answers directly from memory or injects retrieved memory context into the turn
-- saves the session transcript after each completed turn
-
-`integrations/pi/adapter.py`
-- Python bridge used by the pi extension to call the shared ingest/retrieval seams
-
-### 3. Daemon
-`memory/daemon.py`
-- polls for unprocessed sessions
-- extracts facts, then episodes, then procedures, then working memory, then session memory
-- marks sessions processed
-- `--once` forces one immediate extraction pass and skips the CPU gate
-- writes only `~/.memory/daemon.log`
-
-### 4. Recall server
-`memory/ingest_server.py`
-- long-lived singleton embedding model for recall
-- `POST /ingest`
-- `POST /recall`
-- `GET /status`
-
-### 5. Dashboard server
-`memory/dashboard_server.py`
-- sessions view
-- facts view
-- episodes view
-- procedural-memory view
-- working-memory view
-- session-memory view
-- logs for daemon, facts, episodes, procedures, working memory, session memory
+| Memory type | Min similarity | Fetch limit | Result cap |
+|---|---|---|---|
+| Facts | 0.38 | 5 | 3 |
+| Episodic | 0.58 | 8 | 2 |
+| Procedural | 0.58 | 4 | 2 |
+| Session memory | 0.60 | 4 | 2 |
 
 ## Storage
 
-Retained database tables:
-- `sessions`
-- `facts`
-- `episodic_memory`
-- `procedural_memory`
-- `working_memory`
-- `session_memory`
+Database at `~/.memory/memory.db` (SQLite, WAL mode).
 
-Dropped on bootstrap/migration:
-- `session_vecs`
-- `retrievals`
-- `chunks`
-- `insights`
-- `topic_clusters`
-- `cluster_memberships`
-- `summaries`
-- `compressed_memory`
-- `compacted_sessions`
-- `response_cache`
+**Active tables:**
+- `sessions` — raw transcripts + `daemon_processed_at` flag
+- `facts` — `entity` / `attribute` / `value` / `semantic_content` / `embedding`
+- `episodic_memory` — `title` / `abstract` / `happened_at` / `details` / `embedding`
+- `procedural_memory` — `title` / `summary` / `updated_at` / `details` / `embedding`
+- `working_memory` — `current_goal` / `current_focus` / `next_step` / `status` / `embedding`
+- `session_memory` — `title` / `summary` / `left_off_at` / `next_steps` / `embedding`
 
-Retained log files:
-- `~/.memory/daemon.log`
-- `~/.memory/wake_up.log`
-- `~/.memory/save_hook.log`
-- `~/.memory/facts.log`
-- `~/.memory/episodic.log`
-- `~/.memory/procedural.log`
-- `~/.memory/working_memory.log`
-- `~/.memory/session_memory.log`
+**TTL pruning** (daemon, on each cycle):
+- Facts: 180 days (env: `MEMORY_FACT_TTL_DAYS`)
+- Episodic: 90 days (env: `MEMORY_EPISODIC_TTL_DAYS`)
+- Procedural, working memory, session memory: no TTL pruning
 
-Unit tests suppress file-log writes.
-
-Fact storage keeps:
-- structured canonical fields: `entity`, `attribute`, `value`
-- computed canonical text for deterministic UI/tests, e.g. `user.name = Yash`
-- model-generated semantic text for embeddings/retrieval, e.g. `My name is Yash. What's my name? Yash.`
-
-For existing databases, run the one-off migration before starting the updated app:
-
-```bash
-python3 scripts/migrate_facts_semantic_text.py --db ~/.memory/memory.db
-```
-
-If you have older stored sessions that predate procedural extraction, backfill procedural memory explicitly:
-
-```bash
-python3 scripts/backfill_procedural_memory.py --db ~/.memory/memory.db --dry-run
-python3 scripts/backfill_procedural_memory.py --db ~/.memory/memory.db
-```
-
-To re-extract procedures for sessions that already have procedural memory, use `--force`:
-
-```bash
-python3 scripts/backfill_procedural_memory.py --db ~/.memory/memory.db --force --limit 25
-```
+Log files at `~/.memory/`: `daemon.log`, `wake_up.log`, `save_hook.log`, `facts.log`, `episodic.log`, `procedural.log`, `working_memory.log`, `session_memory.log`, `ingest.log`, `activity.log`.
 
 ## Quick start
 
@@ -143,10 +143,10 @@ ollama pull qwen2.5:7b
 Start services manually if needed:
 
 ```bash
-python3 memory/ingest_server.py   # recall server
-python3 memory/dashboard_server.py
-python3 memory/daemon.py
-python3 memory/daemon.py --once
+python3 memory/servers/ingest_server.py    # recall server (port 7747)
+python3 memory/servers/dashboard_server.py # dashboard (port 7748)
+python3 -m memory.daemon                   # extraction daemon
+python3 -m memory.daemon --once            # one extraction pass and exit
 ```
 
 Or use the helper scripts:
@@ -162,52 +162,32 @@ Or use the helper scripts:
 ### Claude Code
 
 `install.sh` wires Claude's hooks to:
-
-- `integrations/claude/save_hook.py`
-- `integrations/claude/wake_up.py`
+- `integrations/claude/save_hook.py` (Stop event)
+- `integrations/claude/wake_up.py` (UserPromptSubmit event)
 
 ### Pi
 
-`install.sh` installs a global Pi wrapper at:
+`install.sh` installs a global Pi wrapper at `~/.pi/agent/extensions/agentic-memory.ts`. This repo also includes a project-local auto-discovered wrapper at `.pi/extensions/agentic-memory.ts`, so inside this project you can run `pi` directly.
 
-- `~/.pi/agent/extensions/agentic-memory.ts`
-
-This repo also includes a project-local auto-discovered wrapper at:
-
-- `.pi/extensions/agentic-memory.ts`
-
-So after install you can run `pi` anywhere, and inside this project you can also just run:
-
-```bash
-pi
-```
-
-To verify the extension loaded inside pi, run:
-
+To verify the extension loaded:
 ```text
 /memory-status
 ```
 
-For one-off/manual loading you can still use:
-
-```bash
-pi -e /absolute/path/to/agentic-memory/integrations/pi/extension.ts
-```
-
-The pi extension calls `integrations/pi/adapter.py`, which uses the shared save/retrieval helpers in `integrations/common.py`.
+The Pi extension calls `integrations/pi/adapter.py`, which uses the shared save/retrieval helpers in `integrations/common.py`.
 
 ## CLI
 
 ```bash
-python3 cli.py bootstrap
-python3 cli.py status
-python3 cli.py search "auth middleware"
-python3 cli.py semantic "login loop bug"
-python3 cli.py get-session <session_id>
-python3 cli.py tail
+python3 cli.py bootstrap          # create DB schema
+python3 cli.py status             # session/fact/episode/procedure counts
+python3 cli.py search "query"     # full-text search over transcripts
+python3 cli.py semantic "query"   # cosine-similarity search
+python3 cli.py get-session <id>   # print one session as JSON
+python3 cli.py tail               # 10 most recent sessions
 python3 cli.py add-fact user name Yash --tag identity
 python3 cli.py delete-fact <fact_id>
-python3 cli.py dashboard
+python3 cli.py dashboard          # open dashboard in browser
 ```
 
 ## Tests
@@ -216,12 +196,39 @@ python3 cli.py dashboard
 pytest -q
 ```
 
-## Notes
+## Configuration
 
-- `WakeUpContext` still keeps some old fields for compatibility, but runtime retrieval uses working memory, session memory, plus `episodic`, `facts`, and `procedural` memory.
-- Model selection:
-  - `MEMORY_OLLAMA_MODEL` sets the model used for fact extraction, episodic extraction, procedural extraction, working-memory extraction, and session-memory extraction.
-  - Recall is model-free apart from the singleton embedding model hosted by `memory/ingest_server.py`.
-- `memory.db.log_retrieval()` is a compatibility no-op because retrieval-event storage was removed.
-- `integrations/common.py` holds the shared save/retrieve policy used by Claude and pi.
-- `dashboard.html` supports click-row details for Sessions, Facts, Episodes, Procedural memory, Working memory, and Session memory.
+| Variable | Default | Purpose |
+|---|---|---|
+| `MEMORY_OLLAMA_MODEL` | `qwen2.5:7b` | LLM used for all extraction |
+| `MEMORY_INGEST_PORT` | `7747` | Ingest/recall server port |
+| `MEMORY_QUERY_PORT` | `7748` | Dashboard server port |
+| `MEMORY_FACT_TTL_DAYS` | `180` | Fact pruning age |
+| `MEMORY_EPISODIC_TTL_DAYS` | `90` | Episodic pruning age |
+| `MEMORY_EXTRACTION_TIMEOUT_SECONDS` | `600` | Per-extractor Ollama timeout |
+| `MEMORY_OLLAMA_RETRIES` | `3` | Ollama retry count |
+| `MEMORY_COMPACT_INPUT_CHARS` | `40000` | Max transcript chars sent to LLM |
+| `MEMORY_COMPACT_OUTPUT_CHARS` | `5000` | Target compaction output length |
+| `MEMORY_INGEST_CORS_ORIGINS` | `copilot.microsoft.com,github.com` | Allowed CORS origins |
+| `MEMORY_DISABLE_FILE_LOGS` | *(unset)* | Set to `1` to suppress file log writes |
+| `MEMORY_AGENT_NAME` | `claude` | Agent tag written to session records |
+
+## Migration scripts
+
+For existing databases, run the one-off migration before starting the updated app:
+
+```bash
+python3 scripts/migrate_facts_semantic_text.py --db ~/.memory/memory.db
+```
+
+To backfill procedural memory for sessions that predate procedural extraction:
+
+```bash
+python3 scripts/backfill_procedural_memory.py --db ~/.memory/memory.db --dry-run
+python3 scripts/backfill_procedural_memory.py --db ~/.memory/memory.db
+python3 scripts/backfill_procedural_memory.py --db ~/.memory/memory.db --force --limit 25
+```
+
+## Generated documentation
+
+Full technical documentation (endpoints, flows, business rules, troubleshooting) lives in [`docs/generated/`](docs/generated/README.md).

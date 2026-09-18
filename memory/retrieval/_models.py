@@ -44,3 +44,4 @@ class WakeUpContext:
     session_memory: list[MemoryRow] = field(default_factory=list)
     warnings: list[RetrievalWarning] = field(default_factory=list)
     prompt_vec: list[float] | None = field(default=None)
+    timings: dict[str, float] = field(default_factory=dict)

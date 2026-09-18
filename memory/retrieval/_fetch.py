@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from memory.retrieval._models import (
     EPISODIC_FETCH_LIMIT,
     EPISODIC_LIMIT,
@@ -136,8 +138,12 @@ def retrieve_wake_up_context(
     shared query embedding. Narrowing happens via per-type ranking and result caps.
     """
     warnings: list[RetrievalWarning] = []
+    overall_started = time.perf_counter()
+    embed_started = overall_started
     prompt_vec = embed_fn(prompt)
+    embed_ms = round((time.perf_counter() - embed_started) * 1000, 3)
 
+    search_started = time.perf_counter()
     working_mem = _retrieve_working_memory(
         conn,
         session_id if (include_working_memory or session_id) else None,
@@ -156,6 +162,9 @@ def retrieve_wake_up_context(
     if not episodic and not session_memory and _prompt_requests_recent_episode_summary(prompt_vec):
         episodic = _rank_rows(_retrieve_recent_episodic(conn, warnings), "episodic", prompt, limit=EPISODIC_LIMIT)
 
+    search_ms = round((time.perf_counter() - search_started) * 1000, 3)
+    total_ms = round((time.perf_counter() - overall_started) * 1000, 3)
+
     return WakeUpContext(
         cache_hit=None,
         working_mem=working_mem,
@@ -166,4 +175,9 @@ def retrieve_wake_up_context(
         session_memory=session_memory,
         warnings=warnings,
         prompt_vec=prompt_vec,
+        timings={
+            "prompt_embedding_ms": embed_ms,
+            "memory_search_ms": search_ms,
+            "retrieval_total_ms": total_ms,
+        },
     )

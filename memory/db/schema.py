@@ -75,6 +75,10 @@ CREATE TABLE IF NOT EXISTS session_memory (
 
 _MIGRATIONS = [
     "ALTER TABLE sessions ADD COLUMN compacted_text TEXT",
+    "DELETE FROM episodic_memory WHERE rowid NOT IN (SELECT MIN(rowid) FROM episodic_memory GROUP BY session_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_episodic_memory_session_id_unique ON episodic_memory(session_id)",
+    "DELETE FROM procedural_memory WHERE rowid NOT IN (SELECT MIN(rowid) FROM procedural_memory GROUP BY session_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_procedural_memory_session_id_unique ON procedural_memory(session_id)",
 ]
 
 

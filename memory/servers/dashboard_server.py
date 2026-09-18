@@ -35,6 +35,23 @@ _ACTIVITY_STATS_CACHE = {
     "size": None,
     "stats": {"llm_calls_avoided": 0, "est_tokens_saved": 0},
 }
+_PERFORMANCE_STATS_CACHE = {
+    "mtime": None,
+    "size": None,
+    "stats": {
+        "recall_embedding_ms_recent": [],
+        "memory_search_ms_recent": [],
+        "daemon_session_ms_recent": [],
+        "summary": {
+            "recall_embedding_avg_ms": 0.0,
+            "memory_search_avg_ms": 0.0,
+            "daemon_session_avg_ms": 0.0,
+            "recall_embedding_p95_ms": 0.0,
+            "memory_search_p95_ms": 0.0,
+            "daemon_session_p95_ms": 0.0,
+        },
+    },
+}
 
 _LOG_SOURCES: dict[str, dict[str, object]] = {
     "daemon": {
@@ -89,8 +106,24 @@ memory_router = APIRouter(prefix="/memory")
 ops_router = APIRouter()
 
 
+def _parse_pid_lines(text: str) -> int | None:
+    for line in text.splitlines():
+        value = line.strip().rstrip(";")
+        if not value:
+            continue
+        if '"PID"' in line and "=" in line:
+            _, _, value = line.partition("=")
+            value = value.strip().rstrip(";")
+        try:
+            return int(value)
+        except ValueError:
+            continue
+    return None
+
+
+
 def _check_daemon() -> tuple[bool, int | None]:
-    """Ask launchctl if com.memory.daemon is running. Returns (running, pid)."""
+    """Return daemon status from launchctl, with a process-title fallback."""
     try:
         result = subprocess.run(
             ["launchctl", "list", "com.memory.daemon"],
@@ -99,12 +132,19 @@ def _check_daemon() -> tuple[bool, int | None]:
             timeout=5,
         )
         if result.returncode == 0:
-            for line in result.stdout.splitlines():
-                if '"PID"' in line:
-                    parts = line.split("=")
-                    if len(parts) == 2:
-                        return True, int(parts[1].strip().rstrip(";"))
-            return True, None
+            return True, _parse_pid_lines(result.stdout)
+    except Exception:
+        pass
+
+    try:
+        result = subprocess.run(
+            ["pgrep", "-x", "AgenticMemoryDaemon"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return True, _parse_pid_lines(result.stdout)
     except Exception:
         pass
     return False, None
@@ -137,7 +177,7 @@ def _check_ollama() -> tuple[bool, str | None, list[str]]:
 
 
 def _recall_server_script() -> str:
-    return os.path.join(PROJECT_ROOT, "memory", "ingest_server.py")
+    return os.path.join(PROJECT_ROOT, "memory", "servers", "ingest_server.py")
 
 
 def _check_recall_server() -> dict:
@@ -185,6 +225,17 @@ def _resolve_log_path(name: str) -> str | None:
         if candidate and os.path.exists(str(candidate)):
             return str(candidate)
     return None
+
+
+def _with_log_partitions(lines: list[str]) -> list[str]:
+    if not lines:
+        return []
+    partitioned: list[str] = []
+    for line in lines:
+        partitioned.append(line)
+        if line.strip() != "=" * 60:
+            partitioned.append("=" * 60)
+    return partitioned
 
 
 def _describe_log_source(name: str) -> dict:
@@ -271,6 +322,127 @@ def _parse_activity_log() -> dict:
     return stats
 
 
+def _avg(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    return round(sum(values) / len(values), 3)
+
+
+
+def _p95(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = max(0, min(len(ordered) - 1, int((len(ordered) - 1) * 0.95)))
+    return round(float(ordered[index]), 3)
+
+
+
+def _sample_label(timestamp: str | None, fallback: str) -> str:
+    if not timestamp:
+        return fallback
+    if "T" not in timestamp:
+        return timestamp[-8:]
+    time_part = timestamp.split("T", 1)[1]
+    time_part = time_part.replace("Z", "")
+    return time_part[:8] or fallback
+
+
+
+def _parse_performance_activity_log() -> dict:
+    empty = {
+        "recall_embedding_ms_recent": [],
+        "memory_search_ms_recent": [],
+        "daemon_session_ms_recent": [],
+        "summary": {
+            "recall_embedding_avg_ms": 0.0,
+            "memory_search_avg_ms": 0.0,
+            "daemon_session_avg_ms": 0.0,
+            "recall_embedding_p95_ms": 0.0,
+            "memory_search_p95_ms": 0.0,
+            "daemon_session_p95_ms": 0.0,
+        },
+    }
+    if not os.path.exists(_ACTIVITY_LOG_PATH):
+        return empty
+
+    try:
+        mtime = os.path.getmtime(_ACTIVITY_LOG_PATH)
+        size = os.path.getsize(_ACTIVITY_LOG_PATH)
+    except OSError:
+        return empty
+
+    if _PERFORMANCE_STATS_CACHE["mtime"] == mtime and _PERFORMANCE_STATS_CACHE["size"] == size:
+        return dict(_PERFORMANCE_STATS_CACHE["stats"])
+
+    recall_embedding: list[dict] = []
+    memory_search: list[dict] = []
+    daemon_session: list[dict] = []
+
+    try:
+        with open(_ACTIVITY_LOG_PATH) as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except Exception:
+                    continue
+                action = payload.get("action")
+                component = payload.get("component")
+                timestamp = payload.get("timestamp")
+                if component == "retrieval" and action == "recall_timing":
+                    embed_ms = payload.get("prompt_embedding_ms")
+                    search_ms = payload.get("memory_search_ms")
+                    if isinstance(embed_ms, (int, float)):
+                        recall_embedding.append({
+                            "timestamp": timestamp,
+                            "label": _sample_label(timestamp, str(len(recall_embedding) + 1)),
+                            "value": round(float(embed_ms), 3),
+                        })
+                    if isinstance(search_ms, (int, float)):
+                        memory_search.append({
+                            "timestamp": timestamp,
+                            "label": _sample_label(timestamp, str(len(memory_search) + 1)),
+                            "value": round(float(search_ms), 3),
+                        })
+                if component == "daemon" and action == "session_timing":
+                    duration_ms = payload.get("duration_ms")
+                    if isinstance(duration_ms, (int, float)):
+                        daemon_session.append({
+                            "timestamp": timestamp,
+                            "label": _sample_label(timestamp, str(len(daemon_session) + 1)),
+                            "value": round(float(duration_ms), 3),
+                            "session": payload.get("session"),
+                        })
+    except Exception:
+        return empty
+
+    recall_embedding = recall_embedding[-20:]
+    memory_search = memory_search[-20:]
+    daemon_session = daemon_session[-20:]
+
+    stats = {
+        "recall_embedding_ms_recent": recall_embedding,
+        "memory_search_ms_recent": memory_search,
+        "daemon_session_ms_recent": daemon_session,
+        "summary": {
+            "recall_embedding_avg_ms": _avg([item["value"] for item in recall_embedding]),
+            "memory_search_avg_ms": _avg([item["value"] for item in memory_search]),
+            "daemon_session_avg_ms": _avg([item["value"] for item in daemon_session]),
+            "recall_embedding_p95_ms": _p95([item["value"] for item in recall_embedding]),
+            "memory_search_p95_ms": _p95([item["value"] for item in memory_search]),
+            "daemon_session_p95_ms": _p95([item["value"] for item in daemon_session]),
+        },
+    }
+
+    _PERFORMANCE_STATS_CACHE["mtime"] = mtime
+    _PERFORMANCE_STATS_CACHE["size"] = size
+    _PERFORMANCE_STATS_CACHE["stats"] = dict(stats)
+    return stats
+
+
 @ui_router.get("/", response_class=HTMLResponse)
 def dashboard() -> HTMLResponse:
     path = os.path.join(PROJECT_ROOT, "dashboard.html")
@@ -289,6 +461,7 @@ def get_services() -> dict:
     memory_search_engine = _check_recall_server()
     last_run_iso, facts_extracted_total = _parse_daemon_log()
     efficiency = _parse_activity_log()
+    performance = _parse_performance_activity_log()
 
     total_sessions = 0
     total_facts = 0
@@ -339,7 +512,7 @@ def get_services() -> dict:
         "memory_search_engine": {
             **memory_search_engine,
             "display_name": MEMORY_API_LABEL,
-            "restart_command": f"{sys.executable} memory/ingest_server.py",
+            "restart_command": f"{sys.executable} memory/servers/ingest_server.py",
             "restart_endpoint": "/ops/memory-search-engine/restart",
         },
         "logs": _list_logs(),
@@ -348,6 +521,7 @@ def get_services() -> dict:
             "metric": "estimated_tokens_saved_via_memory_answers",
             "method": "prompt_tokens + answer_tokens using ~chars/4 heuristic for direct memory answers",
         },
+        "performance": performance.get("summary", {}),
         "memory": {
             "total_sessions": total_sessions,
             "total_facts": total_facts,
@@ -384,6 +558,7 @@ def get_status() -> dict:
 @ui_router.get("/stats/charts")
 def get_chart_stats() -> dict:
     try:
+        performance = _parse_performance_activity_log()
         conn = open_db(DB_PATH)
         try:
             sessions_by_day = [
@@ -428,6 +603,10 @@ def get_chart_stats() -> dict:
             "sessions_by_day": sessions_by_day,
             "facts_by_day": facts_by_day,
             "episodes_by_day": episodes_by_day,
+            "recall_embedding_ms_recent": performance.get("recall_embedding_ms_recent", []),
+            "memory_search_ms_recent": performance.get("memory_search_ms_recent", []),
+            "daemon_session_ms_recent": performance.get("daemon_session_ms_recent", []),
+            "performance_summary": performance.get("summary", {}),
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -723,25 +902,37 @@ def restart_recall_server() -> dict:
     pid = None
     started_here = False
 
-    try:
-        if os.path.exists(plist):
-            label = "com.memory.ingest"
-            subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"], capture_output=True, text=True, timeout=5)
-        else:
-            try:
-                subprocess.run(["pkill", "-f", script], capture_output=True, text=True, timeout=5)
-            except Exception:
-                pass
-            time.sleep(0.25)
+    def _spawn_manually() -> tuple[int | None, bool]:
+        try:
+            subprocess.run(["pkill", "-f", script], capture_output=True, text=True, timeout=5)
+        except Exception:
+            pass
+        time.sleep(0.25)
+        ingest_log_path = os.path.expanduser("~/.memory/ingest.log")
+        os.makedirs(os.path.dirname(ingest_log_path), exist_ok=True)
+        with open(ingest_log_path, "a") as ingest_log:
             proc = subprocess.Popen(
                 command,
                 cwd=PROJECT_ROOT,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=ingest_log,
+                stderr=ingest_log,
                 start_new_session=True,
             )
-            pid = proc.pid
-            started_here = True
+        return proc.pid, True
+
+    try:
+        should_spawn_manually = True
+        if os.path.exists(plist):
+            label = "com.memory.ingest"
+            result = subprocess.run(
+                ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            should_spawn_manually = result.returncode != 0
+        if should_spawn_manually:
+            pid, started_here = _spawn_manually()
     except Exception as exc:
         status = _check_recall_server()
         return {
@@ -750,7 +941,7 @@ def restart_recall_server() -> dict:
             "pid": pid,
             "error": str(exc),
             **status,
-            "restart_command": f"{sys.executable} memory/ingest_server.py",
+            "restart_command": f"{sys.executable} memory/servers/ingest_server.py",
         }
 
     for _ in range(32):
@@ -762,8 +953,33 @@ def restart_recall_server() -> dict:
                 "started_here": started_here,
                 "pid": pid,
                 **status,
-                "restart_command": f"{sys.executable} memory/ingest_server.py",
+                "restart_command": f"{sys.executable} memory/servers/ingest_server.py",
             }
+
+    if os.path.exists(plist) and not started_here:
+        try:
+            pid, started_here = _spawn_manually()
+        except Exception as exc:
+            status = _check_recall_server()
+            return {
+                "ok": False,
+                "started_here": started_here,
+                "pid": pid,
+                "error": str(exc),
+                **status,
+                "restart_command": f"{sys.executable} memory/servers/ingest_server.py",
+            }
+        for _ in range(32):
+            time.sleep(0.25)
+            status = _check_recall_server()
+            if status.get("running"):
+                return {
+                    "ok": True,
+                    "started_here": started_here,
+                    "pid": pid,
+                    **status,
+                    "restart_command": f"{sys.executable} memory/servers/ingest_server.py",
+                }
 
     status = _check_recall_server()
     return {
@@ -771,7 +987,7 @@ def restart_recall_server() -> dict:
         "started_here": started_here,
         "pid": pid,
         **status,
-        "restart_command": f"{sys.executable} memory/ingest_server.py",
+        "restart_command": f"{sys.executable} memory/servers/ingest_server.py",
     }
 
 
@@ -803,7 +1019,7 @@ def get_logs(service: str, lines: int = 200) -> dict:
             "exists": True,
             "path": path,
             "candidates": meta["candidates"],
-            "lines": result.stdout.splitlines(),
+            "lines": _with_log_partitions(result.stdout.splitlines()),
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))

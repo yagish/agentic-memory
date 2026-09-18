@@ -1,20 +1,18 @@
-"""Session compaction helpers — summarize raw transcripts via Ollama.
+"""Session text helpers for memory extraction.
 
-Every session is compacted (short or long) so all five extractors receive a
-consistent, model-shaped summary rather than raw turns.  The compacted text is
-stored in the DB and reused on subsequent daemon cycles.
+Memory extractors now run against the full raw session transcript rather than
+an LLM-compacted rewrite. This avoids hallucinated details in downstream facts,
+episodes, procedures, working memory, and session memory.
+
+The compaction helper is retained for optional/debug use, but the daemon no
+longer uses compacted text as the source for memory extraction.
 """
 
 from __future__ import annotations
 
 import json
 
-from memory.daemon._core import (
-    _COMPACT_INPUT_CHARS,
-    _COMPACT_OUTPUT_CHARS,
-    _daemon_log,
-)
-from memory.db import save_session_compaction
+from memory.daemon._core import _COMPACT_INPUT_CHARS, _COMPACT_OUTPUT_CHARS, _daemon_log
 
 
 def _build_session_text(turns: list[dict], max_chars: int | None = None) -> str:
@@ -35,12 +33,7 @@ def _build_session_text(turns: list[dict], max_chars: int | None = None) -> str:
 
 
 def _session_text_sample(session: dict) -> str:
-    """Return the full raw session text with no size limit and no compaction.
-
-    Used when extractor functions are called directly (e.g. from tests) without
-    a pre-built text_sample argument.  The normal daemon path goes through
-    _get_or_compact_session_text instead.
-    """
+    """Return the full raw session text with no size limit and no compaction."""
     try:
         turns = json.loads(session.get("transcript") or "[]")
     except json.JSONDecodeError:
@@ -80,25 +73,11 @@ def _compact_session_text(full_text: str) -> str:
 
 
 def _get_or_compact_session_text(conn, session: dict) -> str:
-    """Return the compacted text for all extractors, creating it if absent.
+    """Return the full raw session text for all extractors.
 
-    - Already compacted: return the stored compacted_text directly.
-    - All others: call Ollama, save the result to the DB, return the summary.
-
-    If Ollama fails, the error propagates — the session stays unprocessed and
-    will be retried on the next daemon cycle.
+    The daemon intentionally skips compaction here. Durable memory generation
+    should operate on source transcript text, not on an LLM-generated rewrite.
+    ``conn`` is accepted for backward compatibility with existing callers.
     """
-    cached = session.get("compacted_text")
-    if cached:
-        _daemon_log(f"reusing stored compaction for {session['session_id']}")
-        return cached
-
-    try:
-        turns = json.loads(session.get("transcript") or "[]")
-    except json.JSONDecodeError:
-        turns = []
-
-    full_text = _build_session_text(turns)
-    compacted = _compact_session_text(full_text)
-    save_session_compaction(conn, session["session_id"], compacted)
-    return compacted
+    del conn
+    return _session_text_sample(session)

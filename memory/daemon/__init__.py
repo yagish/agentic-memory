@@ -2,8 +2,8 @@
 
 Runs as a long-lived process. Every poll cycle:
   1. finds unprocessed sessions
-  2. compact each session via Ollama (cached in the DB)
-  3. runs five extractors in parallel: facts, episodic, procedural,
+  2. builds the full raw session text
+  3. runs five extractors sequentially: facts, episodic, procedural,
      working-memory, session-memory
   4. marks each session processed
 
@@ -16,7 +16,6 @@ Stop: SIGTERM — exits cleanly after the current session.
 
 from __future__ import annotations
 
-import concurrent.futures
 import os
 import signal
 import time
@@ -81,6 +80,7 @@ from memory.working_memory.repository import save_extracted_working_memory
 # --- Shutdown flag and signal handling ---
 
 _shutdown = False
+_EXTRACTION_TIMEOUT_SECONDS = int(os.environ.get("MEMORY_EXTRACTION_TIMEOUT_SECONDS", "600"))
 
 
 def _handle_sigterm(signum, frame):
@@ -128,6 +128,7 @@ def _create_episodic_entry(conn, session: dict, text_sample: str | None = None):
             text_sample,
             source="daemon",
             session_id=session_id,
+            timeout_seconds=_EXTRACTION_TIMEOUT_SECONDS,
         )
         happened_at = session.get("updated_at") or datetime.now(timezone.utc).isoformat()
         save_extracted_episode(
@@ -155,7 +156,12 @@ def _extract_facts(conn, session: dict, text_sample: str | None = None) -> list[
         return []
 
     try:
-        facts = normalize_extracted_facts(extract_facts_from_session_text(text_sample))
+        facts = normalize_extracted_facts(
+            extract_facts_from_session_text(
+                text_sample,
+                timeout_seconds=_EXTRACTION_TIMEOUT_SECONDS,
+            )
+        )
         if not facts:
             return []
 
@@ -202,6 +208,7 @@ def _create_procedural_entry(conn, session: dict, text_sample: str | None = None
             text_sample,
             source="daemon",
             session_id=session_id,
+            timeout_seconds=_EXTRACTION_TIMEOUT_SECONDS,
         )
         if procedure is None:
             _daemon_log(f"no procedural memory extracted for {session_id}")
@@ -248,6 +255,7 @@ def _create_working_memory_entry(conn, session: dict, text_sample: str | None = 
             text_sample,
             source="daemon",
             session_id=session_id,
+            timeout_seconds=_EXTRACTION_TIMEOUT_SECONDS,
         )
         if working_memory is None:
             _daemon_log(f"no working memory extracted for {session_id}")
@@ -293,6 +301,7 @@ def _create_session_memory_entry(conn, session: dict, text_sample: str | None = 
             text_sample,
             source="daemon",
             session_id=session_id,
+            timeout_seconds=_EXTRACTION_TIMEOUT_SECONDS,
         )
         if session_memory is None:
             _daemon_log(f"no session memory extracted for {session_id}")
@@ -315,68 +324,66 @@ def _create_session_memory_entry(conn, session: dict, text_sample: str | None = 
 
 
 # ---------------------------------------------------------------------------
-# Parallel extraction pipeline
+# Sequential extraction pipeline
 # ---------------------------------------------------------------------------
 
 
-def _run_extractor_in_thread(extractor_fn, session: dict, text_sample: str) -> None:
-    """Open a fresh DB connection and run one extractor function.
-
-    Each extractor runs in its own thread, so it must open its own SQLite
-    connection — connections are NOT safe to share across threads.  SQLite's WAL
-    mode lets multiple connections write concurrently.
-    """
-    conn = open_db(DB_PATH)
-    try:
-        extractor_fn(conn, session, text_sample=text_sample)
-    finally:
-        conn.close()
-
-
 def _process_session(conn, session: dict) -> bool:
-    """Process one session through the structured memory pipeline in parallel.
-
-    All five extractors run concurrently in a ThreadPoolExecutor. Each spends
-    most of its time waiting on an Ollama HTTP response, so Python's GIL
-    releases during I/O and true concurrency is achieved. Total time drops from
-    ~5× per-extractor latency to ~1× (slowest single extractor).
-
-    The caller's `conn` is used only for mark_session_processed after all
-    futures complete — never shared across threads.
-    """
+    """Process one session through the structured memory pipeline sequentially."""
     session_id = session["session_id"]
-    _daemon_log(f"processing session {session_id} (parallel extractors)")
+    session_started = time.perf_counter()
+    _daemon_log(
+        f"processing session {session_id} (sequential extractors, timeout={_EXTRACTION_TIMEOUT_SECONDS}s)"
+    )
 
-    # Compact once in the main thread; all five extractors share this text.
+    # Build the raw session text once; all extractors share it.
     text_sample = _get_or_compact_session_text(conn, session)
 
     extractors = [
-        (_extract_facts,                "facts"),
-        (_create_episodic_entry,        "episodic"),
-        (_create_procedural_entry,      "procedural"),
-        (_create_working_memory_entry,  "working_memory"),
-        (_create_session_memory_entry,  "session_memory"),
+        (_extract_facts, "facts"),
+        (_create_working_memory_entry, "working_memory"),
+        (_create_session_memory_entry, "session_memory"),
+        (_create_episodic_entry, "episodic"),
+        (_create_procedural_entry, "procedural"),
     ]
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
-        future_to_label = {
-            pool.submit(_run_extractor_in_thread, fn, session, text_sample): label
-            for fn, label in extractors
-        }
-        unexpected_errors: list[tuple[str, BaseException]] = []
-        for future in concurrent.futures.as_completed(future_to_label):
-            label = future_to_label[future]
-            exc = future.exception()
-            if exc:
-                _daemon_log(f"unexpected thread-level error in {label} for {session_id}: {exc}")
-                unexpected_errors.append((label, exc))
-
-    if unexpected_errors:
-        label, exc = unexpected_errors[0]
-        raise RuntimeError(f"extractor '{label}' failed for {session_id}: {exc}") from exc
+    for extractor_fn, label in extractors:
+        if _shutdown:
+            break
+        extractor_started = time.perf_counter()
+        try:
+            result = extractor_fn(conn, session, text_sample=text_sample)
+            duration_ms = round((time.perf_counter() - extractor_started) * 1000, 3)
+            activity_log(
+                "daemon",
+                "extractor_timing",
+                session=session_id,
+                extractor=label,
+                duration_ms=duration_ms,
+                emitted=bool(result),
+            )
+        except Exception as exc:
+            duration_ms = round((time.perf_counter() - extractor_started) * 1000, 3)
+            activity_log(
+                "daemon",
+                "extractor_timing",
+                session=session_id,
+                extractor=label,
+                duration_ms=duration_ms,
+                emitted=False,
+                error=str(exc),
+            )
+            _daemon_log(f"unexpected extractor error in {label} for {session_id}: {exc}")
+            raise RuntimeError(f"extractor '{label}' failed for {session_id}: {exc}") from exc
 
     mark_session_processed(conn, session_id)
     activity_log("daemon", "processed", session=session_id)
+    activity_log(
+        "daemon",
+        "session_timing",
+        session=session_id,
+        duration_ms=round((time.perf_counter() - session_started) * 1000, 3),
+    )
     return True
 
 

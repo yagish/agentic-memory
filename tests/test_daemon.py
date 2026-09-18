@@ -183,6 +183,37 @@ class TestDaemonOnceMode(unittest.TestCase):
             os.unlink(tmp_path)
 
 
+    def test_process_session_logs_extractor_and_session_timings(self):
+        import memory.daemon as daemon_module
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            conn = init_db(tmp_path)
+            _make_session(conn, "timed-session")
+            session = get_unprocessed_sessions(conn, limit=1)[0]
+
+            perf_values = [0.0, 0.01, 0.03, 0.04, 0.07, 0.08, 0.12, 0.13, 0.18, 0.19, 0.25, 0.3]
+            with patch.object(daemon_module, "_get_or_compact_session_text", return_value="user: hi"), \
+                 patch.object(daemon_module, "_extract_facts", return_value=["user.name = Yash"]), \
+                 patch.object(daemon_module, "_create_working_memory_entry", return_value=None), \
+                 patch.object(daemon_module, "_create_session_memory_entry", return_value=None), \
+                 patch.object(daemon_module, "_create_episodic_entry", return_value=MagicMock(title="Episode")), \
+                 patch.object(daemon_module, "_create_procedural_entry", return_value=None), \
+                 patch.object(daemon_module.time, "perf_counter", side_effect=perf_values), \
+                 patch.object(daemon_module, "activity_log") as activity_log:
+                daemon_module._process_session(conn, session)
+
+            timing_calls = [call for call in activity_log.call_args_list if call.args[1] == "extractor_timing"]
+            self.assertEqual(len(timing_calls), 5)
+            self.assertTrue(any(call.kwargs["extractor"] == "facts" and call.kwargs["duration_ms"] == 20.0 for call in timing_calls))
+            self.assertTrue(any(call.args[1] == "session_timing" and call.kwargs["duration_ms"] == 300.0 for call in activity_log.call_args_list))
+        finally:
+            conn.close()
+            os.unlink(tmp_path)
+
+
 class TestStructuredExtractionHelpers(unittest.TestCase):
     def setUp(self):
         self.conn = init_db(":memory:")

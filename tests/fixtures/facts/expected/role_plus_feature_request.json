@@ -1,0 +1,4 @@
+[
+  {"entity": "user", "attribute": "company", "value": "Acme"},
+  {"entity": "user", "attribute": "role", "value": "Tech lead"}
+]

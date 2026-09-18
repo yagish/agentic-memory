@@ -32,7 +32,7 @@ class TestMemoryClient(unittest.TestCase):
                     agent="test-agent",
                     turns=[{"role": "user", "content": "Hello"}],
                 )
-        self.assertIn("python3 memory/ingest_server.py", str(ctx.exception))
+        self.assertIn("python3 memory/servers/ingest_server.py", str(ctx.exception))
 
     def test_client_raises_runtime_error_for_http_error(self):
         client = MemoryClient()

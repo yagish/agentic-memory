@@ -33,7 +33,7 @@ class MemoryClient:
 
     @staticmethod
     def _server_start_hint() -> str:
-        return "Memory ingest server is not running — start it with: python3 memory/ingest_server.py"
+        return "Memory ingest server is not running — start it with: python3 memory/servers/ingest_server.py"
 
     def _post(self, path: str, payload: dict) -> dict:
         request = urllib.request.Request(

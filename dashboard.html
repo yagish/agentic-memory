@@ -50,7 +50,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
 .chart-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px 8px}
 .chart-title{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px}
 .chart-card svg{width:100%;height:auto;display:block;overflow:visible}.ax{fill:#555e6a;font-size:9px;font-family:inherit}.ax-line{stroke:var(--border);stroke-width:1}.grid-l{stroke:var(--border);stroke-width:.5;stroke-dasharray:3 3}
-.overview-copy{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px 18px;color:var(--muted);font-size:13px;line-height:1.7}
+.tooltip-wrap{position:relative;display:inline-flex;max-width:100%}
+.tooltip-bubble{position:absolute;left:0;top:calc(100% + 8px);z-index:20;width:min(440px,calc(100vw - 64px));padding:12px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);font-size:12px;line-height:1.6;box-shadow:0 12px 28px rgba(0,0,0,.35);opacity:0;pointer-events:none;transform:translateY(-4px);transition:opacity .12s ease,transform .12s ease}
+.tooltip-bubble::before{content:"";position:absolute;top:-6px;left:18px;width:10px;height:10px;background:var(--surface2);border-left:1px solid var(--border);border-top:1px solid var(--border);transform:rotate(45deg)}
+.tooltip-wrap:hover .tooltip-bubble,.tooltip-wrap:focus-within .tooltip-bubble{opacity:1;transform:translateY(0)}
 .tbl-search{background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;padding:7px 12px;width:320px;margin-bottom:14px;outline:none;display:block}
 .tbl-search:focus{border-color:var(--accent)}.tbl-search::placeholder{color:var(--muted)}
 .dtbl{width:100%;border-collapse:collapse;font-size:13px}.dtbl th{text-align:left;padding:8px 12px;font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--border);white-space:nowrap}.dtbl td{padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:top}.dtbl tr:last-child td{border-bottom:none}.dtbl tr:hover td{background:var(--surface2)}
@@ -65,7 +68,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
 .detail-grid{display:grid;grid-template-columns:160px 1fr;gap:8px 12px;font-size:12px}.detail-label{color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-size:10px}.detail-value{white-space:pre-wrap;word-break:break-word}
 .log-header{display:flex;align-items:center;gap:12px;padding:10px 20px;background:var(--surface);border-bottom:1px solid var(--border)}
 .log-back{background:none;border:none;color:var(--accent);cursor:pointer;font-size:13px;padding:0}.log-svc-name{font-weight:600;font-size:14px}.log-meta{font-size:11px;color:var(--muted);margin-left:auto}
-#log-view{display:flex;flex-direction:column;flex:1;overflow:hidden}#log-content{flex:1;overflow-y:auto;background:var(--bg);padding:10px 14px;font-family:"SF Mono","Fira Code",ui-monospace,monospace;font-size:12px;line-height:1.7}.ll{color:#c9d1d9}.ll.err{color:var(--red)}.ll.warn{color:#f59e0b}.ll-empty{color:var(--muted);font-style:italic}
+#log-view{display:flex;flex-direction:column;flex:1;overflow:hidden}#log-content{flex:1;overflow-y:auto;background:var(--bg);padding:10px 14px;font-family:"SF Mono","Fira Code",ui-monospace,monospace;font-size:12px;line-height:1.7}.ll{color:#c9d1d9}.ll.err{color:var(--red)}.ll.warn{color:#f59e0b}.ll.sep{color:var(--muted)}.ll-empty{color:var(--muted);font-style:italic}
 [hidden]{display:none!important}
 </style>
 </head>
@@ -148,13 +151,14 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
             <div class="tile">
               <div class="tile-value" id="t-recall">—</div>
               <div class="tile-label">Memory Search Engine</div>
+              <div class="tile-sub">Serves recall requests and warms the local embedding model for semantic search.</div>
               <div class="tile-sub" id="t-recall-port">Port: —</div>
               <div class="tile-sub" id="t-recall-embed-name">Embedding model: —</div>
               <div class="tile-sub" id="t-recall-embed-status">Embedding warmup: —</div>
               <div class="tile-sub" id="t-recall-warning"></div>
               <div class="tile-actions">
                 <button class="action-btn" id="btn-restart-recall" onclick="restartRecallServer()">Restart Memory Search Engine</button>
-                <span class="mono" id="recall-command">python3 memory/ingest_server.py</span>
+                <span class="mono" id="recall-command">python3 memory/servers/ingest_server.py</span>
               </div>
             </div>
             <div class="tile">
@@ -176,7 +180,12 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
               <div class="tile-sub" id="t-daemon-last-run">Last run: —</div>
               <div class="tile-sub" id="t-daemon-facts">Facts extracted: —</div>
               <div class="tile-actions">
-                <button class="action-btn" id="btn-process-daemon" onclick="processOneDaemonSession()">Process One Session</button>
+                <div class="tooltip-wrap">
+                  <button class="action-btn" id="btn-process-daemon" onclick="processOneDaemonSession()" aria-describedby="tooltip-process-daemon">Process One Session</button>
+                  <div class="tooltip-bubble" id="tooltip-process-daemon" role="tooltip">
+                    The <strong>Process One Session</strong> button asks the daemon pipeline to pick the next unprocessed session and run one extraction pass immediately. Savings metrics are approximate and come from direct memory-answer hits logged in <span class="mono">~/.memory/activity.log</span> using a rough <span class="mono">chars / 4</span> heuristic. Performance charts also read from <span class="mono">~/.memory/activity.log</span> and show recent prompt-embedding, memory-search, and daemon session-extraction durations to help tune timeouts. Click any memory count tile to jump to that table, or click any row in a memory table to inspect full details below it.
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -192,6 +201,25 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
           <div class="tiles-row">
             <div class="tile"><div class="tile-value" id="t-memory-answers">—</div><div class="tile-label">LLM Calls Avoided</div><div class="tile-sub">Direct answers from memory</div></div>
             <div class="tile"><div class="tile-value" id="t-token-saved">—</div><div class="tile-label">Est. Tokens Saved</div><div class="tile-sub">Prompt + answer, ~chars/4</div></div>
+          </div>
+        </div>
+
+        <div class="section-block">
+          <div class="section-head">
+            <div>
+              <div class="section-title">Performance</div>
+              <div class="section-desc">Recent latency samples for recall and daemon extraction so timeout tuning is visible.</div>
+            </div>
+          </div>
+          <div class="tiles-row">
+            <div class="tile"><div class="tile-value" id="t-perf-embed-avg">—</div><div class="tile-label">Prompt Embed Avg</div><div class="tile-sub" id="t-perf-embed-p95">p95: —</div></div>
+            <div class="tile"><div class="tile-value" id="t-perf-search-avg">—</div><div class="tile-label">Memory Search Avg</div><div class="tile-sub" id="t-perf-search-p95">p95: —</div></div>
+            <div class="tile"><div class="tile-value" id="t-perf-daemon-avg">—</div><div class="tile-label">Daemon Session Avg</div><div class="tile-sub" id="t-perf-daemon-p95">p95: —</div></div>
+          </div>
+          <div class="charts-row">
+            <div class="chart-card"><div class="chart-title">Prompt Embedding ms</div><div id="ch-perf-embed"></div></div>
+            <div class="chart-card"><div class="chart-title">Memory Search ms</div><div id="ch-perf-search"></div></div>
+            <div class="chart-card"><div class="chart-title">Daemon Session Extraction ms</div><div id="ch-perf-daemon"></div></div>
           </div>
         </div>
 
@@ -217,9 +245,6 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
           <div class="chart-card"><div class="chart-title">Sessions per Day</div><div id="ch-sessions"></div></div>
           <div class="chart-card"><div class="chart-title">Facts per Day</div><div id="ch-facts"></div></div>
           <div class="chart-card"><div class="chart-title">Episodes per Day</div><div id="ch-episodes"></div></div>
-        </div>
-        <div class="overview-copy">
-          <strong>Memory Search Engine</strong> is the service formerly shown as “Recall Server.” It serves retrieval requests and warms the local embedding model used for semantic lookup. The <strong>Process One Session</strong> button asks the daemon pipeline to pick the next unprocessed session and run one extraction pass immediately. Savings metrics are approximate and come from direct memory-answer hits logged in <span class="mono">~/.memory/activity.log</span> using a rough <span class="mono">chars / 4</span> heuristic. Click any memory count tile to jump to that table, or click any row in a memory table to inspect full details below it.
         </div>
       </div>
 
@@ -362,7 +387,7 @@ async function loadServices() {
     set('t-recall-embed-name', `Embedding model: ${memorySearchEngine.embed_model_name || 'unknown'}`);
     set('t-recall-embed-status', memorySearchEngine.embed_model_ready ? 'Embedding warmup: ready' : 'Embedding warmup: not ready');
     set('t-recall-warning', memorySearchEngine.embed_model_error || '');
-    set('recall-command', memorySearchEngine.restart_command || 'python3 memory/ingest_server.py');
+    set('recall-command', memorySearchEngine.restart_command || 'python3 memory/servers/ingest_server.py');
     const recallBtn = document.getElementById('btn-restart-recall');
     if (recallBtn) recallBtn.disabled = false;
     setDot('ollama', !!ollama.running);
@@ -512,13 +537,7 @@ async function fetchLogs() {
       el.innerHTML = '<div class="ll-empty">Log file exists but has no entries yet.</div>';
       return;
     }
-    el.innerHTML = d.lines.map(line => {
-      const lo = line.toLowerCase();
-      let cls = 'll';
-      if (/error/.test(lo)) cls += ' err';
-      else if (/warn/.test(lo)) cls += ' warn';
-      return `<div class="${cls}">${esc(line)}</div>`;
-    }).join('');
+    el.innerHTML = d.lines.map(line => `<div class="${logLineClass(line)}">${esc(line)}</div>`).join('');
     el.scrollTop = el.scrollHeight;
   } catch (_) {}
 }
@@ -531,6 +550,16 @@ async function loadCharts() {
     renderBarChart('ch-sessions', fill14(d.sessions_by_day, 'count'), '#5b8def');
     renderBarChart('ch-facts', fill14(d.facts_by_day, 'count'), '#34d399');
     renderBarChart('ch-episodes', fill14(d.episodes_by_day, 'count'), '#a78bfa');
+    renderSampleBarChart('ch-perf-embed', normalizeRecentSeries(d.recall_embedding_ms_recent), '#60a5fa', 'ms');
+    renderSampleBarChart('ch-perf-search', normalizeRecentSeries(d.memory_search_ms_recent), '#f59e0b', 'ms');
+    renderSampleBarChart('ch-perf-daemon', normalizeRecentSeries(d.daemon_session_ms_recent), '#f472b6', 'ms');
+    const perf = d.performance_summary || {};
+    set('t-perf-embed-avg', formatMs(perf.recall_embedding_avg_ms));
+    set('t-perf-embed-p95', `p95: ${formatMs(perf.recall_embedding_p95_ms)}`);
+    set('t-perf-search-avg', formatMs(perf.memory_search_avg_ms));
+    set('t-perf-search-p95', `p95: ${formatMs(perf.memory_search_p95_ms)}`);
+    set('t-perf-daemon-avg', formatMs(perf.daemon_session_avg_ms));
+    set('t-perf-daemon-p95', `p95: ${formatMs(perf.daemon_session_p95_ms)}`);
   } catch (_) {}
 }
 
@@ -544,6 +573,21 @@ function fill14(rows, key) {
     out.push({ day, v: map[day] || 0 });
   }
   return out;
+}
+
+function normalizeRecentSeries(rows) {
+  return (rows || []).map((row, i) => ({
+    label: row.label || String(i + 1),
+    v: Number(row.value || 0),
+    title: row.timestamp ? `${row.timestamp}: ${Number(row.value || 0).toFixed(1)} ms` : `${Number(row.value || 0).toFixed(1)} ms`,
+  }));
+}
+
+function formatMs(value) {
+  const n = Number(value || 0);
+  if (!n) return '0 ms';
+  if (n >= 1000) return `${(n / 1000).toFixed(2)} s`;
+  return `${n.toFixed(1)} ms`;
 }
 
 function renderBarChart(id, data, color) {
@@ -568,6 +612,37 @@ function renderBarChart(id, data, color) {
     const x = pL + i * (bw + gap) + bw / 2;
     const ay = pT + ch + 12;
     svg += `<text x="${x}" y="${ay}" class="ax" text-anchor="end" transform="rotate(-40 ${x} ${ay})">${d.day.slice(5)}</text>`;
+  });
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="overflow:visible">${svg}</svg>`;
+}
+
+function renderSampleBarChart(id, data, color, unit) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!data.length) {
+    el.innerHTML = '<div class="ll-empty">No samples yet.</div>';
+    return;
+  }
+  const maxRaw = Math.max(...data.map(d => d.v), 1);
+  const W = 280, H = 155, pL = 44, pR = 6, pT = 8, pB = 50;
+  const cw = W - pL - pR, ch = H - pT - pB;
+  const n = data.length, gap = 2;
+  const bw = Math.max(2, Math.floor((cw - gap * (n - 1)) / n));
+  const ticks = [0, .5, 1].map(f => ({ raw: maxRaw * f, y: pT + ch * (1 - f) }));
+  let svg = ticks.map(t => `<line x1="${pL}" y1="${t.y}" x2="${W-pR}" y2="${t.y}" class="grid-l"/><text x="${pL-3}" y="${t.y+3}" class="ax" text-anchor="end">${Math.round(t.raw)}</text>`).join('');
+  svg += `<line x1="${pL}" y1="${pT}" x2="${pL}" y2="${pT+ch}" class="ax-line"/><line x1="${pL}" y1="${pT+ch}" x2="${W-pR}" y2="${pT+ch}" class="ax-line"/>`;
+  data.forEach((d, i) => {
+    const bh = Math.max(d.v > 0 ? 2 : 0, Math.round(ch * (d.v / maxRaw)));
+    const x = pL + i * (bw + gap);
+    const y = pT + ch - bh;
+    const title = d.title || `${d.label}: ${d.v.toFixed(1)} ${unit}`;
+    svg += `<rect x="${x}" y="${y}" width="${bw}" height="${bh}" fill="${color}" rx="1" opacity="0.9"><title>${title}</title></rect>`;
+  });
+  data.forEach((d, i) => {
+    if (i % 3 !== 0) return;
+    const x = pL + i * (bw + gap) + bw / 2;
+    const ay = pT + ch + 12;
+    svg += `<text x="${x}" y="${ay}" class="ax" text-anchor="end" transform="rotate(-40 ${x} ${ay})">${esc(d.label)}</text>`;
   });
   el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="overflow:visible">${svg}</svg>`;
 }
@@ -837,6 +912,14 @@ function showSessionMemoryDetail(index) {
 function renderList(items) {
   if (!items || !items.length) return '—';
   return `<ul style="margin:0;padding-left:18px">${items.map(item => `<li>${esc(item)}</li>`).join('')}</ul>`;
+}
+
+function logLineClass(line) {
+  const text = String(line || '');
+  if (/^=+$/.test(text.trim())) return 'll sep';
+  if (/(^|\s)(ERROR|CRITICAL|Traceback)(\s|:|$)/.test(text) || /"level"\s*:\s*"error"/i.test(text) || /\[error\]/i.test(text) || /"exception"\s*:\s*"[^\"]+"/i.test(text)) return 'll err';
+  if (/(^|\s)(WARN|WARNING)(\s|:|$)/.test(text) || /"level"\s*:\s*"warn(?:ing)?"/i.test(text) || /\[warn(?:ing)?\]/i.test(text)) return 'll warn';
+  return 'll';
 }
 
 function hideDetail(id) {

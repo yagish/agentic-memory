@@ -39,11 +39,21 @@ def insert_procedural(
     details: dict | None = None,
     embedding: list[float] | None = None,
 ) -> str:
-    procedure_id = str(uuid.uuid4())
+    existing = conn.execute(
+        "SELECT id FROM procedural_memory WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    procedure_id = existing["id"] if existing else str(uuid.uuid4())
     conn.execute(
         """
         INSERT INTO procedural_memory (id, session_id, title, summary, updated_at, details, embedding)
         VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+          title = excluded.title,
+          summary = excluded.summary,
+          updated_at = excluded.updated_at,
+          details = excluded.details,
+          embedding = excluded.embedding
         """,
         (
             procedure_id,

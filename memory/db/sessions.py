@@ -27,6 +27,7 @@ def upsert_session(
           turn_count = excluded.turn_count,
           transcript = excluded.transcript,
           metadata = excluded.metadata,
+          compacted_text = NULL,
           daemon_processed_at = NULL
         """,
         (

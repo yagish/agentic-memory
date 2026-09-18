@@ -1,0 +1,2 @@
+User: Can we time how much time each prompt embedding takes, and how long we take to search the memory before returning the response?
+User: Same with extraction for each session by the daemon.

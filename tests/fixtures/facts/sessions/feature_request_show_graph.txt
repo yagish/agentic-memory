@@ -1,0 +1,2 @@
+User: Show a graph for each performance metric in the dashboard so we can adjust the timeout.
+User: Should be in the overview landing page.

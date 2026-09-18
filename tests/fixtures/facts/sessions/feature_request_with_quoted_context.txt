@@ -1,0 +1,1 @@
+User: Move the overview text at the bottom of the page into a tooltip for the Process One Session button. The page currently shows this: "The Process One Session button asks the daemon pipeline to pick the next unprocessed session and run one extraction pass immediately. Savings metrics are approximate and come from direct memory-answer hits."

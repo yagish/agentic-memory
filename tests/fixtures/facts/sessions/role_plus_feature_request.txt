@@ -1,0 +1,1 @@
+User: I work at Acme as a Tech lead. Can we add a dashboard graph for prompt embedding time? Should be in the overview page.

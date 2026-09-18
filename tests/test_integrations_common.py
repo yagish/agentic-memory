@@ -7,6 +7,7 @@ from integrations.common import (
     decide_prompt_memory_action,
     open_existing_memory_db,
     open_memory_db_for_ingest,
+    retrieve_prompt_memory,
     save_session_to_memory,
 )
 from memory.db import get_session_by_id
@@ -67,6 +68,50 @@ class TestDecidePromptMemoryAction(unittest.TestCase):
         self.assertIn("Recent related episode: Resolved auth bug. Fixed the login loop.", outcome.injection)
         self.assertIn("Relevant how-to pattern: Deploy service. Use this when releasing auth.", outcome.injection)
         self.assertIn("Remembered fact: user.name = Yash.", outcome.injection)
+
+
+class TestRetrievePromptMemory(unittest.TestCase):
+    def test_logs_recall_timing_metrics(self):
+        context = WakeUpContext(
+            None,
+            None,
+            [],
+            [],
+            [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.99}],
+            [],
+            timings={
+                "prompt_embedding_ms": 12.5,
+                "memory_search_ms": 44.2,
+                "retrieval_total_ms": 56.7,
+            },
+        )
+
+        with patch("integrations.common.retrieve_wake_up_context", return_value=context), \
+             patch("integrations.common.activity_log") as activity_log:
+            result = retrieve_prompt_memory(
+                object(),
+                "what is my name?",
+                include_working_memory=False,
+                session_id="sess-1",
+            )
+
+        self.assertIs(result, context)
+        activity_log.assert_called_once_with(
+            "retrieval",
+            "recall_timing",
+            session="sess-1",
+            prompt_chars=len("what is my name?"),
+            include_working_memory=False,
+            prompt_embedding_ms=12.5,
+            memory_search_ms=44.2,
+            retrieval_total_ms=56.7,
+            facts_count=1,
+            episodic_count=0,
+            procedural_count=0,
+            session_memory_count=0,
+            working_memory_count=0,
+            warnings_count=0,
+        )
 
 
 class TestSharedSaveHelpers(unittest.TestCase):
