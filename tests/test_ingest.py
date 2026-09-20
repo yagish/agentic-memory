@@ -72,16 +72,43 @@ class TestIngestEndpoints(unittest.TestCase):
             [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.99}],
             [],
         )
-        with patch.object(ingest_server_module, "retrieve_prompt_memory", return_value=context):
+        with patch.object(ingest_server_module, "retrieve_prompt_memory", return_value=context), \
+             patch.object(ingest_server_module, "log_memory_answer") as log_memory_answer, \
+             patch.object(ingest_server_module, "log_memory_injection") as log_memory_injection:
             response = self.client.post(
                 "/recall",
-                json={"prompt": "what is my name?"},
+                json={"prompt": "what is my name?", "session_id": "sess-123", "agent": "claude"},
             )
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["action"], "answer")
         self.assertEqual(body["answer"], "Your name is Yash.")
         self.assertEqual(body["facts_count"], 1)
+        log_memory_answer.assert_called_once()
+        log_memory_injection.assert_not_called()
+
+    def test_post_recall_logs_memory_injection(self):
+        context = WakeUpContext(
+            None,
+            {"id": "wm-1", "current_goal": "Finish dashboard", "current_focus": "Add savings tiles"},
+            [],
+            [],
+            [],
+            [],
+        )
+        with patch.object(ingest_server_module, "retrieve_prompt_memory", return_value=context), \
+             patch.object(ingest_server_module, "log_memory_answer") as log_memory_answer, \
+             patch.object(ingest_server_module, "log_memory_injection") as log_memory_injection:
+            response = self.client.post(
+                "/recall",
+                json={"prompt": "continue", "session_id": "sess-456", "agent": "claude"},
+            )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["action"], "inject")
+        self.assertIn("Memory context", body["injection"])
+        log_memory_injection.assert_called_once()
+        log_memory_answer.assert_not_called()
 
     def test_status_ok(self):
         response = self.client.get("/status")

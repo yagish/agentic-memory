@@ -183,7 +183,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
                 <div class="tooltip-wrap">
                   <button class="action-btn" id="btn-process-daemon" onclick="processOneDaemonSession()" aria-describedby="tooltip-process-daemon">Process One Session</button>
                   <div class="tooltip-bubble" id="tooltip-process-daemon" role="tooltip">
-                    The <strong>Process One Session</strong> button asks the daemon pipeline to pick the next unprocessed session and run one extraction pass immediately. Savings metrics are approximate and come from direct memory-answer hits logged in <span class="mono">~/.memory/activity.log</span> using a rough <span class="mono">chars / 4</span> heuristic. Performance charts also read from <span class="mono">~/.memory/activity.log</span> and show recent prompt-embedding, memory-search, and daemon session-extraction durations to help tune timeouts. Click any memory count tile to jump to that table, or click any row in a memory table to inspect full details below it.
+                    The <strong>Process One Session</strong> button asks the daemon pipeline to pick the next unprocessed session and run one extraction pass immediately. Savings metrics are approximate and come from recall events logged in <span class="mono">~/.memory/activity.log</span> using a rough <span class="mono">chars / 4</span> heuristic: direct answers count hard token savings, while injections estimate recovered context, injected context, and compression gain. Performance charts also read from <span class="mono">~/.memory/activity.log</span> and show recent prompt-embedding, memory-search, and daemon session-extraction durations to help tune timeouts. Click any memory count tile to jump to that table, or click any row in a memory table to inspect full details below it.
                   </div>
                 </div>
               </div>
@@ -195,12 +195,16 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
           <div class="section-head">
             <div>
               <div class="section-title">Savings</div>
-              <div class="section-desc">Estimated savings from direct answers returned by memory.</div>
+              <div class="section-desc">Separate hard savings from direct answers and soft savings from context compression.</div>
             </div>
           </div>
           <div class="tiles-row">
             <div class="tile"><div class="tile-value" id="t-memory-answers">—</div><div class="tile-label">LLM Calls Avoided</div><div class="tile-sub">Direct answers from memory</div></div>
-            <div class="tile"><div class="tile-value" id="t-token-saved">—</div><div class="tile-label">Est. Tokens Saved</div><div class="tile-sub">Prompt + answer, ~chars/4</div></div>
+            <div class="tile"><div class="tile-value" id="t-token-saved">—</div><div class="tile-label">Hard Tokens Saved</div><div class="tile-sub">Prompt + answer, ~chars/4</div></div>
+            <div class="tile"><div class="tile-value" id="t-context-recalls">—</div><div class="tile-label">Context Recalls</div><div class="tile-sub">Memory injections used</div></div>
+            <div class="tile"><div class="tile-value" id="t-context-recovered">—</div><div class="tile-label">Recovered Context</div><div class="tile-sub">Matched memory before compression</div></div>
+            <div class="tile"><div class="tile-value" id="t-context-injected">—</div><div class="tile-label">Injected Context</div><div class="tile-sub">Final memory block sent</div></div>
+            <div class="tile"><div class="tile-value" id="t-context-compression">—</div><div class="tile-label">Compression Gain</div><div class="tile-sub" id="t-context-ratio">ratio: —</div></div>
           </div>
         </div>
 
@@ -217,9 +221,9 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
             <div class="tile"><div class="tile-value" id="t-perf-daemon-avg">—</div><div class="tile-label">Daemon Session Avg</div><div class="tile-sub" id="t-perf-daemon-p95">p95: —</div></div>
           </div>
           <div class="charts-row">
-            <div class="chart-card"><div class="chart-title">Prompt Embedding ms</div><div id="ch-perf-embed"></div></div>
-            <div class="chart-card"><div class="chart-title">Memory Search ms</div><div id="ch-perf-search"></div></div>
-            <div class="chart-card"><div class="chart-title">Daemon Session Extraction ms</div><div id="ch-perf-daemon"></div></div>
+            <div class="chart-card"><div class="chart-title">Prompt Embedding Latency</div><div id="ch-perf-embed"></div></div>
+            <div class="chart-card"><div class="chart-title">Memory Search Latency</div><div id="ch-perf-search"></div></div>
+            <div class="chart-card"><div class="chart-title">Daemon Session Extraction Duration</div><div id="ch-perf-daemon"></div></div>
           </div>
         </div>
 
@@ -380,7 +384,12 @@ async function loadServices() {
     set('t-working', fmt(mem.total_working_memory));
     set('t-session-memory', fmt(mem.total_session_memory));
     set('t-memory-answers', fmt(efficiency.llm_calls_avoided ?? 0));
-    set('t-token-saved', fmt(efficiency.est_tokens_saved ?? 0));
+    set('t-token-saved', fmt(efficiency.hard_tokens_saved ?? efficiency.est_tokens_saved ?? 0));
+    set('t-context-recalls', fmt(efficiency.context_recalls ?? 0));
+    set('t-context-recovered', fmt(efficiency.context_tokens_recovered ?? 0));
+    set('t-context-injected', fmt(efficiency.injection_tokens ?? 0));
+    set('t-context-compression', fmt(efficiency.compression_gain_tokens ?? 0));
+    set('t-context-ratio', `ratio: ${fmtRatio(efficiency.compression_ratio ?? 0)}`);
     set('t-dbsize', fmtBytes(mem.db_size_bytes));
     set('t-recall', memorySearchEngine.running ? (memorySearchEngine.status === 'degraded' ? 'Degraded' : 'Running') : 'Stopped');
     set('t-recall-port', `Port: ${memorySearchEngine.port || '7747'}`);
@@ -550,16 +559,16 @@ async function loadCharts() {
     renderBarChart('ch-sessions', fill14(d.sessions_by_day, 'count'), '#5b8def');
     renderBarChart('ch-facts', fill14(d.facts_by_day, 'count'), '#34d399');
     renderBarChart('ch-episodes', fill14(d.episodes_by_day, 'count'), '#a78bfa');
-    renderSampleBarChart('ch-perf-embed', normalizeRecentSeries(d.recall_embedding_ms_recent), '#60a5fa', 'ms');
-    renderSampleBarChart('ch-perf-search', normalizeRecentSeries(d.memory_search_ms_recent), '#f59e0b', 'ms');
-    renderSampleBarChart('ch-perf-daemon', normalizeRecentSeries(d.daemon_session_ms_recent), '#f472b6', 'ms');
+    renderLineChart('ch-perf-embed', normalizeRecentSeries(d.recall_embedding_ms_recent), '#60a5fa');
+    renderLineChart('ch-perf-search', normalizeRecentSeries(d.memory_search_ms_recent), '#f59e0b');
+    renderLineChart('ch-perf-daemon', normalizeRecentSeries(d.daemon_session_ms_recent), '#f472b6');
     const perf = d.performance_summary || {};
-    set('t-perf-embed-avg', formatMs(perf.recall_embedding_avg_ms));
-    set('t-perf-embed-p95', `p95: ${formatMs(perf.recall_embedding_p95_ms)}`);
-    set('t-perf-search-avg', formatMs(perf.memory_search_avg_ms));
-    set('t-perf-search-p95', `p95: ${formatMs(perf.memory_search_p95_ms)}`);
-    set('t-perf-daemon-avg', formatMs(perf.daemon_session_avg_ms));
-    set('t-perf-daemon-p95', `p95: ${formatMs(perf.daemon_session_p95_ms)}`);
+    set('t-perf-embed-avg', formatDuration(perf.recall_embedding_avg_ms));
+    set('t-perf-embed-p95', `p95: ${formatDuration(perf.recall_embedding_p95_ms)}`);
+    set('t-perf-search-avg', formatDuration(perf.memory_search_avg_ms));
+    set('t-perf-search-p95', `p95: ${formatDuration(perf.memory_search_p95_ms)}`);
+    set('t-perf-daemon-avg', formatDuration(perf.daemon_session_avg_ms));
+    set('t-perf-daemon-p95', `p95: ${formatDuration(perf.daemon_session_p95_ms)}`);
   } catch (_) {}
 }
 
@@ -576,18 +585,28 @@ function fill14(rows, key) {
 }
 
 function normalizeRecentSeries(rows) {
-  return (rows || []).map((row, i) => ({
-    label: row.label || String(i + 1),
-    v: Number(row.value || 0),
-    title: row.timestamp ? `${row.timestamp}: ${Number(row.value || 0).toFixed(1)} ms` : `${Number(row.value || 0).toFixed(1)} ms`,
-  }));
+  return (rows || []).map((row, i) => {
+    const value = Number(row.value || 0);
+    return {
+      label: row.label || String(i + 1),
+      v: value,
+      title: row.timestamp ? `${row.timestamp}: ${formatDuration(value)}` : formatDuration(value),
+    };
+  });
 }
 
-function formatMs(value) {
+function formatDuration(value) {
   const n = Number(value || 0);
   if (!n) return '0 ms';
-  if (n >= 1000) return `${(n / 1000).toFixed(2)} s`;
+  if (n >= 60000) return `${(n / 60000).toFixed(n >= 600000 ? 1 : 2)} min`;
+  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 1 : 2)} s`;
   return `${n.toFixed(1)} ms`;
+}
+
+function fmtRatio(value) {
+  const n = Number(value || 0);
+  if (!n) return '—';
+  return `${n.toFixed(2)}×`;
 }
 
 function renderBarChart(id, data, color) {
@@ -616,7 +635,7 @@ function renderBarChart(id, data, color) {
   el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="overflow:visible">${svg}</svg>`;
 }
 
-function renderSampleBarChart(id, data, color, unit) {
+function renderLineChart(id, data, color) {
   const el = document.getElementById(id);
   if (!el) return;
   if (!data.length) {
@@ -624,23 +643,33 @@ function renderSampleBarChart(id, data, color, unit) {
     return;
   }
   const maxRaw = Math.max(...data.map(d => d.v), 1);
-  const W = 280, H = 155, pL = 44, pR = 6, pT = 8, pB = 50;
+  const W = 280, H = 155, pL = 44, pR = 8, pT = 8, pB = 50;
   const cw = W - pL - pR, ch = H - pT - pB;
-  const n = data.length, gap = 2;
-  const bw = Math.max(2, Math.floor((cw - gap * (n - 1)) / n));
+  const xFor = i => pL + (data.length === 1 ? cw / 2 : (cw * i) / (data.length - 1));
+  const yFor = value => pT + ch - ((value / maxRaw) * ch);
   const ticks = [0, .5, 1].map(f => ({ raw: maxRaw * f, y: pT + ch * (1 - f) }));
-  let svg = ticks.map(t => `<line x1="${pL}" y1="${t.y}" x2="${W-pR}" y2="${t.y}" class="grid-l"/><text x="${pL-3}" y="${t.y+3}" class="ax" text-anchor="end">${Math.round(t.raw)}</text>`).join('');
+  let svg = ticks.map(t => `<line x1="${pL}" y1="${t.y}" x2="${W-pR}" y2="${t.y}" class="grid-l"/><text x="${pL-3}" y="${t.y+3}" class="ax" text-anchor="end">${esc(formatDuration(t.raw))}</text>`).join('');
   svg += `<line x1="${pL}" y1="${pT}" x2="${pL}" y2="${pT+ch}" class="ax-line"/><line x1="${pL}" y1="${pT+ch}" x2="${W-pR}" y2="${pT+ch}" class="ax-line"/>`;
+  const areaPoints = [`${xFor(0)},${pT+ch}`];
+  const linePoints = [];
   data.forEach((d, i) => {
-    const bh = Math.max(d.v > 0 ? 2 : 0, Math.round(ch * (d.v / maxRaw)));
-    const x = pL + i * (bw + gap);
-    const y = pT + ch - bh;
-    const title = d.title || `${d.label}: ${d.v.toFixed(1)} ${unit}`;
-    svg += `<rect x="${x}" y="${y}" width="${bw}" height="${bh}" fill="${color}" rx="1" opacity="0.9"><title>${title}</title></rect>`;
+    const x = xFor(i);
+    const y = yFor(d.v);
+    linePoints.push(`${x},${y}`);
+    areaPoints.push(`${x},${y}`);
+  });
+  areaPoints.push(`${xFor(data.length - 1)},${pT+ch}`);
+  svg += `<polygon points="${areaPoints.join(' ')}" fill="${color}" opacity="0.12"></polygon>`;
+  svg += `<polyline points="${linePoints.join(' ')}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></polyline>`;
+  data.forEach((d, i) => {
+    const x = xFor(i);
+    const y = yFor(d.v);
+    const title = d.title || `${d.label}: ${formatDuration(d.v)}`;
+    svg += `<circle cx="${x}" cy="${y}" r="3" fill="${color}"><title>${title}</title></circle>`;
   });
   data.forEach((d, i) => {
-    if (i % 3 !== 0) return;
-    const x = pL + i * (bw + gap) + bw / 2;
+    if (i % 3 !== 0 && i !== data.length - 1) return;
+    const x = xFor(i);
     const ay = pT + ch + 12;
     svg += `<text x="${x}" y="${ay}" class="ax" text-anchor="end" transform="rotate(-40 ${x} ${ay})">${esc(d.label)}</text>`;
   });

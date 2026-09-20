@@ -24,7 +24,7 @@ from uvicorn.config import LOGGING_CONFIG as UVICORN_LOGGING_CONFIG
 from integrations.common import build_recall_response, retrieve_prompt_memory
 from memory.db import bootstrap_db, open_db
 from memory.servers.ingest_pipeline import ingest_session
-from memory.utils.logger import error_log, log_memory_answer
+from memory.utils.logger import error_log, log_memory_answer, log_memory_injection
 from memory.utils.debug import enable_debug
 from memory.llm.inference import embed_text
 from memory.vectors import _MODEL_NAME as EMBED_MODEL_NAME
@@ -231,6 +231,15 @@ def post_recall(request: RecallRequest) -> dict:
                 "recall_server",
                 prompt=prompt,
                 answer=str(response.get("answer", "")),
+                session_id=request.session_id,
+                agent=request.agent,
+                response=response,
+            )
+        elif response.get("action") == "inject":
+            log_memory_injection(
+                "recall_server",
+                prompt=prompt,
+                injection=str(response.get("injection", "")),
                 session_id=request.session_id,
                 agent=request.agent,
                 response=response,

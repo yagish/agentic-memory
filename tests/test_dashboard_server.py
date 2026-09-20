@@ -36,7 +36,7 @@ class TestDashboardServices(unittest.TestCase):
              patch.object(dashboard_server, "_check_ollama", return_value=(True, "qwen2.5:3b", ["qwen2.5:3b"])), \
              patch.object(dashboard_server, "_check_recall_server", return_value={"running": True, "status": "running", "port": 7747, "embed_model_ready": True, "embed_model_name": "all-MiniLM-L6-v2", "embed_model_error": ""}), \
              patch.object(dashboard_server, "_parse_daemon_log", return_value=("2026-01-01T00:00:00Z", 17)), \
-             patch.object(dashboard_server, "_parse_activity_log", return_value={"llm_calls_avoided": 9, "est_tokens_saved": 3210}), \
+             patch.object(dashboard_server, "_parse_activity_log", return_value={"llm_calls_avoided": 9, "hard_tokens_saved": 3210, "est_tokens_saved": 3210, "context_recalls": 4, "context_tokens_recovered": 1800, "injection_tokens": 450, "compression_gain_tokens": 1350, "compression_ratio": 4.0}), \
              patch.object(dashboard_server, "_list_logs", return_value=[]), \
              patch.object(dashboard_server, "open_db", return_value=conn), \
              patch("memory.servers.dashboard_server.os.path.exists", return_value=True), \
@@ -69,7 +69,11 @@ class TestDashboardServices(unittest.TestCase):
         self.assertEqual(payload["ollama"]["start_command"], "ollama serve")
         self.assertEqual(payload["ollama"]["start_endpoint"], "/ops/ollama/start")
         self.assertEqual(payload["efficiency"]["llm_calls_avoided"], 9)
+        self.assertEqual(payload["efficiency"]["hard_tokens_saved"], 3210)
         self.assertEqual(payload["efficiency"]["est_tokens_saved"], 3210)
+        self.assertEqual(payload["efficiency"]["context_recalls"], 4)
+        self.assertEqual(payload["efficiency"]["compression_gain_tokens"], 1350)
+        self.assertEqual(payload["efficiency"]["compression_ratio"], 4.0)
         self.assertIn("chars/4", payload["efficiency"]["method"])
         self.assertEqual(payload["memory"]["total_sessions"], 12)
         self.assertEqual(payload["memory"]["total_facts"], 34)
@@ -155,10 +159,11 @@ class TestDashboardServices(unittest.TestCase):
 
 
 class TestDashboardActivityStats(unittest.TestCase):
-    def test_parse_activity_log_sums_memory_answer_savings(self):
+    def test_parse_activity_log_sums_memory_answer_and_injection_savings(self):
         with tempfile.NamedTemporaryFile(mode="w+", suffix=".log") as tmp:
             tmp.write(json.dumps({"action": "memory_answer", "tokens_saved_estimate": 120}) + "\n")
             tmp.write(json.dumps({"action": "memory_answer", "tokens_saved_estimate": 80}) + "\n")
+            tmp.write(json.dumps({"action": "memory_injection", "recalled_context_tokens_estimate": 500, "injection_tokens_estimate": 125, "compression_gain_tokens_estimate": 375}) + "\n")
             tmp.write(json.dumps({"action": "processed", "tokens_saved_estimate": 999}) + "\n")
             tmp.flush()
 
@@ -167,14 +172,23 @@ class TestDashboardActivityStats(unittest.TestCase):
                 dashboard_server._ACTIVITY_STATS_CACHE = {
                     "mtime": None,
                     "size": None,
-                    "stats": {"llm_calls_avoided": 0, "est_tokens_saved": 0},
+                    "stats": dashboard_server._empty_activity_stats(),
                 }
                 with patch.object(dashboard_server, "_ACTIVITY_LOG_PATH", tmp.name):
                     payload = dashboard_server._parse_activity_log()
             finally:
                 dashboard_server._ACTIVITY_STATS_CACHE = old_cache
 
-        self.assertEqual(payload, {"llm_calls_avoided": 2, "est_tokens_saved": 200})
+        self.assertEqual(payload, {
+            "llm_calls_avoided": 2,
+            "hard_tokens_saved": 200,
+            "est_tokens_saved": 200,
+            "context_recalls": 1,
+            "context_tokens_recovered": 500,
+            "injection_tokens": 125,
+            "compression_gain_tokens": 375,
+            "compression_ratio": 4.0,
+        })
 
     def test_parse_performance_activity_log_collects_recent_latency_samples(self):
         with tempfile.NamedTemporaryFile(mode="w+", suffix=".log") as tmp:
@@ -292,6 +306,10 @@ class TestDashboardHtml(unittest.TestCase):
         self.assertIn("id=\"panel-session-memory\"", html)
         self.assertIn("id=\"t-memory-answers\"", html)
         self.assertIn("id=\"t-token-saved\"", html)
+        self.assertIn("id=\"t-context-recalls\"", html)
+        self.assertIn("id=\"t-context-recovered\"", html)
+        self.assertIn("id=\"t-context-injected\"", html)
+        self.assertIn("id=\"t-context-compression\"", html)
         self.assertIn("id=\"tb-session-memory\"", html)
         self.assertIn("id=\"t-session-memory\"", html)
         self.assertIn("switchTab('session-memory')", html)
@@ -302,9 +320,9 @@ class TestDashboardHtml(unittest.TestCase):
         self.assertIn("id=\"ch-perf-embed\"", html)
         self.assertIn("id=\"ch-perf-search\"", html)
         self.assertIn("id=\"ch-perf-daemon\"", html)
-        self.assertIn("Prompt Embedding ms", html)
-        self.assertIn("Memory Search ms", html)
-        self.assertIn("Daemon Session Extraction ms", html)
+        self.assertIn("Prompt Embedding Latency", html)
+        self.assertIn("Memory Search Latency", html)
+        self.assertIn("Daemon Session Extraction Duration", html)
         self.assertIn("Start Ollama", html)
         self.assertIn("id=\"t-ollama\"", html)
         self.assertIn("id=\"t-ollama-default-model\"", html)

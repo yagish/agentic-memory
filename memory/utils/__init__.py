@@ -6,6 +6,7 @@ from memory.utils.logger import (
     error_log,
     estimate_tokens,
     log_memory_answer,
+    log_memory_injection,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "error_log",
     "estimate_tokens",
     "log_memory_answer",
+    "log_memory_injection",
 ]

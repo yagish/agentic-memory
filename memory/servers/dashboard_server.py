@@ -30,10 +30,25 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 RECALL_SERVER_URL = f"http://127.0.0.1:{RECALL_PORT}"
 MEMORY_API_LABEL = "Memory Search Engine"
 _ACTIVITY_LOG_PATH = os.path.expanduser("~/.memory/activity.log")
+
+
+def _empty_activity_stats() -> dict[str, int | float]:
+    return {
+        "llm_calls_avoided": 0,
+        "hard_tokens_saved": 0,
+        "est_tokens_saved": 0,
+        "context_recalls": 0,
+        "context_tokens_recovered": 0,
+        "injection_tokens": 0,
+        "compression_gain_tokens": 0,
+        "compression_ratio": 0.0,
+    }
+
+
 _ACTIVITY_STATS_CACHE = {
     "mtime": None,
     "size": None,
-    "stats": {"llm_calls_avoided": 0, "est_tokens_saved": 0},
+    "stats": _empty_activity_stats(),
 }
 _PERFORMANCE_STATS_CACHE = {
     "mtime": None,
@@ -284,18 +299,18 @@ def _parse_daemon_log() -> tuple[str | None, int]:
 
 def _parse_activity_log() -> dict:
     if not os.path.exists(_ACTIVITY_LOG_PATH):
-        return {"llm_calls_avoided": 0, "est_tokens_saved": 0}
+        return _empty_activity_stats()
 
     try:
         mtime = os.path.getmtime(_ACTIVITY_LOG_PATH)
         size = os.path.getsize(_ACTIVITY_LOG_PATH)
     except OSError:
-        return {"llm_calls_avoided": 0, "est_tokens_saved": 0}
+        return _empty_activity_stats()
 
     if _ACTIVITY_STATS_CACHE["mtime"] == mtime and _ACTIVITY_STATS_CACHE["size"] == size:
         return dict(_ACTIVITY_STATS_CACHE["stats"])
 
-    stats = {"llm_calls_avoided": 0, "est_tokens_saved": 0}
+    stats = _empty_activity_stats()
     try:
         with open(_ACTIVITY_LOG_PATH) as handle:
             for line in handle:
@@ -306,15 +321,35 @@ def _parse_activity_log() -> dict:
                     payload = json.loads(line)
                 except Exception:
                     continue
-                if payload.get("action") != "memory_answer":
+                action = payload.get("action")
+                if action == "memory_answer":
+                    stats["llm_calls_avoided"] += 1
+                    try:
+                        saved = int(payload.get("tokens_saved_estimate") or 0)
+                    except (TypeError, ValueError):
+                        saved = 0
+                    stats["hard_tokens_saved"] += saved
+                    stats["est_tokens_saved"] += saved
                     continue
-                stats["llm_calls_avoided"] += 1
-                try:
-                    stats["est_tokens_saved"] += int(payload.get("tokens_saved_estimate") or 0)
-                except (TypeError, ValueError):
-                    pass
+                if action == "memory_injection":
+                    stats["context_recalls"] += 1
+                    try:
+                        stats["context_tokens_recovered"] += int(payload.get("recalled_context_tokens_estimate") or 0)
+                    except (TypeError, ValueError):
+                        pass
+                    try:
+                        stats["injection_tokens"] += int(payload.get("injection_tokens_estimate") or 0)
+                    except (TypeError, ValueError):
+                        pass
+                    try:
+                        stats["compression_gain_tokens"] += int(payload.get("compression_gain_tokens_estimate") or 0)
+                    except (TypeError, ValueError):
+                        pass
     except Exception:
-        return {"llm_calls_avoided": 0, "est_tokens_saved": 0}
+        return _empty_activity_stats()
+
+    if stats["injection_tokens"] > 0:
+        stats["compression_ratio"] = round(stats["context_tokens_recovered"] / stats["injection_tokens"], 2)
 
     _ACTIVITY_STATS_CACHE["mtime"] = mtime
     _ACTIVITY_STATS_CACHE["size"] = size
@@ -460,7 +495,7 @@ def get_services() -> dict:
     ollama_running, ollama_model, ollama_installed_models = _check_ollama()
     memory_search_engine = _check_recall_server()
     last_run_iso, facts_extracted_total = _parse_daemon_log()
-    efficiency = _parse_activity_log()
+    efficiency = {**_empty_activity_stats(), **_parse_activity_log()}
     performance = _parse_performance_activity_log()
 
     total_sessions = 0
@@ -518,8 +553,8 @@ def get_services() -> dict:
         "logs": _list_logs(),
         "efficiency": {
             **efficiency,
-            "metric": "estimated_tokens_saved_via_memory_answers",
-            "method": "prompt_tokens + answer_tokens using ~chars/4 heuristic for direct memory answers",
+            "metric": "hard_token_savings_and_context_compression",
+            "method": "Direct answers count prompt_tokens + answer_tokens; injections estimate recalled context, injected context, and compression gain using a ~chars/4 heuristic.",
         },
         "performance": performance.get("summary", {}),
         "memory": {
