@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from memory.vectors import cosine_distance, pack_vector
 from memory.db._utils import _json_loads, _utc_now
-from memory.db.typed_memory_fts import annotate_keyword_rows, index_session_memory_fts, _build_match_query
+from memory.db.typed_memory_fts import annotate_keyword_rows, delete_fts_rows, index_session_memory_fts, _build_match_query
 
 
 def _session_memory_row_to_memory_row(row: sqlite3.Row, *, similarity: float | None = None) -> dict:
@@ -143,3 +144,27 @@ def search_session_memory_fts(
         payload["keyword_rank"] = float(row["keyword_rank"])
         results.append(payload)
     return annotate_keyword_rows(results)
+
+
+def prune_stale_session_memory(
+    conn: sqlite3.Connection,
+    *,
+    days: int = 30,
+    now: datetime | None = None,
+) -> int:
+    """Delete session-memory summaries older than `days` days."""
+    cutoff = ((now or datetime.now(timezone.utc)) - timedelta(days=days)).isoformat()
+    stale_ids = [
+        row["id"]
+        for row in conn.execute(
+            "SELECT id FROM session_memory WHERE datetime(updated_at) < datetime(?)",
+            (cutoff,),
+        ).fetchall()
+    ]
+    cursor = conn.execute(
+        "DELETE FROM session_memory WHERE datetime(updated_at) < datetime(?)",
+        (cutoff,),
+    )
+    delete_fts_rows(conn, "session_memory_fts", stale_ids)
+    conn.commit()
+    return cursor.rowcount

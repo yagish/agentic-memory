@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from memory.vectors import pack_vector
 from memory.db._utils import _json_loads, _utc_now
@@ -84,3 +85,19 @@ def get_working_memory(conn: sqlite3.Connection, *, session_id: str) -> dict | N
     if row is None:
         return None
     return _working_memory_row_to_memory_row(row, similarity=1.0)
+
+
+def prune_stale_working_memory(
+    conn: sqlite3.Connection,
+    *,
+    days: int = 7,
+    now: datetime | None = None,
+) -> int:
+    """Delete working-memory snapshots older than `days` days."""
+    cutoff = ((now or datetime.now(timezone.utc)) - timedelta(days=days)).isoformat()
+    cursor = conn.execute(
+        "DELETE FROM working_memory WHERE datetime(updated_at) < datetime(?)",
+        (cutoff,),
+    )
+    conn.commit()
+    return cursor.rowcount

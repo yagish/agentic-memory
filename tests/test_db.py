@@ -3,6 +3,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from memory.db import (
@@ -15,6 +16,8 @@ from memory.db import (
     log_retrieval,
     open_db,
     get_session_by_id,
+    prune_stale_session_memory,
+    prune_stale_working_memory,
     search,
     search_episodic_fts,
     search_session_fts,
@@ -409,6 +412,105 @@ class TestFactAndEpisodeStorage(unittest.TestCase):
         results = search_session_memory_fts(self.conn, "lunarflag", limit=2)
         self.assertEqual(results[0]["title"], "Handoff")
         self.assertTrue(results[0]["keyword_hit"])
+
+
+class TestShortTermMemoryPruning(unittest.TestCase):
+    def setUp(self):
+        self.conn = init_db(":memory:")
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_working_memory_prune_deletes_only_rows_older_than_ttl(self):
+        upsert_working_memory(
+            self.conn,
+            session_id="stale-session",
+            current_goal="Finish auth refactor",
+            current_focus="Old focus",
+            next_step="Resume later",
+            status="paused",
+            updated_at="2026-01-01T00:00:00Z",
+            details={"active_tasks": ["old-task"]},
+        )
+        upsert_working_memory(
+            self.conn,
+            session_id="fresh-session",
+            current_goal="Finish auth refactor",
+            current_focus="Fresh focus",
+            next_step="Write tests",
+            status="in_progress",
+            updated_at="2026-01-20T00:00:00Z",
+            details={"active_tasks": ["fresh-task"]},
+        )
+
+        deleted = prune_stale_working_memory(
+            self.conn,
+            days=7,
+            now=datetime(2026, 1, 21, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(deleted, 1)
+        remaining = self.conn.execute(
+            "SELECT session_id FROM working_memory ORDER BY session_id"
+        ).fetchall()
+        self.assertEqual([row["session_id"] for row in remaining], ["fresh-session"])
+
+    def test_working_memory_prune_keeps_row_at_exact_cutoff(self):
+        upsert_working_memory(
+            self.conn,
+            session_id="boundary-session",
+            current_goal="Ship feature",
+            current_focus="Boundary coverage",
+            next_step="Resume tomorrow",
+            status="paused",
+            updated_at="2026-01-14T00:00:00Z",
+            details={"active_tasks": ["boundary-task"]},
+        )
+
+        deleted = prune_stale_working_memory(
+            self.conn,
+            days=7,
+            now=datetime(2026, 1, 21, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(deleted, 0)
+        remaining = self.conn.execute("SELECT COUNT(*) FROM working_memory").fetchone()[0]
+        self.assertEqual(remaining, 1)
+
+    def test_session_memory_prune_deletes_rows_and_removes_fts_entries(self):
+        upsert_session_memory(
+            self.conn,
+            session_id="stale-session",
+            title="Old handoff",
+            summary="Paused work long ago.",
+            left_off_at="Waiting on old lunarflag approval.",
+            updated_at="2026-01-01T00:00:00Z",
+            details={"next_steps": ["Resume after lunarflag approval"]},
+        )
+        upsert_session_memory(
+            self.conn,
+            session_id="fresh-session",
+            title="Fresh handoff",
+            summary="Recent work is still active.",
+            left_off_at="Continue after review.",
+            updated_at="2026-01-20T00:00:00Z",
+            details={"next_steps": ["Resume after starlight review"]},
+        )
+
+        deleted = prune_stale_session_memory(
+            self.conn,
+            days=7,
+            now=datetime(2026, 1, 21, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(deleted, 1)
+        remaining = self.conn.execute(
+            "SELECT session_id FROM session_memory ORDER BY session_id"
+        ).fetchall()
+        self.assertEqual([row["session_id"] for row in remaining], ["fresh-session"])
+        self.assertEqual(search_session_memory_fts(self.conn, "lunarflag", limit=5), [])
+        fresh_hits = search_session_memory_fts(self.conn, "starlight", limit=5)
+        self.assertEqual([row["session_id"] for row in fresh_hits], ["fresh-session"])
 
 
 class TestCompatibilityNoops(unittest.TestCase):

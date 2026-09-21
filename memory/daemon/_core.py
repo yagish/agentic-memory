@@ -23,6 +23,8 @@ CPU_THRESHOLD = 70
 
 _FACT_TTL_DAYS = int(os.environ.get("MEMORY_FACT_TTL_DAYS", "180"))
 _EPISODIC_TTL_DAYS = int(os.environ.get("MEMORY_EPISODIC_TTL_DAYS", "90"))
+_WORKING_MEMORY_TTL_DAYS = int(os.environ.get("MEMORY_WORKING_MEMORY_TTL_DAYS", "7"))
+_SESSION_MEMORY_TTL_DAYS = int(os.environ.get("MEMORY_SESSION_MEMORY_TTL_DAYS", "30"))
 
 # How much raw transcript the Ollama summarizer sees (input token budget).
 _COMPACT_INPUT_CHARS = int(os.environ.get("MEMORY_COMPACT_INPUT_CHARS", "40000"))

@@ -214,6 +214,41 @@ class TestDaemonOnceMode(unittest.TestCase):
             os.unlink(tmp_path)
 
 
+class TestDaemonPruning(unittest.TestCase):
+    def setUp(self):
+        self.conn = init_db(":memory:")
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_prune_stale_memories_includes_short_term_memory_cleanup(self):
+        import memory.daemon.pruning as pruning_module
+
+        with patch.object(pruning_module, "prune_stale_facts", return_value=1) as prune_facts, \
+             patch.object(pruning_module, "prune_stale_episodic", return_value=2) as prune_episodic, \
+             patch.object(pruning_module, "prune_stale_working_memory", return_value=3) as prune_working, \
+             patch.object(pruning_module, "prune_stale_session_memory", return_value=4) as prune_session, \
+             patch.object(pruning_module, "_daemon_log") as daemon_log, \
+             patch.object(pruning_module, "activity_log") as activity_log:
+            pruning_module._prune_stale_memories(self.conn)
+
+        prune_facts.assert_called_once_with(self.conn, days=pruning_module._FACT_TTL_DAYS)
+        prune_episodic.assert_called_once_with(self.conn, days=pruning_module._EPISODIC_TTL_DAYS)
+        prune_working.assert_called_once_with(self.conn, days=pruning_module._WORKING_MEMORY_TTL_DAYS)
+        prune_session.assert_called_once_with(self.conn, days=pruning_module._SESSION_MEMORY_TTL_DAYS)
+        daemon_log.assert_called_once_with(
+            "pruned 1 stale facts, 2 stale episodes, 3 stale working-memory snapshots, 4 stale session summaries"
+        )
+        activity_log.assert_called_once_with(
+            "daemon",
+            "prune",
+            deleted_facts=1,
+            deleted_episodes=2,
+            deleted_working_memory=3,
+            deleted_session_memory=4,
+        )
+
+
 class TestStructuredExtractionHelpers(unittest.TestCase):
     def setUp(self):
         self.conn = init_db(":memory:")
