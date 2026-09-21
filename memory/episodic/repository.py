@@ -151,6 +151,7 @@ def retrieve_episodic_memories(
     min_similarity: float = _MIN_SIMILARITY,
     limit: int = 3,
     source: str = "manual_debug",
+    session_ids: set[str] | list[str] | tuple[str, ...] | None = None,
 ) -> list[dict]:
     """Retrieve semantically similar episodic memories with dedicated logging."""
     log_episodic_event(
@@ -159,12 +160,15 @@ def retrieve_episodic_memories(
         query=query,
         retrieval_prompt=query,
     )
+    if session_ids is not None and not {session_id for session_id in session_ids if session_id}:
+        return []
     if query_vector is None:
         query_vector = embed_fn(query)
     results = [
-        row for row in search_episodic_semantic(conn, query_vector, limit=limit)
+        row
+        for row in search_episodic_semantic(conn, query_vector, limit=max(limit * 3, limit), session_ids=session_ids)
         if row.get("similarity", 0.0) >= min_similarity
-    ]
+    ][:limit]
     log_episodic_event(
         "retrieve_result",
         source=source,

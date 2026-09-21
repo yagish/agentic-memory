@@ -6,6 +6,7 @@ import sqlite3
 
 from memory.vectors import cosine_distance, embed, pack_vector
 from memory.db._utils import _json_loads, _session_text_from_turns, _utc_now
+from memory.db.typed_memory_fts import annotate_keyword_rows, index_session_fts, _build_match_query
 
 
 _PROJECT_CONTEXT_FIELDS = ("project_id", "repo_root", "cwd", "git_remote", "git_branch")
@@ -115,6 +116,7 @@ def upsert_session(
             normalized_project.get("git_branch"),
         ),
     )
+    index_session_fts(conn, session_id=session_id, transcript=transcript, compacted_text=None)
     conn.commit()
 
 
@@ -130,6 +132,46 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict]:
         (f"%{query}%", limit),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def search_session_fts(
+    conn: sqlite3.Connection,
+    query: str,
+    limit: int = 10,
+    *,
+    session_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+) -> list[dict]:
+    match_query = _build_match_query(query)
+    if not match_query:
+        return []
+    allowed_session_ids = None if session_ids is None else sorted({session_id for session_id in session_ids if session_id})
+    params: list[object] = [match_query]
+    session_clause = ""
+    if allowed_session_ids is not None:
+        if not allowed_session_ids:
+            return []
+        placeholders = ", ".join("?" for _ in allowed_session_ids)
+        session_clause = f" AND sessions.session_id IN ({placeholders})"
+        params.extend(allowed_session_ids)
+    sql = f"""
+        SELECT sessions.session_id, sessions.agent, sessions.updated_at,
+               sessions.project_id, sessions.repo_root, sessions.cwd, sessions.git_remote, sessions.git_branch,
+               bm25(sessions_fts) AS keyword_rank
+        FROM sessions_fts
+        JOIN sessions ON sessions.session_id = sessions_fts.session_id
+        WHERE sessions_fts MATCH ?{session_clause}
+        ORDER BY keyword_rank, sessions.updated_at DESC
+    """
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
+    results: list[dict] = []
+    for row in rows:
+        payload = dict(row)
+        payload["keyword_rank"] = float(row["keyword_rank"])
+        results.append(payload)
+    return annotate_keyword_rows(results)
 
 
 def semantic_search(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict]:
@@ -199,6 +241,9 @@ def save_session_compaction(conn: sqlite3.Connection, session_id: str, compacted
         "UPDATE sessions SET compacted_text = ? WHERE session_id = ?",
         (compacted_text, session_id),
     )
+    row = conn.execute("SELECT transcript FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    transcript = row["transcript"] if row else None
+    index_session_fts(conn, session_id=session_id, transcript=transcript, compacted_text=compacted_text)
     conn.commit()
 
 

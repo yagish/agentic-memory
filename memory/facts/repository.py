@@ -12,7 +12,7 @@ import sqlite3
 from collections.abc import Iterable
 
 from memory.contracts import ExtractedFact
-from memory.db import upsert_fact
+from memory.facts.scope import classify_fact_scope, ensure_scope_tag
 from memory.facts.text import build_canonical_fact_content, generate_semantic_fact_text
 from memory.facts.extractor import normalize_extracted_facts
 
@@ -48,7 +48,14 @@ def build_fact_tags(fact: ExtractedFact) -> list[str]:
         tags.append("has:source_quote")
     if fact.confidence is not None:
         tags.append("has:confidence")
-    return tags
+    return ensure_scope_tag(
+        tags,
+        entity=fact.entity,
+        attribute=fact.attribute,
+        value=fact.value,
+        source_quote=fact.source_quote,
+        llm_scope=fact.scope,
+    )
 
 
 def save_extracted_facts(
@@ -65,6 +72,8 @@ def save_extracted_facts(
     - conflicts are preserved as separate rows
     - insertion order matches first semantic appearance
     """
+    from memory.db.facts import upsert_fact
+
     saved_ids: list[str] = []
     for fact in normalize_extracted_facts(list(facts)):
         fact_id = upsert_fact(
@@ -110,6 +119,13 @@ def list_session_facts(conn: sqlite3.Connection, *, session_id: str) -> list[dic
                 "attribute": row["attribute"],
                 "value": row["value"],
                 "tags": tags or [],
+                "fact_scope": classify_fact_scope(
+                    entity=row["entity"],
+                    attribute=row["attribute"],
+                    value=row["value"],
+                    tags=tags or [],
+                    semantic_content=row["semantic_content"],
+                ),
                 "source": row["source"],
                 "session_id": row["session_id"],
                 "created_at": row["created_at"],

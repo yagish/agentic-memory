@@ -147,11 +147,15 @@ Rules:
 - Ignore all assistant statements, guesses, and corrections.
 - Output a raw JSON array only. No prose. No markdown fences.
 - Every fact must include: entity, attribute, value, source_quote.
-- Optional fields allowed: confidence, evidence.
+- Optional fields allowed: confidence, evidence, scope.
+- If you include scope, it must be exactly "global" or "project".
 - Use concise, normalized, stable entity names.
 - Use snake_case for attributes.
 - For personal profile facts and user preferences, prefer entity "user".
 - A durable fact is usually user identity/profile/preference information, or explicit durable repo/project metadata stated by the user.
+- Scope guidance: use scope "global" for portable user facts likely to stay useful across repositories (identity, employer/company, role/title, timezone, editor, shell, package manager, stable preferences).
+- Scope guidance: use scope "project" for repo/project/codebase facts, or when the fact is tied to "this project/repo/codebase/workspace".
+- If scope is unclear, either omit it or use "project".
 - A durable fact is not a command, a request, a question, a task, a bug report, a temporary plan, a tool trace, or a one-off instruction.
 - Treat anything phrased as something to do now as non-factual unless it also explicitly states durable background information.
 - When a line contains both a durable fact and a request, extract only the durable fact.
@@ -191,7 +195,7 @@ Input:
 User: My name is Yash.
 Output:
 [
-  {{"entity": "user", "attribute": "name", "value": "Yash", "source_quote": "My name is Yash."}}
+  {{"entity": "user", "attribute": "name", "value": "Yash", "source_quote": "My name is Yash.", "scope": "global"}}
 ]
 
 Input:
@@ -216,7 +220,7 @@ Input:
 User: I prefer concise answers.
 Output:
 [
-  {{"entity": "user", "attribute": "response_style", "value": "concise", "source_quote": "I prefer concise answers."}}
+  {{"entity": "user", "attribute": "response_style", "value": "concise", "source_quote": "I prefer concise answers.", "scope": "global"}}
 ]
 
 Input:
@@ -246,8 +250,8 @@ User: The repo name is agentic-memory.
 User: The default branch is main.
 Output:
 [
-  {{"entity": "repo", "attribute": "name", "value": "agentic-memory", "source_quote": "The repo name is agentic-memory."}},
-  {{"entity": "repo", "attribute": "default_branch", "value": "main", "source_quote": "The default branch is main."}}
+  {{"entity": "repo", "attribute": "name", "value": "agentic-memory", "source_quote": "The repo name is agentic-memory.", "scope": "project"}},
+  {{"entity": "repo", "attribute": "default_branch", "value": "main", "source_quote": "The default branch is main.", "scope": "project"}}
 ]
 
 Input:

@@ -128,6 +128,7 @@ def retrieve_session_memories(
     limit: int = 2,
     source: str = "manual_debug",
     exclude_session_id: str | None = None,
+    session_ids: set[str] | list[str] | tuple[str, ...] | None = None,
 ) -> list[dict]:
     log_session_memory_event(
         "retrieve_start",
@@ -136,11 +137,18 @@ def retrieve_session_memories(
         retrieval_prompt=query,
         exclude_session_id=exclude_session_id,
     )
+    if session_ids is not None and not {session_id for session_id in session_ids if session_id}:
+        return []
     if query_vector is None:
         query_vector = embed_fn(query)
     results = [
         row
-        for row in search_session_memory_semantic(conn, query_vector, limit=max(limit * 3, limit))
+        for row in search_session_memory_semantic(
+            conn,
+            query_vector,
+            limit=max(limit * 3, limit),
+            session_ids=session_ids,
+        )
         if row.get("similarity", 0.0) >= min_similarity and row.get("session_id") != exclude_session_id
     ][:limit]
     log_session_memory_event(

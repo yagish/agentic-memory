@@ -8,6 +8,7 @@ from memory.db.sessions import (
     mark_session_processed,
     save_session_compaction,
     search,
+    search_session_fts,
     semantic_search,
     upsert_session,
 )
@@ -25,11 +26,12 @@ from memory.db.episodic import (
     insert_episodic,
     list_recent_episodic,
     prune_stale_episodic,
+    search_episodic_fts,
     search_episodic_semantic,
 )
-from memory.db.procedural import insert_procedural, search_procedural_semantic
+from memory.db.procedural import insert_procedural, search_procedural_fts, search_procedural_semantic
 from memory.db.working_memory import get_working_memory, upsert_working_memory
-from memory.db.session_memory import search_session_memory_semantic, upsert_session_memory
+from memory.db.session_memory import search_session_memory_fts, search_session_memory_semantic, upsert_session_memory
 from memory.db.telemetry import (
     get_latest_system_stats,
     get_telemetry_table_counts,
@@ -52,13 +54,13 @@ __all__ = [
     "log_retrieval",
     "get_latest_session", "get_session_by_id", "get_unprocessed_sessions",
     "hybrid_search", "mark_session_processed", "save_session_compaction",
-    "search", "semantic_search", "upsert_session",
+    "search", "search_session_fts", "semantic_search", "upsert_session",
     "delete_fact", "insert_fact", "list_facts", "prune_stale_facts",
     "search_facts", "search_facts_semantic", "update_fact", "upsert_fact",
-    "insert_episodic", "list_recent_episodic", "prune_stale_episodic", "search_episodic_semantic",
-    "insert_procedural", "search_procedural_semantic",
+    "insert_episodic", "list_recent_episodic", "prune_stale_episodic", "search_episodic_fts", "search_episodic_semantic",
+    "insert_procedural", "search_procedural_fts", "search_procedural_semantic",
     "get_working_memory", "upsert_working_memory",
-    "search_session_memory_semantic", "upsert_session_memory",
+    "search_session_memory_fts", "search_session_memory_semantic", "upsert_session_memory",
     "insert_recall_event", "list_recall_events",
     "insert_retrieval_lane_metric", "list_retrieval_lane_metrics",
     "insert_latency_breakdown", "list_recent_latency_breakdowns", "summarize_latency_breakdowns",

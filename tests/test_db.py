@@ -16,9 +16,13 @@ from memory.db import (
     open_db,
     get_session_by_id,
     search,
+    search_episodic_fts,
+    search_session_fts,
     search_episodic_semantic,
     search_facts_semantic,
+    search_procedural_fts,
     search_procedural_semantic,
+    search_session_memory_fts,
     search_session_memory_semantic,
     semantic_search,
     upsert_session,
@@ -163,6 +167,25 @@ class TestSessionStorage(unittest.TestCase):
         self.assertEqual(session["git_remote"], "git@github.com:example/demo.git")
         self.assertEqual(session["git_branch"], "main")
 
+    def test_session_fts_search_indexes_transcript_text_without_returning_snippets(self):
+        upsert_session(
+            self.conn,
+            "s1",
+            "claude",
+            [
+                {"role": "user", "content": "Need to resume the frostbyte rollout."},
+                {"role": "assistant", "content": "We paused before the gate check."},
+            ],
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:01:00Z",
+        )
+
+        results = search_session_fts(self.conn, "frostbyte", limit=2)
+        self.assertEqual([item["session_id"] for item in results], ["s1"])
+        self.assertTrue(results[0]["keyword_hit"])
+        self.assertNotIn("snippet", results[0])
+        self.assertNotIn("transcript", results[0])
+
     def test_semantic_search_returns_ranked_rows(self):
         upsert_session(
             self.conn,
@@ -264,6 +287,21 @@ class TestFactAndEpisodeStorage(unittest.TestCase):
         results = search_episodic_semantic(self.conn, embed("login middleware bug"), limit=2)
         self.assertEqual(results[0]["title"], "Fixed login loop")
 
+    def test_episode_fts_search_indexes_anchor_fields(self):
+        insert_episodic(
+            self.conn,
+            session_id="s1",
+            title="Release decision",
+            abstract="Captured the release decision.",
+            happened_at="2026-01-01T00:00:00Z",
+            details={"decisions": ["Enable frostbyte gate after smoke tests"]},
+            embedding=embed("release decision"),
+        )
+
+        results = search_episodic_fts(self.conn, "frostbyte", limit=2)
+        self.assertEqual(results[0]["title"], "Release decision")
+        self.assertTrue(results[0]["keyword_hit"])
+
     def test_semantic_procedural_search(self):
         insert_procedural(
             self.conn,
@@ -285,6 +323,21 @@ class TestFactAndEpisodeStorage(unittest.TestCase):
         )
         results = search_procedural_semantic(self.conn, embed("how do i deploy the web service"), limit=2)
         self.assertEqual(results[0]["title"], "Web deploy workflow")
+
+    def test_procedural_fts_search_indexes_step_anchors(self):
+        insert_procedural(
+            self.conn,
+            session_id="s1",
+            title="Ops checklist",
+            summary="Operational checklist.",
+            updated_at="2026-01-01T00:00:00Z",
+            details={"steps": ["Run quartzsync before cutover"]},
+            embedding=embed("ops checklist"),
+        )
+
+        results = search_procedural_fts(self.conn, "quartzsync", limit=2)
+        self.assertEqual(results[0]["title"], "Ops checklist")
+        self.assertTrue(results[0]["keyword_hit"])
 
     def test_working_memory_upsert_replaces_existing_session_snapshot(self):
         first_id = upsert_working_memory(
@@ -340,6 +393,22 @@ class TestFactAndEpisodeStorage(unittest.TestCase):
 
         results = search_session_memory_semantic(self.conn, embed("pick up auth middleware refactor where I left off"), limit=2)
         self.assertEqual(results[0]["title"], "Auth middleware refactor")
+
+    def test_session_memory_fts_search_indexes_next_steps(self):
+        upsert_session_memory(
+            self.conn,
+            session_id="s1",
+            title="Handoff",
+            summary="Paused the rollout.",
+            left_off_at="Waiting for the next session.",
+            updated_at="2026-01-01T00:00:00Z",
+            details={"next_steps": ["Resume after lunarflag approval"]},
+            embedding=embed("handoff rollout"),
+        )
+
+        results = search_session_memory_fts(self.conn, "lunarflag", limit=2)
+        self.assertEqual(results[0]["title"], "Handoff")
+        self.assertTrue(results[0]["keyword_hit"])
 
 
 class TestCompatibilityNoops(unittest.TestCase):

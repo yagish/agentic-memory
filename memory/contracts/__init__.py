@@ -8,6 +8,7 @@ Pydantic contracts.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -51,6 +52,19 @@ def _normalize_working_status(value: str) -> str:
     return normalized
 
 
+def _normalize_fact_scope(value: str | None) -> Literal["global", "project"] | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower().replace("_", "-")
+    if not normalized:
+        return None
+    if normalized in {"global", "portable", "user"}:
+        return "global"
+    if normalized in {"project", "project-specific", "repo", "repository"}:
+        return "project"
+    return None
+
+
 class ExtractedFact(BaseModel):
     """One fact emitted by the extractor before persistence/provenance is added.
 
@@ -67,6 +81,7 @@ class ExtractedFact(BaseModel):
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     evidence: str | None = None
     source_quote: str | None = None
+    scope: Literal["global", "project"] | None = None
 
     @field_validator("entity", "attribute", mode="before")
     @classmethod
@@ -79,6 +94,11 @@ class ExtractedFact(BaseModel):
     def _strip_text_fields(cls, value: str | None) -> str | None:
         # Trim harmless outer whitespace but preserve the actual semantic text.
         return _strip_text(value)
+
+    @field_validator("scope", mode="before")
+    @classmethod
+    def _normalize_scope_field(cls, value: str | None) -> Literal["global", "project"] | None:
+        return _normalize_fact_scope(value)
 
 
 class FactMemory(BaseModel):

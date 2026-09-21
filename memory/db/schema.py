@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import sqlite3
 
+from memory.db.typed_memory_fts import ensure_typed_memory_fts
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
   session_id           TEXT PRIMARY KEY,
@@ -205,6 +207,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA)
     conn.commit()
     _apply_migrations(conn)
+    ensure_typed_memory_fts(conn)
 
 
 def bootstrap_db(path: str) -> sqlite3.Connection:

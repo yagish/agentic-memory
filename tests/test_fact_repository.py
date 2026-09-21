@@ -12,6 +12,7 @@ from memory.facts.repository import (
     list_session_facts,
     save_extracted_facts,
 )
+from memory.facts.scope import classify_fact_scope
 
 
 class TestFactRepository(unittest.TestCase):
@@ -42,6 +43,7 @@ class TestFactRepository(unittest.TestCase):
                 "attribute:name",
                 "has:source_quote",
                 "has:confidence",
+                "scope:global",
             ],
         )
 
@@ -65,8 +67,10 @@ class TestFactRepository(unittest.TestCase):
         self.assertEqual(rows[0]["attribute"], "name")
         self.assertEqual(rows[0]["value"], "Yash")
         self.assertEqual(rows[0]["source"], "fact_extractor")
+        self.assertEqual(rows[0]["fact_scope"], "global")
         self.assertIn("entity:user", rows[0]["tags"])
         self.assertIn("attribute:name", rows[0]["tags"])
+        self.assertIn("scope:global", rows[0]["tags"])
 
     @patch("memory.facts.text.generate_text", return_value=GenerationResult(text="My name is Yash. What is my name? Yash.", model="test-model"))
     @patch("memory.llm.inference.embed_text", return_value=[0.1, 0.2, 0.3])
@@ -84,6 +88,7 @@ class TestFactRepository(unittest.TestCase):
         rows = list_session_facts(self.conn, session_id="session-dup")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["content"], "user.name = Yash")
+        self.assertEqual(rows[0]["fact_scope"], "global")
 
     @patch(
         "memory.facts.text.generate_text",
@@ -111,6 +116,23 @@ class TestFactRepository(unittest.TestCase):
         rows = list_session_facts(self.conn, session_id="session-conflict")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["content"], "user.timezone = EST")
+        self.assertEqual(rows[0]["fact_scope"], "global")
+
+    def test_classify_fact_scope_defaults_uncertain_to_project(self):
+        fact = ExtractedFact(entity="team", attribute="owner", value="platform")
+
+        self.assertEqual(classify_fact_scope(entity=fact.entity, attribute=fact.attribute, value=fact.value), "project")
+        self.assertEqual(build_fact_tags(fact)[-1], "scope:project")
+
+    def test_llm_scope_hint_applies_when_rules_are_ambiguous(self):
+        fact = ExtractedFact(entity="team", attribute="owner", value="platform", scope="global")
+
+        self.assertEqual(build_fact_tags(fact)[-1], "scope:global")
+
+    def test_project_fact_tags_repo_metadata_as_project(self):
+        fact = ExtractedFact(entity="repo", attribute="default_branch", value="main")
+
+        self.assertEqual(build_fact_tags(fact)[-1], "scope:project")
 
 
 if __name__ == "__main__":

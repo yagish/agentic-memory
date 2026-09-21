@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from memory.vectors import cosine_distance, embed, pack_vector
 from memory.db._utils import _json_loads, _utc_now
+from memory.facts.scope import classify_fact_scope, ensure_scope_tag
 
 
 def _fact_payload(
@@ -26,7 +27,16 @@ def _fact_payload(
 def _fact_dict_from_row(row: sqlite3.Row | dict) -> dict:
     from memory.facts.text import build_canonical_fact_content  # lazy: avoids circular import
     data = dict(row)
+    tags = _json_loads(data.get("tags"), [])
     data["content"] = build_canonical_fact_content(data["entity"], data["attribute"], data["value"])
+    data["tags"] = tags
+    data["fact_scope"] = classify_fact_scope(
+        entity=data.get("entity"),
+        attribute=data.get("attribute"),
+        value=data.get("value"),
+        tags=tags,
+        semantic_content=data.get("semantic_content"),
+    )
     return data
 
 
@@ -51,12 +61,19 @@ def insert_fact(
         embedding_blob = pack_vector(embed(semantic_content))
     except Exception:
         pass
+    tags = ensure_scope_tag(
+        tags,
+        entity=entity,
+        attribute=attribute,
+        value=value,
+        semantic_content=semantic_content,
+    )
     conn.execute(
         """
         INSERT INTO facts (id, entity, attribute, value, semantic_content, tags, source, session_id, created_at, updated_at, embedding)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (fact_id, entity, attribute, value, semantic_content, json.dumps(tags or []), source, session_id, now, now, embedding_blob),
+        (fact_id, entity, attribute, value, semantic_content, json.dumps(tags), source, session_id, now, now, embedding_blob),
     )
     conn.commit()
     return fact_id
@@ -80,6 +97,13 @@ def upsert_fact(
     entity, attribute, value, semantic = _fact_payload(
         entity=entity, attribute=attribute, value=value, semantic_content=semantic_content,
     )
+    tags = ensure_scope_tag(
+        tags,
+        entity=entity,
+        attribute=attribute,
+        value=value,
+        semantic_content=semantic,
+    )
     now = _utc_now()
     existing = conn.execute(
         "SELECT id, value FROM facts WHERE entity = ? AND attribute = ?",
@@ -98,14 +122,17 @@ def upsert_fact(
             INSERT INTO facts (id, entity, attribute, value, semantic_content, tags, source, session_id, created_at, updated_at, embedding)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (fact_id, entity, attribute, value, semantic, json.dumps(tags or []), source, session_id, now, now, embedding_blob),
+            (fact_id, entity, attribute, value, semantic, json.dumps(tags), source, session_id, now, now, embedding_blob),
         )
         conn.commit()
         return fact_id
 
     fact_id = existing["id"]
     if existing["value"] == value:
-        conn.execute("UPDATE facts SET updated_at = ? WHERE id = ?", (now, fact_id))
+        conn.execute(
+            "UPDATE facts SET updated_at = ?, session_id = ?, tags = ? WHERE id = ?",
+            (now, session_id, json.dumps(tags), fact_id),
+        )
     else:
         embedding_blob = None
         try:
@@ -115,10 +142,10 @@ def upsert_fact(
         conn.execute(
             """
             UPDATE facts
-            SET value = ?, semantic_content = ?, updated_at = ?, session_id = ?, embedding = ?
+            SET value = ?, semantic_content = ?, tags = ?, updated_at = ?, session_id = ?, embedding = ?
             WHERE id = ?
             """,
-            (value, semantic, now, session_id, embedding_blob, fact_id),
+            (value, semantic, json.dumps(tags), now, session_id, embedding_blob, fact_id),
         )
     conn.commit()
     return fact_id
@@ -150,6 +177,13 @@ def update_fact(
         entity=entity, attribute=attribute, value=value, semantic_content=semantic_content,
     )
     new_tags = _json_loads(existing["tags"], []) if tags is None else tags
+    new_tags = ensure_scope_tag(
+        new_tags,
+        entity=entity,
+        attribute=attribute,
+        value=value,
+        semantic_content=semantic_content,
+    )
 
     embedding_blob = None
     try:
@@ -184,10 +218,7 @@ def list_facts(conn: sqlite3.Connection, limit: int = 100) -> list[dict]:
         """,
         (limit,),
     ).fetchall()
-    return [
-        {**_fact_dict_from_row(row), "tags": _json_loads(row["tags"], [])}
-        for row in rows
-    ]
+    return [_fact_dict_from_row(row) for row in rows]
 
 
 def search_facts(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict]:
@@ -202,13 +233,10 @@ def search_facts(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[
         """,
         (f"%{query}%", limit),
     ).fetchall()
-    return [
-        {**_fact_dict_from_row(row), "tags": _json_loads(row["tags"], [])}
-        for row in rows
-    ]
+    return [_fact_dict_from_row(row) for row in rows]
 
 
-def search_facts_semantic(conn: sqlite3.Connection, query_vector: list[float], limit: int = 5) -> list[dict]:
+def search_facts_semantic(conn: sqlite3.Connection, query_vector: list[float], limit: int | None = 5) -> list[dict]:
     from memory.facts.text import build_canonical_fact_content  # lazy: avoids circular import
     rows = conn.execute(
         "SELECT id, entity, attribute, value, semantic_content, tags, source, session_id, created_at, updated_at, embedding FROM facts WHERE embedding IS NOT NULL"
@@ -225,6 +253,13 @@ def search_facts_semantic(conn: sqlite3.Connection, query_vector: list[float], l
                 "attribute": row["attribute"],
                 "value": row["value"],
                 "tags": _json_loads(row["tags"], []),
+                "fact_scope": classify_fact_scope(
+                    entity=row["entity"],
+                    attribute=row["attribute"],
+                    value=row["value"],
+                    tags=_json_loads(row["tags"], []),
+                    semantic_content=row["semantic_content"],
+                ),
                 "source": row["source"],
                 "session_id": row["session_id"],
                 "created_at": row["created_at"],
@@ -233,7 +268,7 @@ def search_facts_semantic(conn: sqlite3.Connection, query_vector: list[float], l
             }
         )
     scored.sort(key=lambda item: item["similarity"], reverse=True)
-    return scored[:limit]
+    return scored if limit is None else scored[:limit]
 
 
 def prune_stale_facts(conn: sqlite3.Connection, *, days: int = 180) -> int:
