@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import json
 import os
 import re
+import subprocess
 import sys
 import traceback
 
@@ -21,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from integrations.common import (
     DEFAULT_DB_PATH,
     decide_prompt_memory_action,
+    normalize_project_context,
     open_existing_memory_db,
     retrieve_prompt_memory,
 )
@@ -39,6 +41,7 @@ AGENT_NAME = "claude"
 class HookRequest:
     session_id: str
     prompt: str
+    project_context: dict[str, str]
 
 
 def _append_log_line(level: str, msg: str) -> None:
@@ -119,6 +122,57 @@ def _strip_xml_tags(prompt: str) -> str:
     return cleaned.strip()
 
 
+def _git_output(args: list[str], *, cwd: str) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+    output = completed.stdout.strip()
+    return output or None
+
+
+def _build_project_context(payload: dict) -> dict[str, str]:
+    workspace = payload.get("workspace") if isinstance(payload.get("workspace"), dict) else {}
+    candidates = [
+        payload.get("repo_root"),
+        payload.get("cwd"),
+        workspace.get("repo_root"),
+        workspace.get("cwd"),
+        os.getcwd(),
+    ]
+
+    repo_root = None
+    cwd = None
+    for candidate in candidates:
+        if not isinstance(candidate, str) or not candidate.strip():
+            continue
+        normalized_candidate = os.path.abspath(os.path.expanduser(candidate.strip()))
+        cwd = cwd or normalized_candidate
+        repo_root = _git_output(["rev-parse", "--show-toplevel"], cwd=normalized_candidate)
+        if repo_root:
+            break
+
+    git_base = repo_root or cwd
+    git_remote = _git_output(["config", "--get", "remote.origin.url"], cwd=git_base) if git_base else None
+    git_branch = _git_output(["rev-parse", "--abbrev-ref", "HEAD"], cwd=git_base) if git_base else None
+
+    return normalize_project_context(
+        {
+            "project_id": payload.get("project_id"),
+            "repo_root": payload.get("repo_root") or workspace.get("repo_root") or repo_root,
+            "cwd": payload.get("cwd") or workspace.get("cwd") or cwd,
+            "git_remote": payload.get("git_remote") or workspace.get("git_remote") or git_remote,
+            "git_branch": payload.get("git_branch") or workspace.get("git_branch") or payload.get("branch") or git_branch,
+        }
+    )
+
+
 def _parse_request() -> HookRequest:
     payload = json.load(sys.stdin)
     raw_sid = payload.get("session_id", "unknown")
@@ -126,6 +180,7 @@ def _parse_request() -> HookRequest:
     return HookRequest(
         session_id=_sanitize_session_id(raw_sid),
         prompt=prompt,
+        project_context=_build_project_context(payload),
     )
 
 
@@ -143,6 +198,7 @@ def _retrieve_context(conn, request: HookRequest, *, include_working_memory: boo
         conn,
         request.prompt,
         include_working_memory=include_working_memory,
+        project_context=request.project_context,
     )
 
 
@@ -157,6 +213,11 @@ def _recall_via_server(request: HookRequest, *, include_working_memory: bool) ->
             include_working_memory=include_working_memory,
             session_id=request.session_id,
             agent="claude",
+            project_id=request.project_context.get("project_id"),
+            repo_root=request.project_context.get("repo_root"),
+            cwd=request.project_context.get("cwd"),
+            git_remote=request.project_context.get("git_remote"),
+            git_branch=request.project_context.get("git_branch"),
         )
     except (ConnectionError, RuntimeError) as exc:
         _log_info(f"agent={AGENT_NAME} recall server unavailable ({exc})")

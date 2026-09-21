@@ -54,7 +54,7 @@ class TestMemoryClient(unittest.TestCase):
 
     def test_client_save_session_returns_dict(self):
         client = MemoryClient()
-        with patch("urllib.request.urlopen", return_value=_fake_response({"ok": True, "session_id": "abc"})):
+        with patch("urllib.request.urlopen", return_value=_fake_response({"ok": True, "session_id": "abc"})) as urlopen:
             result = client.save_session(
                 session_id="abc",
                 agent="cursor",
@@ -62,14 +62,38 @@ class TestMemoryClient(unittest.TestCase):
                     {"role": "user", "content": "What time is it?"},
                     {"role": "assistant", "content": "It is 12:00 PM."},
                 ],
+                repo_root="/tmp/demo-repo",
+                cwd="/tmp/demo-repo/app",
+                git_remote="git@github.com:example/demo.git",
+                git_branch="main",
             )
         self.assertEqual(result, {"ok": True, "session_id": "abc"})
+        request = urlopen.call_args.args[0]
+        payload = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(payload["project_id"], "git@github.com:example/demo.git")
+        self.assertEqual(payload["repo_root"], "/tmp/demo-repo")
+        self.assertEqual(payload["cwd"], "/tmp/demo-repo/app")
+        self.assertEqual(payload["git_remote"], "git@github.com:example/demo.git")
+        self.assertEqual(payload["git_branch"], "main")
 
     def test_client_recall_returns_dict(self):
         client = MemoryClient()
-        with patch("urllib.request.urlopen", return_value=_fake_response({"action": "answer", "answer": "Your name is Yash."})):
-            result = client.recall("what is my name?")
+        with patch("urllib.request.urlopen", return_value=_fake_response({"action": "answer", "answer": "Your name is Yash."})) as urlopen:
+            result = client.recall(
+                "what is my name?",
+                cwd="/tmp/demo-repo/app",
+                repo_root="/tmp/demo-repo",
+                git_remote="git@github.com:example/demo.git",
+                git_branch="main",
+            )
         self.assertEqual(result, {"action": "answer", "answer": "Your name is Yash."})
+        request = urlopen.call_args.args[0]
+        payload = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(payload["project_id"], "git@github.com:example/demo.git")
+        self.assertEqual(payload["repo_root"], "/tmp/demo-repo")
+        self.assertEqual(payload["cwd"], "/tmp/demo-repo/app")
+        self.assertEqual(payload["git_remote"], "git@github.com:example/demo.git")
+        self.assertEqual(payload["git_branch"], "main")
 
     def test_client_status_returns_dict(self):
         client = MemoryClient()

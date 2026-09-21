@@ -28,7 +28,14 @@ class TestPiAdapterRecall(unittest.TestCase):
             },
         ) as recall, \
         patch("integrations.pi.adapter._wake_log_info") as wake_log_info:
-            result = handle_recall({"prompt": "what is my name?", "session_id": "pi-session-1"})
+            result = handle_recall({
+                "prompt": "what is my name?",
+                "session_id": "pi-session-1",
+                "cwd": "/tmp/demo-repo/app",
+                "repo_root": "/tmp/demo-repo",
+                "git_remote": "git@github.com:example/demo.git",
+                "git_branch": "main",
+            })
 
         self.assertEqual(result["action"], "answer")
         self.assertEqual(result["answer"], "Your name is Yash.")
@@ -39,6 +46,11 @@ class TestPiAdapterRecall(unittest.TestCase):
             include_working_memory=False,
             session_id="pi-session-1",
             agent="pi",
+            project_id="git@github.com:example/demo.git",
+            repo_root="/tmp/demo-repo",
+            cwd="/tmp/demo-repo/app",
+            git_remote="git@github.com:example/demo.git",
+            git_branch="main",
         )
         wake_log_info.assert_called()
 
@@ -58,6 +70,10 @@ class TestPiAdapterSave(unittest.TestCase):
                     "started_at": "2026-01-01T00:00:00+00:00",
                     "updated_at": "2026-01-01T00:01:00+00:00",
                     "metadata": {"integration": "pi"},
+                    "repo_root": "/tmp/demo-repo",
+                    "cwd": "/tmp/demo-repo/app",
+                    "git_remote": "git@github.com:example/demo.git",
+                    "git_branch": "main",
                 },
                 db_path=tmp.name,
             )
@@ -71,6 +87,11 @@ class TestPiAdapterSave(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["turns_stored"], 2)
         self.assertEqual(session["agent"], "pi")
+        self.assertEqual(session["project_id"], "git@github.com:example/demo.git")
+        self.assertEqual(session["repo_root"], "/tmp/demo-repo")
+        self.assertEqual(session["cwd"], "/tmp/demo-repo/app")
+        self.assertEqual(session["git_remote"], "git@github.com:example/demo.git")
+        self.assertEqual(session["git_branch"], "main")
         save_log_info.assert_called()
 
     def test_save_rejects_empty_turns(self):

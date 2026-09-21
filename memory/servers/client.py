@@ -14,6 +14,28 @@ class MemoryClient:
         self._base_url = f"http://{host}:{port}"
 
     @staticmethod
+    def _attach_project_context(
+        payload: dict,
+        *,
+        project_id: str | None,
+        repo_root: str | None,
+        cwd: str | None,
+        git_remote: str | None,
+        git_branch: str | None,
+    ) -> None:
+        derived_project_id = project_id or git_remote or repo_root or cwd
+        if derived_project_id is not None:
+            payload["project_id"] = derived_project_id
+        if repo_root is not None:
+            payload["repo_root"] = repo_root
+        if cwd is not None:
+            payload["cwd"] = cwd
+        if git_remote is not None:
+            payload["git_remote"] = git_remote
+        if git_branch is not None:
+            payload["git_branch"] = git_branch
+
+    @staticmethod
     def _error_message_from_http_error(exc: urllib.error.HTTPError) -> str:
         try:
             body = exc.read().decode("utf-8")
@@ -67,6 +89,11 @@ class MemoryClient:
         turns: list | None = None,
         started_at: str | None = None,
         metadata: dict | None = None,
+        project_id: str | None = None,
+        repo_root: str | None = None,
+        cwd: str | None = None,
+        git_remote: str | None = None,
+        git_branch: str | None = None,
     ) -> dict:
         payload: dict = {
             "session_id": session_id,
@@ -77,6 +104,14 @@ class MemoryClient:
             payload["started_at"] = started_at
         if metadata is not None:
             payload["metadata"] = metadata
+        self._attach_project_context(
+            payload,
+            project_id=project_id,
+            repo_root=repo_root,
+            cwd=cwd,
+            git_remote=git_remote,
+            git_branch=git_branch,
+        )
         return self._post("/ingest", payload)
 
     def recall(
@@ -86,6 +121,11 @@ class MemoryClient:
         include_working_memory: bool = False,
         session_id: str | None = None,
         agent: str | None = None,
+        project_id: str | None = None,
+        repo_root: str | None = None,
+        cwd: str | None = None,
+        git_remote: str | None = None,
+        git_branch: str | None = None,
     ) -> dict:
         payload: dict = {
             "prompt": prompt,
@@ -95,6 +135,14 @@ class MemoryClient:
             payload["session_id"] = session_id
         if agent is not None:
             payload["agent"] = agent
+        self._attach_project_context(
+            payload,
+            project_id=project_id,
+            repo_root=repo_root,
+            cwd=cwd,
+            git_remote=git_remote,
+            git_branch=git_branch,
+        )
         return self._post("/recall", payload)
 
     def status(self) -> dict:

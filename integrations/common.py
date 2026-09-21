@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 
-from memory.db import bootstrap_db, open_db
+from memory.db import bootstrap_db
 from memory.facts.renderer import render_fact_answer
 from memory.servers.ingest_pipeline import IngestOutcome, ingest_session
 from memory.retrieval import WakeUpContext, build_wake_up_injection, retrieve_wake_up_context
@@ -18,6 +18,56 @@ from memory.utils.logger import activity_log
 
 
 DEFAULT_DB_PATH = os.path.expanduser("~/.memory/memory.db")
+PROJECT_CONTEXT_FIELDS = ("project_id", "repo_root", "cwd", "git_remote", "git_branch")
+
+
+def _normalize_project_value(value, *, is_path: bool = False) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if is_path:
+        return os.path.abspath(os.path.expanduser(cleaned))
+    return cleaned
+
+
+def normalize_project_context(
+    project_context: dict | None = None,
+    metadata: dict | None = None,
+) -> dict[str, str]:
+    """Return normalized ambient project context.
+
+    Explicit top-level project fields win. Missing values are backfilled from
+    metadata where possible so older sessions remain usable.
+    """
+    project_context = project_context if isinstance(project_context, dict) else {}
+    metadata = metadata if isinstance(metadata, dict) else {}
+    metadata_project = metadata.get("project_context")
+    metadata_project = metadata_project if isinstance(metadata_project, dict) else {}
+
+    normalized: dict[str, str] = {}
+    for field in PROJECT_CONTEXT_FIELDS:
+        value = project_context.get(field)
+        if value in (None, ""):
+            value = metadata_project.get(field)
+        if value in (None, ""):
+            if field == "git_branch":
+                value = metadata.get("git_branch") or metadata.get("branch")
+            else:
+                value = metadata.get(field)
+        cleaned = _normalize_project_value(value, is_path=field in {"repo_root", "cwd"})
+        if cleaned:
+            normalized[field] = cleaned
+
+    if "project_id" not in normalized:
+        for fallback_field in ("git_remote", "repo_root", "cwd"):
+            fallback_value = normalized.get(fallback_field)
+            if fallback_value:
+                normalized["project_id"] = fallback_value
+                break
+
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -51,20 +101,18 @@ def empty_wake_up_context() -> WakeUpContext:
 
 
 def open_memory_db_for_ingest(db_path: str = DEFAULT_DB_PATH):
-    """Open the memory DB, bootstrapping it if needed."""
+    """Open the memory DB, bootstrapping and migrating it if needed."""
     directory = os.path.dirname(db_path)
     if directory:
         os.makedirs(directory, exist_ok=True)
-    if not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
-        return bootstrap_db(db_path)
-    return open_db(db_path)
+    return bootstrap_db(db_path)
 
 
 def open_existing_memory_db(db_path: str = DEFAULT_DB_PATH):
     """Open the memory DB only if it already exists and is non-empty."""
     if not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
         return None
-    return open_db(db_path)
+    return bootstrap_db(db_path)
 
 
 def save_session_to_memory(
@@ -76,6 +124,7 @@ def save_session_to_memory(
     started_at: str,
     updated_at: str,
     metadata: dict | None = None,
+    project_context: dict | None = None,
 ) -> IngestOutcome:
     """Persist a session transcript through the shared ingest seam."""
     return ingest_session(
@@ -86,6 +135,7 @@ def save_session_to_memory(
         started_at=started_at,
         updated_at=updated_at,
         metadata=metadata,
+        project_context=normalize_project_context(project_context, metadata),
     )
 
 
@@ -95,10 +145,15 @@ def retrieve_prompt_memory(
     *,
     include_working_memory: bool,
     session_id: str | None = None,
+    project_context: dict | None = None,
     embed_fn=None,
 ) -> WakeUpContext:
     """Fetch memory context for one prompt through the shared retrieval seam."""
-    kwargs = {"include_working_memory": include_working_memory, "session_id": session_id}
+    kwargs = {
+        "include_working_memory": include_working_memory,
+        "session_id": session_id,
+        "project_context": normalize_project_context(project_context),
+    }
     if embed_fn is not None:
         kwargs["embed_fn"] = embed_fn
     context = retrieve_wake_up_context(conn, prompt, **kwargs)

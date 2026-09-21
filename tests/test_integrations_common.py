@@ -86,16 +86,28 @@ class TestRetrievePromptMemory(unittest.TestCase):
             },
         )
 
-        with patch("integrations.common.retrieve_wake_up_context", return_value=context), \
+        with patch("integrations.common.retrieve_wake_up_context", return_value=context) as retrieve_wake_up_context, \
              patch("integrations.common.activity_log") as activity_log:
             result = retrieve_prompt_memory(
                 object(),
                 "what is my name?",
                 include_working_memory=False,
                 session_id="sess-1",
+                project_context={"cwd": "/tmp/demo", "git_remote": "git@github.com:example/demo.git"},
             )
 
         self.assertIs(result, context)
+        retrieve_wake_up_context.assert_called_once_with(
+            unittest.mock.ANY,
+            "what is my name?",
+            include_working_memory=False,
+            session_id="sess-1",
+            project_context={
+                "project_id": "git@github.com:example/demo.git",
+                "cwd": "/tmp/demo",
+                "git_remote": "git@github.com:example/demo.git",
+            },
+        )
         activity_log.assert_called_once_with(
             "retrieval",
             "recall_timing",
@@ -133,6 +145,12 @@ class TestSharedSaveHelpers(unittest.TestCase):
                     started_at="2026-01-01T00:00:00+00:00",
                     updated_at="2026-01-01T00:01:00+00:00",
                     metadata={"integration": "pi"},
+                    project_context={
+                        "repo_root": "/tmp/demo-repo",
+                        "cwd": "/tmp/demo-repo/app",
+                        "git_remote": "git@github.com:example/demo.git",
+                        "git_branch": "main",
+                    },
                 )
             finally:
                 conn.close()
@@ -146,6 +164,11 @@ class TestSharedSaveHelpers(unittest.TestCase):
         self.assertEqual(outcome.turn_count, 2)
         self.assertIsNotNone(session)
         self.assertEqual(session["agent"], "pi")
+        self.assertEqual(session["project_id"], "git@github.com:example/demo.git")
+        self.assertEqual(session["repo_root"], "/tmp/demo-repo")
+        self.assertEqual(session["cwd"], "/tmp/demo-repo/app")
+        self.assertEqual(session["git_remote"], "git@github.com:example/demo.git")
+        self.assertEqual(session["git_branch"], "main")
 
 
 if __name__ == "__main__":

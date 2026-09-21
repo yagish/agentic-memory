@@ -130,6 +130,7 @@ def retrieve_wake_up_context(
     *,
     include_working_memory: bool,
     session_id: str | None = None,
+    project_context: dict | None = None,
     embed_fn=embed_text,
 ) -> WakeUpContext:
     """Retrieve wake-up context for one user prompt.
@@ -137,6 +138,8 @@ def retrieve_wake_up_context(
     Retrieval is intentionally broad: all memory types are searched with one
     shared query embedding. Narrowing happens via per-type ranking and result caps.
     """
+    del project_context
+
     warnings: list[RetrievalWarning] = []
     overall_started = time.perf_counter()
     embed_started = overall_started

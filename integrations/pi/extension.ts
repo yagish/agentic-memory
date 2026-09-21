@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -15,6 +15,13 @@ type ExtensionGlobalState = typeof globalThis & {
 };
 
 type SavedTurn = { role: "user" | "assistant"; content: string };
+type ProjectContext = {
+	project_id?: string;
+	repo_root?: string;
+	cwd?: string;
+	git_remote?: string;
+	git_branch?: string;
+};
 type RecallResponse =
 	| { action: "noop"; warnings?: Array<{ stage: string; message: string }> }
 	| { action: "answer"; answer: string; warnings?: Array<{ stage: string; message: string }> }
@@ -61,10 +68,43 @@ function buildTurnsFromBranch(ctx: ExtensionContext): { turns: SavedTurn[]; star
 	return { turns, startedAt };
 }
 
+function runGit(args: string[], cwd: string): string | undefined {
+	try {
+		const output = execFileSync("git", args, {
+			cwd,
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+		}).trim();
+		return output || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function getAmbientProjectContext(cwd: string | undefined): ProjectContext {
+	const cleanedCwd = cwd?.trim();
+	if (!cleanedCwd) return {};
+
+	const repoRoot = runGit(["rev-parse", "--show-toplevel"], cleanedCwd) ?? cleanedCwd;
+	const gitRemote = runGit(["config", "--get", "remote.origin.url"], repoRoot);
+	const gitBranch = runGit(["rev-parse", "--abbrev-ref", "HEAD"], repoRoot);
+	const projectId = gitRemote ?? repoRoot ?? cleanedCwd;
+
+	return {
+		project_id: projectId,
+		repo_root: repoRoot,
+		cwd: cleanedCwd,
+		git_remote: gitRemote,
+		git_branch: gitBranch,
+	};
+}
+
 function buildSavePayload(ctx: ExtensionContext, extraTurns: SavedTurn[] = []) {
 	const { turns, startedAt } = buildTurnsFromBranch(ctx);
 	const allTurns = [...turns, ...extraTurns];
 	if (allTurns.length === 0) return null;
+
+	const projectContext = getAmbientProjectContext(ctx.cwd);
 
 	return {
 		session_id: ctx.sessionManager.getSessionId(),
@@ -72,10 +112,12 @@ function buildSavePayload(ctx: ExtensionContext, extraTurns: SavedTurn[] = []) {
 		turns: allTurns,
 		started_at: startedAt,
 		updated_at: new Date().toISOString(),
+		...projectContext,
 		metadata: {
 			integration: "pi",
 			cwd: ctx.cwd,
 			session_file: ctx.sessionManager.getSessionFile(),
+			project_context: projectContext,
 		},
 	};
 }
@@ -153,12 +195,14 @@ export default function agenticMemoryExtension(pi: ExtensionAPI) {
 
 		pendingInjection = null;
 		try {
+			const projectContext = getAmbientProjectContext(ctx.cwd);
 			const result = await callAdapter<RecallResponse>(
 				"recall",
 				{
 					session_id: ctx.sessionManager.getSessionId(),
 					prompt: event.text,
 					include_working_memory: false,
+					...projectContext,
 				},
 			);
 

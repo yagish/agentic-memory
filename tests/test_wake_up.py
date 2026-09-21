@@ -67,6 +67,13 @@ class TestMainIntegration(unittest.TestCase):
              patch("sys.stderr", stderr), \
              patch("sys.exit", side_effect=lambda code=0: (_ for _ in ()).throw(SystemExit(code))), \
              patch.object(_wu, "DB_PATH", "/fake/test.db"), \
+             patch.object(_wu, "_build_project_context", return_value={
+                 "project_id": "git@github.com:example/demo.git",
+                 "repo_root": "/tmp/demo-repo",
+                 "cwd": "/tmp/demo-repo/app",
+                 "git_remote": "git@github.com:example/demo.git",
+                 "git_branch": "main",
+             }), \
              patch.object(_wu, "_open_connection", return_value=conn), \
              patch.object(_wu, "_is_first_message", return_value=first_message), \
              patch.object(_wu, "_recall_via_server", return_value=response) as recall_via_server, \
@@ -242,6 +249,33 @@ class TestMainIntegration(unittest.TestCase):
         self.assertEqual(
             later["recall_via_server"].call_args.kwargs,
             {"include_working_memory": False},
+        )
+
+    def test_recall_server_receives_project_context(self):
+        request = _wu.HookRequest(
+            session_id="test-sess",
+            prompt="continue",
+            project_context={
+                "project_id": "git@github.com:example/demo.git",
+                "repo_root": "/tmp/demo-repo",
+                "cwd": "/tmp/demo-repo/app",
+                "git_remote": "git@github.com:example/demo.git",
+                "git_branch": "main",
+            },
+        )
+        with patch("integrations.claude.wake_up.MemoryClient.recall", return_value={"action": "noop"}) as recall:
+            _wu._recall_via_server(request, include_working_memory=False)
+
+        recall.assert_called_once_with(
+            "continue",
+            include_working_memory=False,
+            session_id="test-sess",
+            agent="claude",
+            project_id="git@github.com:example/demo.git",
+            repo_root="/tmp/demo-repo",
+            cwd="/tmp/demo-repo/app",
+            git_remote="git@github.com:example/demo.git",
+            git_branch="main",
         )
 
 

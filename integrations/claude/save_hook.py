@@ -14,13 +14,14 @@
 import json
 import logging
 import os
+import subprocess
 import sys
 import traceback
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from integrations.common import DEFAULT_DB_PATH, open_memory_db_for_ingest, save_session_to_memory
+from integrations.common import DEFAULT_DB_PATH, normalize_project_context, open_memory_db_for_ingest, save_session_to_memory
 from memory.utils.logger import activity_log, error_log
 from memory.utils.debug import enable_debug
 
@@ -137,6 +138,58 @@ def parse_transcript(jsonl_path: str) -> tuple[list[dict], str, str]:
     return turns, started_at, session_id
 
 
+def _git_output(args: list[str], *, cwd: str) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+    output = completed.stdout.strip()
+    return output or None
+
+
+def _build_project_context(payload: dict, transcript_path: str) -> dict[str, str]:
+    workspace = payload.get("workspace") if isinstance(payload.get("workspace"), dict) else {}
+    candidates = [
+        payload.get("repo_root"),
+        payload.get("cwd"),
+        workspace.get("repo_root"),
+        workspace.get("cwd"),
+        os.path.dirname(os.path.abspath(transcript_path)),
+        os.getcwd(),
+    ]
+
+    repo_root = None
+    cwd = None
+    for candidate in candidates:
+        if not isinstance(candidate, str) or not candidate.strip():
+            continue
+        normalized_candidate = os.path.abspath(os.path.expanduser(candidate.strip()))
+        cwd = cwd or normalized_candidate
+        repo_root = _git_output(["rev-parse", "--show-toplevel"], cwd=normalized_candidate)
+        if repo_root:
+            break
+
+    git_base = repo_root or cwd
+    git_remote = _git_output(["config", "--get", "remote.origin.url"], cwd=git_base) if git_base else None
+    git_branch = _git_output(["rev-parse", "--abbrev-ref", "HEAD"], cwd=git_base) if git_base else None
+
+    return normalize_project_context(
+        {
+            "project_id": payload.get("project_id"),
+            "repo_root": repo_root or payload.get("repo_root") or workspace.get("repo_root"),
+            "cwd": payload.get("cwd") or workspace.get("cwd") or cwd,
+            "git_remote": payload.get("git_remote") or workspace.get("git_remote") or git_remote,
+            "git_branch": payload.get("git_branch") or workspace.get("git_branch") or payload.get("branch") or git_branch,
+        }
+    )
+
+
 def save_session(payload: dict, dry_run: bool = False) -> None:
     """
     Core logic: given the Stop hook payload, parse the transcript and save it.
@@ -163,6 +216,7 @@ def save_session(payload: dict, dry_run: bool = False) -> None:
         return
 
     updated_at = datetime.now(timezone.utc).isoformat()
+    project_context = _build_project_context(payload, transcript_path)
 
     if dry_run:
         print(f"[dry-run] session_id={session_id}")
@@ -184,6 +238,12 @@ def save_session(payload: dict, dry_run: bool = False) -> None:
         turns=turns,
         started_at=started_at or updated_at,
         updated_at=updated_at,
+        metadata={
+            "integration": "claude",
+            "transcript_path": transcript_path,
+            "project_context": project_context,
+        },
+        project_context=project_context,
     )
     activity_log("save_hook", "upsert_session", session=session_id, agent=agent_name, turns=outcome.turn_count)
 

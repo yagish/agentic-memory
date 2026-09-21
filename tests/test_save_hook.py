@@ -233,11 +233,22 @@ class TestSaveSession(unittest.TestCase):
         original_db_path = hook_module.DB_PATH
         hook_module.DB_PATH = self.tmp_db.name
         try:
-            save_session({
-                "session_id": session_id,
-                "transcript_path": self.tmp_jsonl.name,
-                "stop_hook_active": False,
-            })
+            with unittest.mock.patch.object(
+                hook_module,
+                "_build_project_context",
+                return_value={
+                    "project_id": "git@github.com:example/demo.git",
+                    "repo_root": "/tmp/demo-repo",
+                    "cwd": "/tmp/demo-repo/app",
+                    "git_remote": "git@github.com:example/demo.git",
+                    "git_branch": "main",
+                },
+            ):
+                save_session({
+                    "session_id": session_id,
+                    "transcript_path": self.tmp_jsonl.name,
+                    "stop_hook_active": False,
+                })
         finally:
             hook_module.DB_PATH = original_db_path
 
@@ -247,7 +258,7 @@ class TestSaveSession(unittest.TestCase):
 
         conn = init_db(self.tmp_db.name)
         row = conn.execute(
-            "SELECT session_id, agent, turn_count, transcript FROM sessions WHERE session_id = 'sess-abc'"
+            "SELECT session_id, agent, turn_count, transcript, metadata, project_id, repo_root, cwd, git_remote, git_branch FROM sessions WHERE session_id = 'sess-abc'"
         ).fetchone()
         conn.close()
 
@@ -258,6 +269,14 @@ class TestSaveSession(unittest.TestCase):
 
         stored = json.loads(row["transcript"])
         self.assertEqual(stored[0]["content"], "What is quantum entanglement?")
+        self.assertEqual(row["project_id"], "git@github.com:example/demo.git")
+        self.assertEqual(row["repo_root"], "/tmp/demo-repo")
+        self.assertEqual(row["cwd"], "/tmp/demo-repo/app")
+        self.assertEqual(row["git_remote"], "git@github.com:example/demo.git")
+        self.assertEqual(row["git_branch"], "main")
+        metadata = json.loads(row["metadata"])
+        self.assertEqual(metadata["integration"], "claude")
+        self.assertEqual(metadata["project_context"]["git_branch"], "main")
 
     def test_upsert_overwrites_on_second_save(self):
         # Saving the same session twice should update the row, not create a duplicate.

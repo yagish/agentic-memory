@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from integrations.common import (
     DEFAULT_DB_PATH,
+    normalize_project_context,
     open_memory_db_for_ingest,
     save_session_to_memory,
 )
@@ -79,6 +80,19 @@ def _wake_log_error(msg: str) -> None:
     _append_log_line(WAKE_UP_LOG_PATH, "error", msg)
 
 
+def _payload_project_context(payload: dict) -> dict[str, str]:
+    return normalize_project_context(
+        {
+            "project_id": payload.get("project_id"),
+            "repo_root": payload.get("repo_root"),
+            "cwd": payload.get("cwd"),
+            "git_remote": payload.get("git_remote"),
+            "git_branch": payload.get("git_branch"),
+        },
+        payload.get("metadata"),
+    )
+
+
 def handle_save(payload: dict, *, db_path: str = DB_PATH) -> dict:
     turns = payload.get("turns") or []
     if not turns:
@@ -101,6 +115,7 @@ def handle_save(payload: dict, *, db_path: str = DB_PATH) -> dict:
             started_at=payload.get("started_at") or _utc_now(),
             updated_at=payload.get("updated_at") or _utc_now(),
             metadata=payload.get("metadata"),
+            project_context=_payload_project_context(payload),
         )
         for warning in outcome.warnings:
             _save_log_error(f"agent={AGENT_NAME} {warning.stage} failed for session {session_id}: {warning.message}")
@@ -130,11 +145,17 @@ def handle_recall(payload: dict, *, db_path: str = DB_PATH) -> dict:
     )
 
     try:
+        project_context = _payload_project_context(payload)
         response = MemoryClient(port=int(os.environ.get("MEMORY_INGEST_PORT", "7747"))).recall(
             prompt,
             include_working_memory=include_working_memory,
             session_id=session_id,
             agent="pi",
+            project_id=project_context.get("project_id"),
+            repo_root=project_context.get("repo_root"),
+            cwd=project_context.get("cwd"),
+            git_remote=project_context.get("git_remote"),
+            git_branch=project_context.get("git_branch"),
         )
         for warning in response.get("warnings", []):
             _wake_log_error(f"agent={AGENT_NAME} recall {warning.get('stage')} failed: {warning.get('message')}")

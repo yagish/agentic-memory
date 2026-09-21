@@ -40,6 +40,7 @@ def ingest_session(
     started_at: str,
     updated_at: str,
     metadata: dict | None = None,
+    project_context: dict | None = None,
     embed_fn=embed_text,
 ) -> IngestOutcome:
     """Store a session only.
@@ -58,6 +59,7 @@ def ingest_session(
         started_at=started_at,
         updated_at=updated_at,
         metadata=metadata,
+        project_context=project_context,
     )
 
     return IngestOutcome(

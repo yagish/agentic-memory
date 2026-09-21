@@ -39,6 +39,10 @@ class TestIngestEndpoints(unittest.TestCase):
                     {"role": "assistant", "content": "Hi"},
                 ],
                 "metadata": {"source": "cursor"},
+                "repo_root": "/tmp/demo-repo",
+                "cwd": "/tmp/demo-repo/app",
+                "git_remote": "git@github.com:example/demo.git",
+                "git_branch": "main",
             },
         )
         self.assertEqual(response.status_code, 200)
@@ -48,13 +52,18 @@ class TestIngestEndpoints(unittest.TestCase):
 
         conn = init_db(self.db_path)
         row = conn.execute(
-            "SELECT session_id, turn_count, metadata FROM sessions WHERE session_id = ?",
+            "SELECT session_id, turn_count, metadata, project_id, repo_root, cwd, git_remote, git_branch FROM sessions WHERE session_id = ?",
             ("sess-001",),
         ).fetchone()
         conn.close()
         self.assertEqual(row["session_id"], "sess-001")
         self.assertEqual(row["turn_count"], 2)
         self.assertEqual(json.loads(row["metadata"]), {"source": "cursor"})
+        self.assertEqual(row["project_id"], "git@github.com:example/demo.git")
+        self.assertEqual(row["repo_root"], "/tmp/demo-repo")
+        self.assertEqual(row["cwd"], "/tmp/demo-repo/app")
+        self.assertEqual(row["git_remote"], "git@github.com:example/demo.git")
+        self.assertEqual(row["git_branch"], "main")
 
     def test_post_ingest_invalid_role_rejected(self):
         response = self.client.post(
@@ -72,18 +81,39 @@ class TestIngestEndpoints(unittest.TestCase):
             [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.99}],
             [],
         )
-        with patch.object(ingest_server_module, "retrieve_prompt_memory", return_value=context), \
+        with patch.object(ingest_server_module, "retrieve_prompt_memory", return_value=context) as retrieve_prompt_memory, \
              patch.object(ingest_server_module, "log_memory_answer") as log_memory_answer, \
              patch.object(ingest_server_module, "log_memory_injection") as log_memory_injection:
             response = self.client.post(
                 "/recall",
-                json={"prompt": "what is my name?", "session_id": "sess-123", "agent": "claude"},
+                json={
+                    "prompt": "what is my name?",
+                    "session_id": "sess-123",
+                    "agent": "claude",
+                    "repo_root": "/tmp/demo-repo",
+                    "cwd": "/tmp/demo-repo/app",
+                    "git_remote": "git@github.com:example/demo.git",
+                    "git_branch": "main",
+                },
             )
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["action"], "answer")
         self.assertEqual(body["answer"], "Your name is Yash.")
         self.assertEqual(body["facts_count"], 1)
+        retrieve_prompt_memory.assert_called_once_with(
+            unittest.mock.ANY,
+            "what is my name?",
+            include_working_memory=False,
+            session_id="sess-123",
+            project_context={
+                "project_id": "git@github.com:example/demo.git",
+                "repo_root": "/tmp/demo-repo",
+                "cwd": "/tmp/demo-repo/app",
+                "git_remote": "git@github.com:example/demo.git",
+                "git_branch": "main",
+            },
+        )
         log_memory_answer.assert_called_once()
         log_memory_injection.assert_not_called()
 

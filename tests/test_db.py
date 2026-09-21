@@ -14,6 +14,7 @@ from memory.db import (
     insert_procedural,
     log_retrieval,
     open_db,
+    get_session_by_id,
     search,
     search_episodic_semantic,
     search_facts_semantic,
@@ -139,6 +140,28 @@ class TestSessionStorage(unittest.TestCase):
 
         results = search(self.conn, "rockets")
         self.assertEqual([item["session_id"] for item in results], ["s1"])
+
+    def test_session_project_context_backfills_from_metadata(self):
+        upsert_session(
+            self.conn,
+            "legacy-project-session",
+            "claude",
+            self.transcript,
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:01:00Z",
+            metadata={
+                "cwd": "/tmp/demo-repo/app",
+                "repo_root": "/tmp/demo-repo",
+                "git_remote": "git@github.com:example/demo.git",
+                "branch": "main",
+            },
+        )
+        session = get_session_by_id(self.conn, "legacy-project-session")
+        self.assertEqual(session["project_id"], "git@github.com:example/demo.git")
+        self.assertEqual(session["repo_root"], "/tmp/demo-repo")
+        self.assertEqual(session["cwd"], "/tmp/demo-repo/app")
+        self.assertEqual(session["git_remote"], "git@github.com:example/demo.git")
+        self.assertEqual(session["git_branch"], "main")
 
     def test_semantic_search_returns_ranked_rows(self):
         upsert_session(

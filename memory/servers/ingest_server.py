@@ -21,7 +21,7 @@ from pydantic import BaseModel, field_validator
 import uvicorn
 from uvicorn.config import LOGGING_CONFIG as UVICORN_LOGGING_CONFIG
 
-from integrations.common import build_recall_response, retrieve_prompt_memory
+from integrations.common import build_recall_response, normalize_project_context, retrieve_prompt_memory
 from memory.db import bootstrap_db, open_db
 from memory.servers.ingest_pipeline import ingest_session
 from memory.utils.logger import error_log, log_memory_answer, log_memory_injection
@@ -91,6 +91,19 @@ def _compact_json(payload: dict, *, limit: int = 4000) -> str:
     return text[: limit - 1] + "…"
 
 
+def _request_project_context(request) -> dict[str, str]:
+    return normalize_project_context(
+        {
+            "project_id": getattr(request, "project_id", None),
+            "repo_root": getattr(request, "repo_root", None),
+            "cwd": getattr(request, "cwd", None),
+            "git_remote": getattr(request, "git_remote", None),
+            "git_branch": getattr(request, "git_branch", None),
+        },
+        getattr(request, "metadata", None),
+    )
+
+
 def _summarize_recall_request(request: "RecallRequest") -> dict:
     prompt = request.prompt.strip()
     if len(prompt) > 2000:
@@ -100,6 +113,7 @@ def _summarize_recall_request(request: "RecallRequest") -> dict:
         "include_working_memory": request.include_working_memory,
         "session_id": request.session_id,
         "agent": request.agent,
+        "project_context": _request_project_context(request),
     }
 
 
@@ -116,6 +130,7 @@ def _summarize_ingest_request(request: "IngestRequest") -> dict:
         "turn_count": len(request.turns),
         "started_at": request.started_at,
         "metadata": request.metadata,
+        "project_context": _request_project_context(request),
         "turn_preview": preview_turns,
     }
 
@@ -180,6 +195,11 @@ class IngestRequest(BaseModel):
     turns: list[Turn]
     started_at: str | None = None
     metadata: dict | None = None
+    project_id: str | None = None
+    repo_root: str | None = None
+    cwd: str | None = None
+    git_remote: str | None = None
+    git_branch: str | None = None
 
     @field_validator("turns")
     @classmethod
@@ -194,6 +214,11 @@ class RecallRequest(BaseModel):
     include_working_memory: bool = False
     session_id: str | None = None
     agent: str | None = None
+    project_id: str | None = None
+    repo_root: str | None = None
+    cwd: str | None = None
+    git_remote: str | None = None
+    git_branch: str | None = None
 
 
 @app.get("/status")
@@ -224,6 +249,7 @@ def post_recall(request: RecallRequest) -> dict:
             prompt,
             include_working_memory=request.include_working_memory,
             session_id=request.session_id,
+            project_context=_request_project_context(request),
         )
         response = build_recall_response(prompt, context)
         if response.get("action") == "answer":
@@ -283,6 +309,7 @@ def post_ingest(request: IngestRequest) -> dict:
             started_at=started_at,
             updated_at=updated_at,
             metadata=request.metadata,
+            project_context=_request_project_context(request),
         )
         response = {
             "ok": True,

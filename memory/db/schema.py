@@ -12,6 +12,11 @@ CREATE TABLE IF NOT EXISTS sessions (
   turn_count           INTEGER,
   transcript           TEXT,
   metadata             TEXT,
+  project_id           TEXT,
+  repo_root            TEXT,
+  cwd                  TEXT,
+  git_remote           TEXT,
+  git_branch           TEXT,
   daemon_processed_at  TEXT
 );
 
@@ -75,6 +80,11 @@ CREATE TABLE IF NOT EXISTS session_memory (
 
 _MIGRATIONS = [
     "ALTER TABLE sessions ADD COLUMN compacted_text TEXT",
+    "ALTER TABLE sessions ADD COLUMN project_id TEXT",
+    "ALTER TABLE sessions ADD COLUMN repo_root TEXT",
+    "ALTER TABLE sessions ADD COLUMN cwd TEXT",
+    "ALTER TABLE sessions ADD COLUMN git_remote TEXT",
+    "ALTER TABLE sessions ADD COLUMN git_branch TEXT",
     "DELETE FROM episodic_memory WHERE rowid NOT IN (SELECT MIN(rowid) FROM episodic_memory GROUP BY session_id)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_episodic_memory_session_id_unique ON episodic_memory(session_id)",
     "DELETE FROM procedural_memory WHERE rowid NOT IN (SELECT MIN(rowid) FROM procedural_memory GROUP BY session_id)",
