@@ -244,6 +244,23 @@ class TestDashboardActivityStats(unittest.TestCase):
         self.assertEqual(payload["summary"]["daemon_session_avg_ms"], 912.0)
 
 
+class TestDashboardTelemetry(unittest.TestCase):
+    def test_get_telemetry_summary_returns_db_backed_payload(self):
+        conn = MagicMock()
+        with patch.object(dashboard_server, "bootstrap_db", return_value=conn), \
+             patch.object(dashboard_server, "log_process_stats_snapshot") as log_process_stats_snapshot, \
+             patch.object(dashboard_server, "_read_telemetry_summary", return_value={"counts": {"recall_events": 2}}):
+            payload = dashboard_server.get_telemetry_summary(limit=10)
+
+        self.assertEqual(payload, {"counts": {"recall_events": 2}})
+        log_process_stats_snapshot.assert_called_once_with(
+            conn,
+            component="dashboard_server",
+            details={"route": "/ops/telemetry/summary"},
+        )
+        conn.close.assert_called_once()
+
+
 class TestDashboardChartStats(unittest.TestCase):
     def test_get_chart_stats_includes_performance_series(self):
         conn = MagicMock()

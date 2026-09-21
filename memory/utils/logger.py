@@ -13,6 +13,13 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
+from memory.db.telemetry import (
+    insert_latency_breakdown,
+    insert_recall_event,
+    insert_retrieval_lane_metric,
+    insert_system_stat,
+)
+
 
 _ACTIVITY_LOG_PATH = os.path.expanduser("~/.memory/activity.log")
 _ERROR_LOG_PATH = os.path.expanduser("~/.memory/error.log")
@@ -146,6 +153,194 @@ def _response_memory_counts(response: dict[str, Any]) -> dict[str, int]:
         "session_memory_count": int(response.get("session_memory_count") or 0),
         "working_memory_count": int(response.get("working_memory_count") or 0),
     }
+
+
+
+def _safe_telemetry_write(write_fn, *args, **kwargs):
+    try:
+        return write_fn(*args, **kwargs)
+    except Exception:
+        return None
+
+
+
+def log_recall_request_event(
+    conn,
+    *,
+    request_id: str,
+    prompt: str,
+    include_working_memory: bool,
+    session_id: str | None = None,
+    agent: str | None = None,
+    project_context: dict[str, Any] | None = None,
+) -> None:
+    _safe_telemetry_write(
+        insert_recall_event,
+        conn,
+        request_id=request_id,
+        event_type="request",
+        session_id=session_id,
+        agent=agent,
+        prompt_chars=len(prompt or ""),
+        prompt_tokens_estimate=estimate_tokens(prompt),
+        include_working_memory=include_working_memory,
+        project_context=project_context,
+    )
+
+
+
+def log_recall_outcome_event(
+    conn,
+    *,
+    request_id: str,
+    prompt: str,
+    response: dict[str, Any] | None,
+    include_working_memory: bool,
+    session_id: str | None = None,
+    agent: str | None = None,
+    project_context: dict[str, Any] | None = None,
+) -> None:
+    response = response or {}
+    action = str(response.get("action") or "noop")
+    counts = _response_memory_counts(response)
+    answer_tokens = None
+    injection_tokens = None
+    recalled_context_tokens = None
+    compression_gain_tokens = None
+    tokens_saved = None
+
+    if action == "answer":
+        answer_tokens = estimate_tokens(str(response.get("answer") or ""))
+        tokens_saved = estimate_tokens(prompt) + answer_tokens
+    elif action == "inject":
+        injection_tokens = estimate_tokens(str(response.get("injection") or ""))
+        recalled_context_tokens = estimate_recalled_context_tokens(response)
+        compression_gain_tokens = max(0, recalled_context_tokens - injection_tokens)
+
+    _safe_telemetry_write(
+        insert_recall_event,
+        conn,
+        request_id=request_id,
+        event_type="outcome",
+        session_id=session_id,
+        agent=agent,
+        prompt_chars=len(prompt or ""),
+        prompt_tokens_estimate=estimate_tokens(prompt),
+        include_working_memory=include_working_memory,
+        project_context=project_context,
+        action=action,
+        warnings_count=len(response.get("warnings") or []),
+        answer_tokens_estimate=answer_tokens,
+        injection_tokens_estimate=injection_tokens,
+        recalled_context_tokens_estimate=recalled_context_tokens,
+        compression_gain_tokens_estimate=compression_gain_tokens,
+        tokens_saved_estimate=tokens_saved,
+        details={"timings": response.get("timings") or {}},
+        **counts,
+    )
+
+    for lane, selected_count in counts.items():
+        lane_name = lane.removesuffix("_count")
+        _safe_telemetry_write(
+            insert_retrieval_lane_metric,
+            conn,
+            request_id=request_id,
+            lane=lane_name,
+            selected_count=selected_count,
+            hit_count=1 if selected_count > 0 else 0,
+            details={"action": action},
+        )
+
+    stage_mapping = {
+        "prompt_embedding_ms": "prompt_embedding",
+        "memory_search_ms": "memory_search",
+        "retrieval_total_ms": "retrieval_total",
+    }
+    timings = response.get("timings") or {}
+    for metric_key, stage in stage_mapping.items():
+        duration_ms = timings.get(metric_key)
+        if not isinstance(duration_ms, (int, float)):
+            continue
+        _safe_telemetry_write(
+            insert_latency_breakdown,
+            conn,
+            request_id=request_id,
+            component="retrieval",
+            operation="recall",
+            stage=stage,
+            duration_ms=float(duration_ms),
+            session_id=session_id,
+            details={"metric_key": metric_key, "action": action},
+        )
+
+
+
+def log_recall_error_event(
+    conn,
+    *,
+    request_id: str,
+    prompt: str,
+    include_working_memory: bool,
+    error: BaseException | str,
+    session_id: str | None = None,
+    agent: str | None = None,
+    project_context: dict[str, Any] | None = None,
+) -> None:
+    _safe_telemetry_write(
+        insert_recall_event,
+        conn,
+        request_id=request_id,
+        event_type="error",
+        session_id=session_id,
+        agent=agent,
+        prompt_chars=len(prompt or ""),
+        prompt_tokens_estimate=estimate_tokens(prompt),
+        include_working_memory=include_working_memory,
+        project_context=project_context,
+        error_message=str(error),
+    )
+
+
+
+def log_process_stats_snapshot(
+    conn,
+    *,
+    component: str,
+    session_id: str | None = None,
+    process_id: int | None = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    pid = process_id or os.getpid()
+    metric_rows: list[tuple[str, float, str]] = []
+    metric_rows.append(("process_id", float(pid), "count"))
+
+    try:
+        import psutil  # type: ignore
+
+        process = psutil.Process(pid)
+        memory = process.memory_info()
+        metric_rows.append(("rss_bytes", float(memory.rss), "bytes"))
+        metric_rows.append(("vms_bytes", float(memory.vms), "bytes"))
+        metric_rows.append(("cpu_percent", float(process.cpu_percent(interval=None)), "percent"))
+        try:
+            metric_rows.append(("num_threads", float(process.num_threads()), "count"))
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    for metric_name, metric_value, unit in metric_rows:
+        _safe_telemetry_write(
+            insert_system_stat,
+            conn,
+            component=component,
+            metric_name=metric_name,
+            metric_value=metric_value,
+            unit=unit,
+            process_id=pid,
+            session_id=session_id,
+            details=details,
+        )
 
 
 

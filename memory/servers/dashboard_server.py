@@ -16,9 +16,19 @@ from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 import uvicorn
 
-from memory.db import bootstrap_db, open_db
+from memory.db import (
+    bootstrap_db,
+    get_latest_system_stats,
+    get_telemetry_table_counts,
+    list_recall_events,
+    list_recent_latency_breakdowns,
+    list_retrieval_lane_metrics,
+    open_db,
+    summarize_latency_breakdowns,
+)
 from memory.facts.text import build_canonical_fact_content
 from memory.utils.debug import enable_debug
+from memory.utils.logger import log_process_stats_snapshot
 from memory.llm.ollama import is_ollama_running, start_ollama_if_needed
 
 
@@ -384,8 +394,8 @@ def _sample_label(timestamp: str | None, fallback: str) -> str:
 
 
 
-def _parse_performance_activity_log() -> dict:
-    empty = {
+def _empty_performance_stats() -> dict:
+    return {
         "recall_embedding_ms_recent": [],
         "memory_search_ms_recent": [],
         "daemon_session_ms_recent": [],
@@ -398,6 +408,11 @@ def _parse_performance_activity_log() -> dict:
             "daemon_session_p95_ms": 0.0,
         },
     }
+
+
+
+def _parse_performance_activity_log() -> dict:
+    empty = _empty_performance_stats()
     if not os.path.exists(_ACTIVITY_LOG_PATH):
         return empty
 
@@ -476,6 +491,55 @@ def _parse_performance_activity_log() -> dict:
     _PERFORMANCE_STATS_CACHE["size"] = size
     _PERFORMANCE_STATS_CACHE["stats"] = dict(stats)
     return stats
+
+
+
+def _telemetry_latency_series(conn, *, stage: str, limit: int = 20) -> list[dict]:
+    rows = list_recent_latency_breakdowns(
+        conn,
+        component="retrieval",
+        operation="recall",
+        stage=stage,
+        limit=limit,
+    )
+    rows.reverse()
+    return [
+        {
+            "timestamp": row.get("created_at"),
+            "label": _sample_label(row.get("created_at"), str(index + 1)),
+            "value": round(float(row.get("duration_ms") or 0.0), 3),
+            "request_id": row.get("request_id"),
+        }
+        for index, row in enumerate(rows)
+    ]
+
+
+
+def _read_telemetry_summary(conn, *, limit: int = 20) -> dict:
+    summary = summarize_latency_breakdowns(conn, component="retrieval", operation="recall", limit=500)
+    recent_events = list_recall_events(conn, limit=limit)
+    recent_lane_metrics = list_retrieval_lane_metrics(conn, limit=max(limit * 5, limit))
+    return {
+        "counts": get_telemetry_table_counts(conn),
+        "recent_recall_events": recent_events,
+        "recent_lane_metrics": recent_lane_metrics,
+        "latency": {
+            "recall_embedding_ms_recent": _telemetry_latency_series(conn, stage="prompt_embedding", limit=limit),
+            "memory_search_ms_recent": _telemetry_latency_series(conn, stage="memory_search", limit=limit),
+            "summary": {
+                "recall_embedding_avg_ms": float((summary.get("prompt_embedding") or {}).get("avg_ms") or 0.0),
+                "memory_search_avg_ms": float((summary.get("memory_search") or {}).get("avg_ms") or 0.0),
+                "retrieval_total_avg_ms": float((summary.get("retrieval_total") or {}).get("avg_ms") or 0.0),
+                "recall_embedding_p95_ms": float((summary.get("prompt_embedding") or {}).get("p95_ms") or 0.0),
+                "memory_search_p95_ms": float((summary.get("memory_search") or {}).get("p95_ms") or 0.0),
+                "retrieval_total_p95_ms": float((summary.get("retrieval_total") or {}).get("p95_ms") or 0.0),
+            },
+        },
+        "system_stats": {
+            "ingest_server": get_latest_system_stats(conn, component="ingest_server"),
+            "dashboard_server": get_latest_system_stats(conn, component="dashboard_server"),
+        },
+    }
 
 
 @ui_router.get("/", response_class=HTMLResponse)
@@ -643,6 +707,23 @@ def get_chart_stats() -> dict:
             "daemon_session_ms_recent": performance.get("daemon_session_ms_recent", []),
             "performance_summary": performance.get("summary", {}),
         }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@ops_router.get("/ops/telemetry/summary")
+def get_telemetry_summary(limit: int = 20) -> dict:
+    try:
+        conn = bootstrap_db(DB_PATH)
+        try:
+            log_process_stats_snapshot(
+                conn,
+                component="dashboard_server",
+                details={"route": "/ops/telemetry/summary"},
+            )
+            return _read_telemetry_summary(conn, limit=max(1, min(limit, 100)))
+        finally:
+            conn.close()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 

@@ -10,6 +10,7 @@ import copy
 import json
 import os
 import sys
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -24,7 +25,15 @@ from uvicorn.config import LOGGING_CONFIG as UVICORN_LOGGING_CONFIG
 from integrations.common import build_recall_response, normalize_project_context, retrieve_prompt_memory
 from memory.db import bootstrap_db, open_db
 from memory.servers.ingest_pipeline import ingest_session
-from memory.utils.logger import error_log, log_memory_answer, log_memory_injection
+from memory.utils.logger import (
+    error_log,
+    log_memory_answer,
+    log_memory_injection,
+    log_process_stats_snapshot,
+    log_recall_error_event,
+    log_recall_outcome_event,
+    log_recall_request_event,
+)
 from memory.utils.debug import enable_debug
 from memory.llm.inference import embed_text
 from memory.vectors import _MODEL_NAME as EMBED_MODEL_NAME
@@ -239,19 +248,47 @@ def post_recall(request: RecallRequest) -> dict:
     if not prompt:
         return {"action": "noop"}
 
+    request_id = str(uuid.uuid4())
+    project_context = _request_project_context(request)
+
     if not _is_healthcheck_path("/recall"):
         _append_ingest_log(f"POST /recall request={_compact_json(_summarize_recall_request(request))}")
 
     conn = _get_conn()
     try:
+        log_recall_request_event(
+            conn,
+            request_id=request_id,
+            prompt=prompt,
+            include_working_memory=request.include_working_memory,
+            session_id=request.session_id,
+            agent=request.agent,
+            project_context=project_context,
+        )
         context = retrieve_prompt_memory(
             conn,
             prompt,
             include_working_memory=request.include_working_memory,
             session_id=request.session_id,
-            project_context=_request_project_context(request),
+            project_context=project_context,
         )
         response = build_recall_response(prompt, context)
+        log_recall_outcome_event(
+            conn,
+            request_id=request_id,
+            prompt=prompt,
+            response=response,
+            include_working_memory=request.include_working_memory,
+            session_id=request.session_id,
+            agent=request.agent,
+            project_context=project_context,
+        )
+        log_process_stats_snapshot(
+            conn,
+            component="ingest_server",
+            session_id=request.session_id,
+            details={"route": "/recall", "request_id": request_id},
+        )
         if response.get("action") == "answer":
             log_memory_answer(
                 "recall_server",
@@ -273,6 +310,7 @@ def post_recall(request: RecallRequest) -> dict:
         _append_ingest_log(
             "POST /recall response=" + _compact_json(
                 {
+                    "request_id": request_id,
                     "action": response.get("action"),
                     "facts_count": response.get("facts_count", 0),
                     "episodic_count": response.get("episodic_count", 0),
@@ -285,6 +323,22 @@ def post_recall(request: RecallRequest) -> dict:
         )
         return response
     except Exception as exc:
+        log_recall_error_event(
+            conn,
+            request_id=request_id,
+            prompt=prompt,
+            include_working_memory=request.include_working_memory,
+            error=exc,
+            session_id=request.session_id,
+            agent=request.agent,
+            project_context=project_context,
+        )
+        log_process_stats_snapshot(
+            conn,
+            component="ingest_server",
+            session_id=request.session_id,
+            details={"route": "/recall", "request_id": request_id, "status": "error"},
+        )
         _append_ingest_log(f"POST /recall failed: {exc}", level="ERROR")
         error_log("ingest", f"unhandled error in POST /recall: {exc}", exc=exc)
         raise

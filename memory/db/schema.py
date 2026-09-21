@@ -76,6 +76,81 @@ CREATE TABLE IF NOT EXISTS session_memory (
   details      TEXT,
   embedding    BLOB
 );
+
+CREATE TABLE IF NOT EXISTS telemetry_recall_events (
+  id                                  TEXT PRIMARY KEY,
+  request_id                          TEXT NOT NULL,
+  event_type                          TEXT NOT NULL,
+  created_at                          TEXT NOT NULL,
+  session_id                          TEXT,
+  agent                               TEXT,
+  prompt_chars                        INTEGER,
+  prompt_tokens_estimate              INTEGER,
+  include_working_memory              INTEGER,
+  project_id                          TEXT,
+  repo_root                           TEXT,
+  cwd                                 TEXT,
+  git_remote                          TEXT,
+  git_branch                          TEXT,
+  action                              TEXT,
+  warnings_count                      INTEGER,
+  facts_count                         INTEGER,
+  episodic_count                      INTEGER,
+  procedural_count                    INTEGER,
+  session_memory_count                INTEGER,
+  working_memory_count                INTEGER,
+  answer_tokens_estimate              INTEGER,
+  injection_tokens_estimate           INTEGER,
+  recalled_context_tokens_estimate    INTEGER,
+  compression_gain_tokens_estimate    INTEGER,
+  tokens_saved_estimate               INTEGER,
+  error_message                       TEXT,
+  details                             TEXT
+);
+
+CREATE TABLE IF NOT EXISTS telemetry_retrieval_lane_metrics (
+  id              TEXT PRIMARY KEY,
+  request_id      TEXT NOT NULL,
+  lane            TEXT NOT NULL,
+  created_at      TEXT NOT NULL,
+  candidate_count INTEGER,
+  filtered_count  INTEGER,
+  selected_count  INTEGER,
+  hit_count       INTEGER,
+  duration_ms     REAL,
+  details         TEXT
+);
+
+CREATE TABLE IF NOT EXISTS telemetry_latency_breakdowns (
+  id           TEXT PRIMARY KEY,
+  request_id   TEXT,
+  created_at   TEXT NOT NULL,
+  component    TEXT NOT NULL,
+  operation    TEXT NOT NULL,
+  stage        TEXT NOT NULL,
+  duration_ms  REAL NOT NULL,
+  session_id   TEXT,
+  details      TEXT
+);
+
+CREATE TABLE IF NOT EXISTS telemetry_system_stats (
+  id           TEXT PRIMARY KEY,
+  created_at   TEXT NOT NULL,
+  component    TEXT NOT NULL,
+  process_id   INTEGER,
+  session_id   TEXT,
+  metric_name  TEXT NOT NULL,
+  metric_value REAL NOT NULL,
+  unit         TEXT,
+  details      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_telemetry_recall_events_request_id ON telemetry_recall_events(request_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_telemetry_recall_events_event_type ON telemetry_recall_events(event_type, created_at);
+CREATE INDEX IF NOT EXISTS idx_telemetry_lane_metrics_request_id ON telemetry_retrieval_lane_metrics(request_id, lane, created_at);
+CREATE INDEX IF NOT EXISTS idx_telemetry_latency_component ON telemetry_latency_breakdowns(component, operation, stage, created_at);
+CREATE INDEX IF NOT EXISTS idx_telemetry_latency_request_id ON telemetry_latency_breakdowns(request_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_telemetry_system_stats_metric ON telemetry_system_stats(component, metric_name, created_at);
 """
 
 _MIGRATIONS = [
@@ -89,6 +164,16 @@ _MIGRATIONS = [
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_episodic_memory_session_id_unique ON episodic_memory(session_id)",
     "DELETE FROM procedural_memory WHERE rowid NOT IN (SELECT MIN(rowid) FROM procedural_memory GROUP BY session_id)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_procedural_memory_session_id_unique ON procedural_memory(session_id)",
+    "CREATE TABLE IF NOT EXISTS telemetry_recall_events (id TEXT PRIMARY KEY, request_id TEXT NOT NULL, event_type TEXT NOT NULL, created_at TEXT NOT NULL, session_id TEXT, agent TEXT, prompt_chars INTEGER, prompt_tokens_estimate INTEGER, include_working_memory INTEGER, project_id TEXT, repo_root TEXT, cwd TEXT, git_remote TEXT, git_branch TEXT, action TEXT, warnings_count INTEGER, facts_count INTEGER, episodic_count INTEGER, procedural_count INTEGER, session_memory_count INTEGER, working_memory_count INTEGER, answer_tokens_estimate INTEGER, injection_tokens_estimate INTEGER, recalled_context_tokens_estimate INTEGER, compression_gain_tokens_estimate INTEGER, tokens_saved_estimate INTEGER, error_message TEXT, details TEXT)",
+    "CREATE TABLE IF NOT EXISTS telemetry_retrieval_lane_metrics (id TEXT PRIMARY KEY, request_id TEXT NOT NULL, lane TEXT NOT NULL, created_at TEXT NOT NULL, candidate_count INTEGER, filtered_count INTEGER, selected_count INTEGER, hit_count INTEGER, duration_ms REAL, details TEXT)",
+    "CREATE TABLE IF NOT EXISTS telemetry_latency_breakdowns (id TEXT PRIMARY KEY, request_id TEXT, created_at TEXT NOT NULL, component TEXT NOT NULL, operation TEXT NOT NULL, stage TEXT NOT NULL, duration_ms REAL NOT NULL, session_id TEXT, details TEXT)",
+    "CREATE TABLE IF NOT EXISTS telemetry_system_stats (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, component TEXT NOT NULL, process_id INTEGER, session_id TEXT, metric_name TEXT NOT NULL, metric_value REAL NOT NULL, unit TEXT, details TEXT)",
+    "CREATE INDEX IF NOT EXISTS idx_telemetry_recall_events_request_id ON telemetry_recall_events(request_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_telemetry_recall_events_event_type ON telemetry_recall_events(event_type, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_telemetry_lane_metrics_request_id ON telemetry_retrieval_lane_metrics(request_id, lane, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_telemetry_latency_component ON telemetry_latency_breakdowns(component, operation, stage, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_telemetry_latency_request_id ON telemetry_latency_breakdowns(request_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_telemetry_system_stats_metric ON telemetry_system_stats(component, metric_name, created_at)",
 ]
 
 

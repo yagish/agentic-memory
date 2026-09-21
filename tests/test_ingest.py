@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 import memory.servers.ingest_server as ingest_server_module
 from memory.servers.ingest_server import app
-from memory.db import init_db
+from memory.db import init_db, list_recent_latency_breakdowns, list_recall_events, list_retrieval_lane_metrics
 from memory.retrieval import WakeUpContext
 
 
@@ -139,6 +139,47 @@ class TestIngestEndpoints(unittest.TestCase):
         self.assertIn("Memory context", body["injection"])
         log_memory_injection.assert_called_once()
         log_memory_answer.assert_not_called()
+
+    def test_post_recall_persists_db_telemetry(self):
+        context = WakeUpContext(
+            None,
+            None,
+            [],
+            [],
+            [{"id": "fact-1", "content": "user.name = Yash", "similarity": 0.99}],
+            [],
+            timings={
+                "prompt_embedding_ms": 12.5,
+                "memory_search_ms": 44.2,
+                "retrieval_total_ms": 60.0,
+            },
+        )
+        with patch.object(ingest_server_module, "retrieve_prompt_memory", return_value=context):
+            response = self.client.post(
+                "/recall",
+                json={"prompt": "what is my name?", "session_id": "sess-telemetry", "agent": "claude"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+
+        conn = init_db(self.db_path)
+        try:
+            recall_events = list_recall_events(conn, limit=10)
+            self.assertEqual(len(recall_events), 2)
+            self.assertEqual({event["event_type"] for event in recall_events}, {"request", "outcome"})
+            outcome = next(event for event in recall_events if event["event_type"] == "outcome")
+            self.assertEqual(outcome["action"], "answer")
+            self.assertEqual(outcome["facts_count"], 1)
+
+            latency_rows = list_recent_latency_breakdowns(conn, component="retrieval", operation="recall", limit=10)
+            self.assertEqual({row["stage"] for row in latency_rows}, {"prompt_embedding", "memory_search", "retrieval_total"})
+
+            lane_metrics = list_retrieval_lane_metrics(conn, limit=10)
+            fact_lane = next(row for row in lane_metrics if row["lane"] == "facts")
+            self.assertEqual(fact_lane["selected_count"], 1)
+            self.assertEqual(fact_lane["hit_count"], 1)
+        finally:
+            conn.close()
 
     def test_status_ok(self):
         response = self.client.get("/status")

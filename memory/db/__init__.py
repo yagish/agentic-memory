@@ -30,6 +30,19 @@ from memory.db.episodic import (
 from memory.db.procedural import insert_procedural, search_procedural_semantic
 from memory.db.working_memory import get_working_memory, upsert_working_memory
 from memory.db.session_memory import search_session_memory_semantic, upsert_session_memory
+from memory.db.telemetry import (
+    get_latest_system_stats,
+    get_telemetry_table_counts,
+    insert_latency_breakdown,
+    insert_recall_event,
+    insert_retrieval_lane_metric,
+    insert_system_stat,
+    list_recall_events,
+    list_recent_latency_breakdowns,
+    list_recent_system_stats,
+    list_retrieval_lane_metrics,
+    summarize_latency_breakdowns,
+)
 
 # scripts/migrate_facts_semantic_text.py imports these from memory.db directly
 from memory.vectors import embed, pack_vector
@@ -46,5 +59,9 @@ __all__ = [
     "insert_procedural", "search_procedural_semantic",
     "get_working_memory", "upsert_working_memory",
     "search_session_memory_semantic", "upsert_session_memory",
+    "insert_recall_event", "list_recall_events",
+    "insert_retrieval_lane_metric", "list_retrieval_lane_metrics",
+    "insert_latency_breakdown", "list_recent_latency_breakdowns", "summarize_latency_breakdowns",
+    "insert_system_stat", "list_recent_system_stats", "get_latest_system_stats", "get_telemetry_table_counts",
     "embed", "pack_vector",
 ]
