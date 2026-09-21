@@ -26,6 +26,7 @@ from memory.db.episodic import (
     insert_episodic,
     list_recent_episodic,
     prune_stale_episodic,
+    reinforce_episodic_memories,
     search_episodic_fts,
     search_episodic_semantic,
 )
@@ -57,7 +58,7 @@ __all__ = [
     "search", "search_session_fts", "semantic_search", "upsert_session",
     "delete_fact", "insert_fact", "list_facts", "prune_stale_facts",
     "search_facts", "search_facts_semantic", "update_fact", "upsert_fact",
-    "insert_episodic", "list_recent_episodic", "prune_stale_episodic", "search_episodic_fts", "search_episodic_semantic",
+    "insert_episodic", "list_recent_episodic", "prune_stale_episodic", "reinforce_episodic_memories", "search_episodic_fts", "search_episodic_semantic",
     "insert_procedural", "search_procedural_fts", "search_procedural_semantic",
     "get_working_memory", "prune_stale_working_memory", "upsert_working_memory",
     "prune_stale_session_memory", "search_session_memory_fts", "search_session_memory_semantic", "upsert_session_memory",

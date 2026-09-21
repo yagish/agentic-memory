@@ -16,8 +16,10 @@ from memory.db import (
     log_retrieval,
     open_db,
     get_session_by_id,
+    prune_stale_episodic,
     prune_stale_session_memory,
     prune_stale_working_memory,
+    reinforce_episodic_memories,
     search,
     search_episodic_fts,
     search_session_fts,
@@ -61,6 +63,43 @@ class TestConnectionBootstrapSplit(unittest.TestCase):
                 self.assertTrue({"sessions", "facts", "episodic_memory", "procedural_memory", "working_memory", "session_memory"}.issubset(tables))
             finally:
                 conn.close()
+        finally:
+            os.unlink(path)
+
+
+class TestEpisodicSchemaMigration(unittest.TestCase):
+    def test_ensure_schema_adds_episodic_reinforcement_columns_to_legacy_db(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+            path = tmp.name
+        try:
+            conn = sqlite3.connect(path)
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE episodic_memory (
+                  id TEXT PRIMARY KEY,
+                  session_id TEXT NOT NULL,
+                  title TEXT NOT NULL,
+                  abstract TEXT NOT NULL,
+                  happened_at TEXT NOT NULL,
+                  details TEXT,
+                  embedding BLOB
+                );
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            conn = open_db(path)
+            try:
+                ensure_schema(conn)
+                columns = [row[1] for row in conn.execute("PRAGMA table_info(episodic_memory)").fetchall()]
+            finally:
+                conn.close()
+
+            self.assertIn("retrieval_count", columns)
+            self.assertIn("last_retrieved_at", columns)
+            self.assertIn("reinforcement_count", columns)
         finally:
             os.unlink(path)
 
@@ -304,6 +343,65 @@ class TestFactAndEpisodeStorage(unittest.TestCase):
         results = search_episodic_fts(self.conn, "frostbyte", limit=2)
         self.assertEqual(results[0]["title"], "Release decision")
         self.assertTrue(results[0]["keyword_hit"])
+
+    def test_reinforce_episodic_memories_tracks_retrieval_use(self):
+        episode_id = insert_episodic(
+            self.conn,
+            session_id="s1",
+            title="Release decision",
+            abstract="Captured the release decision.",
+            happened_at="2026-01-01T00:00:00Z",
+            embedding=[1.0, 0.0],
+        )
+
+        updated = reinforce_episodic_memories(
+            self.conn,
+            [episode_id],
+            increment_retrieval=True,
+            retrieved_at="2026-01-10T00:00:00Z",
+        )
+
+        row = self.conn.execute(
+            "SELECT retrieval_count, last_retrieved_at, reinforcement_count FROM episodic_memory WHERE id = ?",
+            (episode_id,),
+        ).fetchone()
+        self.assertEqual(updated, 1)
+        self.assertEqual(row["retrieval_count"], 1)
+        self.assertEqual(row["last_retrieved_at"], "2026-01-10T00:00:00Z")
+        self.assertEqual(row["reinforcement_count"], 1)
+
+    def test_prune_stale_episodic_keeps_reinforced_memories_longer(self):
+        stale_id = insert_episodic(
+            self.conn,
+            session_id="stale-session",
+            title="Old deploy note",
+            abstract="This should expire without reinforcement.",
+            happened_at="2026-01-01T00:00:00Z",
+            embedding=[1.0, 0.0],
+        )
+        reinforced_id = insert_episodic(
+            self.conn,
+            session_id="reinforced-session",
+            title="Old deploy note kept alive",
+            abstract="This should survive because it was reinforced.",
+            happened_at="2026-01-01T00:00:00Z",
+            embedding=[0.0, 1.0],
+        )
+        reinforce_episodic_memories(
+            self.conn,
+            [reinforced_id],
+            increment_retrieval=True,
+            retrieved_at="2026-01-25T00:00:00Z",
+        )
+
+        deleted = prune_stale_episodic(self.conn, days=30, now="2026-02-10T00:00:00Z")
+        remaining_ids = {
+            row["id"] for row in self.conn.execute("SELECT id FROM episodic_memory").fetchall()
+        }
+
+        self.assertEqual(deleted, 1)
+        self.assertNotIn(stale_id, remaining_ids)
+        self.assertIn(reinforced_id, remaining_ids)
 
     def test_semantic_procedural_search(self):
         insert_procedural(

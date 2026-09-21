@@ -10,7 +10,7 @@ from integrations.common import (
     retrieve_prompt_memory,
     save_session_to_memory,
 )
-from memory.db import get_session_by_id
+from memory.db import get_session_by_id, init_db, insert_episodic
 from memory.retrieval import WakeUpContext
 
 
@@ -124,6 +124,45 @@ class TestRetrievePromptMemory(unittest.TestCase):
             working_memory_count=0,
             warnings_count=0,
         )
+
+    def test_retrieved_episodic_memories_record_reinforcement(self):
+        conn = init_db(":memory:")
+        try:
+            episode_id = insert_episodic(
+                conn,
+                session_id="session-episodic",
+                title="Auth fix",
+                abstract="Resolved the auth loop.",
+                happened_at="2026-01-01T00:00:00Z",
+                embedding=[1.0, 0.0],
+            )
+            context = WakeUpContext(
+                None,
+                None,
+                [],
+                [{"id": episode_id, "session_id": "session-episodic", "title": "Auth fix", "abstract": "Resolved the auth loop."}],
+                [],
+                [],
+            )
+
+            with patch("integrations.common.retrieve_wake_up_context", return_value=context), \
+                 patch("integrations.common.activity_log"):
+                retrieve_prompt_memory(
+                    conn,
+                    "continue auth work",
+                    include_working_memory=False,
+                    session_id="session-episodic",
+                )
+
+            row = conn.execute(
+                "SELECT retrieval_count, last_retrieved_at, reinforcement_count FROM episodic_memory WHERE id = ?",
+                (episode_id,),
+            ).fetchone()
+            self.assertEqual(row["retrieval_count"], 1)
+            self.assertIsNotNone(row["last_retrieved_at"])
+            self.assertEqual(row["reinforcement_count"], 1)
+        finally:
+            conn.close()
 
 
 class TestSharedSaveHelpers(unittest.TestCase):

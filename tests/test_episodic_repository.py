@@ -98,6 +98,44 @@ class TestEpisodicRepository(unittest.TestCase):
         self.assertEqual(results[0]["title"], "Auth middleware decision")
         self.assertGreaterEqual(results[0]["similarity"], 0.99)
 
+    def test_save_extracted_episode_reinforces_matching_prior_episode_from_new_session(self):
+        first_id = save_extracted_episode(
+            self.conn,
+            ExtractedEpisode(
+                title="Auth middleware decision",
+                abstract="Moved token validation into shared middleware.",
+            ),
+            session_id="session-auth-1",
+            happened_at="2026-09-04T10:00:00Z",
+            embed_fn=lambda text: [1.0, 0.0],
+            source="episodic_test",
+        )
+        second_id = save_extracted_episode(
+            self.conn,
+            ExtractedEpisode(
+                title="Auth middleware follow-up",
+                abstract="Moved token validation into shared middleware again.",
+            ),
+            session_id="session-auth-2",
+            happened_at="2026-09-05T10:00:00Z",
+            embed_fn=lambda text: [1.0, 0.0],
+            source="episodic_test",
+        )
+
+        first_row = self.conn.execute(
+            "SELECT reinforcement_count FROM episodic_memory WHERE id = ?",
+            (first_id,),
+        ).fetchone()
+        second_row = self.conn.execute(
+            "SELECT reinforcement_count FROM episodic_memory WHERE id = ?",
+            (second_id,),
+        ).fetchone()
+
+        self.assertIsNotNone(first_row)
+        self.assertIsNotNone(second_row)
+        self.assertEqual(first_row["reinforcement_count"], 1)
+        self.assertEqual(second_row["reinforcement_count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

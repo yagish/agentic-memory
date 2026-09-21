@@ -10,11 +10,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 
-from memory.db import bootstrap_db
+from memory.db import bootstrap_db, reinforce_episodic_memories
 from memory.facts.renderer import render_fact_answer
 from memory.servers.ingest_pipeline import IngestOutcome, ingest_session
 from memory.retrieval import WakeUpContext, build_wake_up_injection, retrieve_wake_up_context
-from memory.utils.logger import activity_log
+from memory.utils.logger import activity_log, error_log
 
 
 DEFAULT_DB_PATH = os.path.expanduser("~/.memory/memory.db")
@@ -157,6 +157,14 @@ def retrieve_prompt_memory(
     if embed_fn is not None:
         kwargs["embed_fn"] = embed_fn
     context = retrieve_wake_up_context(conn, prompt, **kwargs)
+    try:
+        reinforce_episodic_memories(
+            conn,
+            [row.get("id") for row in context.episodic if row.get("id")],
+            increment_retrieval=True,
+        )
+    except Exception as exc:
+        error_log("retrieval", f"episodic reinforcement failed: {exc}", exc=exc)
     timings = dict(getattr(context, "timings", {}) or {})
     activity_log(
         "retrieval",

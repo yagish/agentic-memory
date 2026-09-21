@@ -7,11 +7,14 @@ import os
 import sqlite3
 
 from memory.contracts import EpisodicMemory, ExtractedEpisode
-from memory.db import insert_episodic, list_recent_episodic, search_episodic_semantic
+from memory.db import insert_episodic, list_recent_episodic, reinforce_episodic_memories, search_episodic_semantic
 from memory.episodic.extractor import log_episodic_event
 from memory.llm.inference import embed_text
 
 _MIN_SIMILARITY = float(os.environ.get("MEMORY_MIN_SIMILARITY", "0.72"))
+_EXTRACTION_REINFORCEMENT_SIMILARITY = float(
+    os.environ.get("MEMORY_EPISODIC_REINFORCEMENT_SIMILARITY", "0.88")
+)
 
 
 def build_episodic_semantic_text(episode: ExtractedEpisode) -> str:
@@ -52,8 +55,15 @@ def save_extracted_episode(
 
     semantic_text = build_episodic_semantic_text(episode)
     embedding = None
+    reinforced_memory_id = None
     try:
         embedding = embed_fn(semantic_text)
+        for row in search_episodic_semantic(conn, embedding, limit=None):
+            if row.get("session_id") == session_id:
+                continue
+            if row.get("similarity", 0.0) >= _EXTRACTION_REINFORCEMENT_SIMILARITY:
+                reinforced_memory_id = row.get("id")
+                break
     except Exception as exc:
         log_episodic_event(
             "validation_error",
@@ -80,11 +90,15 @@ def save_extracted_episode(
         },
         embedding=embedding,
     )
+    if reinforced_memory_id:
+        reinforce_episodic_memories(conn, [reinforced_memory_id])
+
     log_episodic_event(
         "persist_result",
         source=source,
         session_id=session_id,
         persisted_record_ids=[saved_id],
+        reinforced_memory_id=reinforced_memory_id,
         validated_object=memory.model_dump(mode="json"),
     )
     return saved_id

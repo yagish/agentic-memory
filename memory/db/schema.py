@@ -37,13 +37,16 @@ CREATE TABLE IF NOT EXISTS facts (
 );
 
 CREATE TABLE IF NOT EXISTS episodic_memory (
-  id          TEXT PRIMARY KEY,
-  session_id  TEXT NOT NULL,
-  title       TEXT NOT NULL,
-  abstract    TEXT NOT NULL,
-  happened_at TEXT NOT NULL,
-  details     TEXT,
-  embedding   BLOB
+  id                 TEXT PRIMARY KEY,
+  session_id         TEXT NOT NULL,
+  title              TEXT NOT NULL,
+  abstract           TEXT NOT NULL,
+  happened_at        TEXT NOT NULL,
+  details            TEXT,
+  embedding          BLOB,
+  retrieval_count    INTEGER NOT NULL DEFAULT 0,
+  last_retrieved_at  TEXT,
+  reinforcement_count INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS procedural_memory (
@@ -164,6 +167,9 @@ _MIGRATIONS = [
     "ALTER TABLE sessions ADD COLUMN git_branch TEXT",
     "DELETE FROM episodic_memory WHERE rowid NOT IN (SELECT MIN(rowid) FROM episodic_memory GROUP BY session_id)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_episodic_memory_session_id_unique ON episodic_memory(session_id)",
+    "ALTER TABLE episodic_memory ADD COLUMN retrieval_count INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE episodic_memory ADD COLUMN last_retrieved_at TEXT",
+    "ALTER TABLE episodic_memory ADD COLUMN reinforcement_count INTEGER NOT NULL DEFAULT 0",
     "DELETE FROM procedural_memory WHERE rowid NOT IN (SELECT MIN(rowid) FROM procedural_memory GROUP BY session_id)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_procedural_memory_session_id_unique ON procedural_memory(session_id)",
     "CREATE TABLE IF NOT EXISTS telemetry_recall_events (id TEXT PRIMARY KEY, request_id TEXT NOT NULL, event_type TEXT NOT NULL, created_at TEXT NOT NULL, session_id TEXT, agent TEXT, prompt_chars INTEGER, prompt_tokens_estimate INTEGER, include_working_memory INTEGER, project_id TEXT, repo_root TEXT, cwd TEXT, git_remote TEXT, git_branch TEXT, action TEXT, warnings_count INTEGER, facts_count INTEGER, episodic_count INTEGER, procedural_count INTEGER, session_memory_count INTEGER, working_memory_count INTEGER, answer_tokens_estimate INTEGER, injection_tokens_estimate INTEGER, recalled_context_tokens_estimate INTEGER, compression_gain_tokens_estimate INTEGER, tokens_saved_estimate INTEGER, error_message TEXT, details TEXT)",
