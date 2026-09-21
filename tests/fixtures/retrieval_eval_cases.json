@@ -1,0 +1,215 @@
+{
+  "schema_version": 1,
+  "description": "Initial offline retrieval eval smoke suite. Keep cases deterministic and project-labeled so future regressions can gate on wrong-project contamination.",
+  "embedding_space": {
+    "type": "anchor_terms",
+    "anchors": [
+      "nebula",
+      "auth",
+      "deploy",
+      "resume",
+      "checklist",
+      "fjord",
+      "billing",
+      "database",
+      "engine",
+      "aurora"
+    ]
+  },
+  "sessions": [
+    {
+      "session_id": "sess-alpha",
+      "agent": "claude",
+      "updated_at": "2026-02-01T10:00:00Z",
+      "project_context": {
+        "project_id": "project-alpha",
+        "repo_root": "/tmp/project-alpha",
+        "cwd": "/tmp/project-alpha/services/auth",
+        "git_remote": "git@github.com:example/project-alpha.git",
+        "git_branch": "main"
+      },
+      "turns": [
+        {
+          "role": "user",
+          "content": "Help me finish the nebula auth deploy."
+        },
+        {
+          "role": "assistant",
+          "content": "We should resume from the deploy checklist."
+        }
+      ],
+      "working_memory": {
+        "current_goal": "Ship the nebula auth deploy safely",
+        "current_focus": "Finalize the release checklist",
+        "next_step": "Run the nebula deploy checklist",
+        "active_tasks": [
+          "Confirm auth migration",
+          "Run deploy checklist"
+        ],
+        "status": "ready_to_resume",
+        "embedding_terms": [
+          "nebula",
+          "auth",
+          "deploy",
+          "resume"
+        ]
+      },
+      "session_memory": {
+        "title": "Nebula auth deploy",
+        "summary": "Finished auth changes and stopped before the deploy checklist.",
+        "left_off_at": "Need to run the nebula deploy checklist before shipping.",
+        "next_steps": [
+          "Run the nebula deploy checklist"
+        ],
+        "embedding_terms": [
+          "nebula",
+          "auth",
+          "deploy",
+          "resume"
+        ]
+      },
+      "procedural": [
+        {
+          "title": "Nebula deploy checklist",
+          "summary": "Use this when deploying the nebula auth service.",
+          "steps": [
+            "Run smoke tests",
+            "Deploy auth service",
+            "Verify login flow"
+          ],
+          "embedding_terms": [
+            "nebula",
+            "deploy",
+            "checklist"
+          ]
+        }
+      ]
+    },
+    {
+      "session_id": "sess-alpha-prior",
+      "agent": "claude",
+      "updated_at": "2026-01-31T18:00:00Z",
+      "project_context": {
+        "project_id": "project-alpha",
+        "repo_root": "/tmp/project-alpha",
+        "cwd": "/tmp/project-alpha/services/auth",
+        "git_remote": "git@github.com:example/project-alpha.git",
+        "git_branch": "main"
+      },
+      "session_memory": {
+        "title": "Nebula auth deploy handoff",
+        "summary": "Previous session completed the auth changes and prepared the deploy handoff.",
+        "left_off_at": "Resume from the nebula deploy checklist and verify auth after shipping.",
+        "next_steps": [
+          "Run the nebula deploy checklist",
+          "Verify auth after deploy"
+        ],
+        "embedding_terms": [
+          "nebula",
+          "auth",
+          "deploy",
+          "resume"
+        ]
+      }
+    },
+    {
+      "session_id": "sess-beta",
+      "agent": "claude",
+      "updated_at": "2026-02-01T11:00:00Z",
+      "project_context": {
+        "project_id": "project-beta",
+        "repo_root": "/tmp/project-beta",
+        "cwd": "/tmp/project-beta/services/billing",
+        "git_remote": "git@github.com:example/project-beta.git",
+        "git_branch": "main"
+      },
+      "facts": [
+        {
+          "entity": "project",
+          "attribute": "database_engine",
+          "value": "aurora",
+          "semantic_content": "Fjord billing uses aurora as its database engine.",
+          "embedding_terms": [
+            "fjord",
+            "billing",
+            "database",
+            "engine",
+            "aurora"
+          ]
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "alpha_resume_injects_same_project_context",
+      "prompt": "pick up the nebula auth deploy work",
+      "session_id": "sess-alpha",
+      "include_working_memory": true,
+      "project_context": {
+        "project_id": "project-alpha",
+        "repo_root": "/tmp/project-alpha",
+        "cwd": "/tmp/project-alpha/services/auth",
+        "git_remote": "git@github.com:example/project-alpha.git",
+        "git_branch": "main"
+      },
+      "expect": {
+        "action": "inject",
+        "min_counts": {
+          "working_memory": 1,
+          "session_memory": 1,
+          "procedural": 1
+        },
+        "required_memory_types": [
+          "working_memory",
+          "session_memory",
+          "procedural"
+        ],
+        "required_session_ids": [
+          "sess-alpha",
+          "sess-alpha-prior"
+        ],
+        "allowed_project_ids": [
+          "project-alpha"
+        ],
+        "forbidden_project_ids": [
+          "project-beta"
+        ],
+        "max_wrong_project_hits": 0,
+        "injection_must_contain": "Nebula deploy checklist"
+      }
+    },
+    {
+      "id": "beta_fact_answers_without_cross_project_hits",
+      "prompt": "what database engine does fjord billing use",
+      "include_working_memory": false,
+      "project_context": {
+        "project_id": "project-beta",
+        "repo_root": "/tmp/project-beta",
+        "cwd": "/tmp/project-beta/services/billing",
+        "git_remote": "git@github.com:example/project-beta.git",
+        "git_branch": "main"
+      },
+      "expect": {
+        "action": "answer",
+        "min_counts": {
+          "facts": 1
+        },
+        "required_memory_types": [
+          "facts"
+        ],
+        "required_session_ids": [
+          "sess-beta"
+        ],
+        "allowed_project_ids": [
+          "project-beta"
+        ],
+        "forbidden_project_ids": [
+          "project-alpha"
+        ],
+        "max_wrong_project_hits": 0,
+        "answer_must_contain": "aurora"
+      }
+    }
+  ]
+}
