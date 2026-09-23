@@ -32,16 +32,6 @@
       "justMyCode": false
     },
     {
-      "name": "Attach: MCP (:5681)",
-      "type": "debugpy",
-      "request": "attach",
-      "connect": {
-        "host": "127.0.0.1",
-        "port": 5681
-      },
-      "justMyCode": false
-    },
-    {
       "name": "Attach: save_hook (:5682)",
       "type": "debugpy",
       "request": "attach",
