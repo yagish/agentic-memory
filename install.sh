@@ -12,7 +12,7 @@ if [ "${1:-}" = "--uninstall" ]; then
 
     # Remove Claude Code hooks
     export INSTALL_DIR PYTHON3_EXEC
-    python3 << PYEOF
+    "$PYTHON3_EXEC" << PYEOF
 import json, os
 INSTALL_DIR = os.environ["INSTALL_DIR"]
 PYTHON3_EXEC = os.environ["PYTHON3_EXEC"]
@@ -56,7 +56,7 @@ PYEOF
     fi
 
     # Unload and remove launchd plists
-    for LABEL in com.memory.daemon com.memory.ingest com.memory.query; do
+    for LABEL in com.memory.daemon com.memory.ingest com.memory.query com.memory.logrotate; do
         PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
         if [ -f "$PLIST" ]; then
             launchctl unload "$PLIST" 2>/dev/null || true
@@ -73,6 +73,8 @@ fi
 
 echo "Installing agentic-memory from: $INSTALL_DIR"
 echo ""
+
+mkdir -p "$HOME/.claude" "$HOME/Library/LaunchAgents"
 
 # ── Step 1: Python version check ────────────────────────────────────────────
 if ! command -v python3 &>/dev/null; then
@@ -135,42 +137,47 @@ done
 
 if [ -z "$OLLAMA_BIN" ]; then
     echo "  ! ollama not found — skipping (install via: brew install ollama)"
-elif "$OLLAMA_BIN" list 2>/dev/null | grep -q "^${OLLAMA_MODEL%%:*}"; then
-    echo "  = Model $OLLAMA_MODEL already present in Ollama"
 else
-    # Check if it can be pulled directly from the Ollama registry first.
-    # If that fails (e.g. corporate proxy), fall back to HuggingFace download.
-    echo "  Trying ollama pull $OLLAMA_MODEL ..."
-    if "$OLLAMA_BIN" pull "$OLLAMA_MODEL" 2>/dev/null; then
-        echo "  + Model $OLLAMA_MODEL ready (via Ollama registry)"
+    OLLAMA_LIST_OUTPUT=""
+    if ! OLLAMA_LIST_OUTPUT="$($OLLAMA_BIN list 2>/dev/null)"; then
+        echo "  ! Unable to query Ollama — skipping model setup (start Ollama and rerun install if needed)"
+    elif printf '%s\n' "$OLLAMA_LIST_OUTPUT" | grep -q "^${OLLAMA_MODEL%%:*}"; then
+        echo "  = Model $OLLAMA_MODEL already present in Ollama"
     else
-        echo "  ! Ollama registry pull failed — downloading GGUF from HuggingFace..."
-        mkdir -p "$MODELS_DIR"
-        if [ -f "$GGUF_FILE" ]; then
-            echo "  = GGUF already downloaded: $GGUF_FILE"
+        # Check if it can be pulled directly from the Ollama registry first.
+        # If that fails (e.g. corporate proxy), fall back to HuggingFace download.
+        echo "  Trying ollama pull $OLLAMA_MODEL ..."
+        if "$OLLAMA_BIN" pull "$OLLAMA_MODEL" 2>/dev/null; then
+            echo "  + Model $OLLAMA_MODEL ready (via Ollama registry)"
         else
-            echo "  Downloading $(basename "$HF_GGUF_URL") (~5 GB) ..."
-            if curl -L --progress-bar -o "$GGUF_FILE" "$HF_GGUF_URL"; then
-                echo "  + Downloaded to $GGUF_FILE"
+            echo "  ! Ollama registry pull failed — downloading GGUF from HuggingFace..."
+            mkdir -p "$MODELS_DIR"
+            if [ -f "$GGUF_FILE" ]; then
+                echo "  = GGUF already downloaded: $GGUF_FILE"
             else
-                rm -f "$GGUF_FILE"
-                echo "  ! Download failed — retry manually:"
-                echo "    curl -L -o $GGUF_FILE $HF_GGUF_URL"
-                echo "    ollama create $OLLAMA_MODEL -f <(echo 'FROM $GGUF_FILE')"
-                GGUF_FILE=""
+                echo "  Downloading $(basename "$HF_GGUF_URL") (~5 GB) ..."
+                if curl -L --progress-bar -o "$GGUF_FILE" "$HF_GGUF_URL"; then
+                    echo "  + Downloaded to $GGUF_FILE"
+                else
+                    rm -f "$GGUF_FILE"
+                    echo "  ! Download failed — retry manually:"
+                    echo "    curl -L -o $GGUF_FILE $HF_GGUF_URL"
+                    echo "    ollama create $OLLAMA_MODEL -f <(echo 'FROM $GGUF_FILE')"
+                    GGUF_FILE=""
+                fi
             fi
-        fi
-        if [ -n "$GGUF_FILE" ] && [ -f "$GGUF_FILE" ]; then
-            echo "  Importing into Ollama as $OLLAMA_MODEL ..."
-            MODELFILE_TMP="$(mktemp)"
-            echo "FROM $GGUF_FILE" > "$MODELFILE_TMP"
-            if "$OLLAMA_BIN" create "$OLLAMA_MODEL" -f "$MODELFILE_TMP"; then
-                echo "  + Model $OLLAMA_MODEL ready (imported from HuggingFace GGUF)"
-            else
-                echo "  ! Import failed — retry manually:"
-                echo "    ollama create $OLLAMA_MODEL -f $MODELFILE_TMP"
+            if [ -n "$GGUF_FILE" ] && [ -f "$GGUF_FILE" ]; then
+                echo "  Importing into Ollama as $OLLAMA_MODEL ..."
+                MODELFILE_TMP="$(mktemp)"
+                echo "FROM $GGUF_FILE" > "$MODELFILE_TMP"
+                if "$OLLAMA_BIN" create "$OLLAMA_MODEL" -f "$MODELFILE_TMP"; then
+                    echo "  + Model $OLLAMA_MODEL ready (imported from HuggingFace GGUF)"
+                else
+                    echo "  ! Import failed — retry manually:"
+                    echo "    ollama create $OLLAMA_MODEL -f $MODELFILE_TMP"
+                fi
+                rm -f "$MODELFILE_TMP"
             fi
-            rm -f "$MODELFILE_TMP"
         fi
     fi
 fi
@@ -218,7 +225,7 @@ fi
 echo ""
 echo "Configuring ~/.claude/settings.json hooks..."
 export INSTALL_DIR PYTHON3_EXEC
-python3 << PYEOF
+"$PYTHON3_EXEC" << PYEOF
 import json, os
 SETTINGS_PATH = os.path.expanduser("~/.claude/settings.json")
 INSTALL_DIR = os.environ["INSTALL_DIR"]

@@ -30,11 +30,11 @@ service_label() {
   esac
 }
 
-service_script() {
+service_module() {
   case "$1" in
-    daemon) echo "$ROOT_DIR/memory/daemon.py" ;;
-    recall|ingest) echo "$ROOT_DIR/memory/ingest_server.py" ;;
-    query)  echo "$ROOT_DIR/memory/dashboard_server.py" ;;
+    daemon) echo "memory.daemon" ;;
+    recall|ingest) echo "memory.servers.ingest_server" ;;
+    query)  echo "memory.servers.dashboard_server" ;;
   esac
 }
 
@@ -52,8 +52,8 @@ service_pidfile() {
 
 service_port() {
   case "$1" in
-    recall|ingest) echo "7747" ;;
-    query)  echo "7748" ;;
+    recall|ingest) echo "${MEMORY_INGEST_PORT:-7747}" ;;
+    query)  echo "${MEMORY_QUERY_PORT:-7748}" ;;
     *)      echo "" ;;
   esac
 }
@@ -148,7 +148,7 @@ start_service() {
     return 0
   fi
 
-  local pidfile pid port port_pid log script
+  local pidfile pid port port_pid log module
   pidfile="$(service_pidfile "$svc")"
   pid="$(manual_pid "$svc" || true)"
   if pid_running "$pid"; then
@@ -164,14 +164,14 @@ start_service() {
   fi
 
   log="$(service_log "$svc")"
-  script="$(service_script "$svc")"
+  module="$(service_module "$svc")"
 
   if [[ -n "$debug_port" ]]; then
     echo "Starting $(service_name "$svc") in debug mode on ${debug_port} (direct python launch)"
   fi
 
   cd "$ROOT_DIR"
-  nohup python3 "$script" >> "$log" 2>&1 &
+  nohup python3 -m "$module" >> "$log" 2>&1 &
   pid=$!
   echo "$pid" > "$pidfile"
   sleep 1
