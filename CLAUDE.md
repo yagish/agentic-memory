@@ -4,6 +4,15 @@
 
 A local-first persistent memory system for Claude Code (and pi). It captures every conversation, extracts structured memory via a local Ollama model in the background, and injects relevant context at the start of each new prompt.
 
+> Cross-agent note: `AGENTS.md` should be a symlink to this file so non-Claude agents read the same repository guidance.
+
+## Documentation map
+
+- `README.md` — quick-start, architecture summary, commands, configuration
+- `docs/README.md` — documentation index for generated docs, ADRs, and planning notes
+- `docs/generated/README.md` — deep technical documentation set
+- `CLAUDE.md` / `AGENTS.md` — contributor guidance and repository invariants
+
 ## Running and testing
 
 ```bash

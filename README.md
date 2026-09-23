@@ -2,6 +2,13 @@
 
 A local-first persistent memory system for AI agents. It records every conversation, extracts five complementary memory types via a local LLM, and injects relevant context at the start of each new prompt — without blocking any agent session.
 
+## Documentation map
+
+- [`docs/README.md`](docs/README.md) — repository documentation index
+- [`docs/generated/README.md`](docs/generated/README.md) — full generated system docs
+- [`CLAUDE.md`](CLAUDE.md) — contributor and coding-agent guide for this repo
+- [`AGENTS.md`](AGENTS.md) — symlink to `CLAUDE.md` for cross-agent compatibility
+
 ## How it works
 
 Every Claude Code session is captured by a **Stop hook** that writes the transcript to SQLite. A **background daemon** then picks up unprocessed sessions and runs five extractors sequentially against each one, calling a local Ollama model to produce structured memory. When a new prompt arrives, a **UserPromptSubmit hook** calls the recall server, embeds the prompt, does a cosine-similarity search over all stored memory, and either answers directly (for simple fact lookups) or prepends retrieved context to the prompt.
@@ -231,4 +238,6 @@ python3 scripts/backfill_procedural_memory.py --db ~/.memory/memory.db --force -
 
 ## Generated documentation
 
-Full technical documentation (endpoints, flows, business rules, troubleshooting) lives in [`docs/generated/`](docs/generated/README.md).
+Full technical documentation (endpoints, flows, business rules, troubleshooting) lives in [`docs/generated/README.md`](docs/generated/README.md).
+
+For a higher-level document index, including ADRs and planning notes, start at [`docs/README.md`](docs/README.md).
