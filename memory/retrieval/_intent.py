@@ -20,6 +20,19 @@ _RESUME_INTENT_EXEMPLARS = [
 
 _RESUME_SIMILARITY_THRESHOLD = 0.45
 
+_RESUME_TEXT_CUES = (
+    "resume",
+    "continue where we left off",
+    "pick up where",
+    "pick up from",
+    "what were we working on",
+    "what was i working on",
+    "where did we leave off",
+    "remind me what we were doing",
+    "summarize recent work",
+    "catch me up",
+)
+
 # Budget in characters (tokens * 4) for each intent class
 _BUDGET_BY_INTENT = {
     "task": 500 * 4,     # ~500 tokens = 2000 chars
@@ -41,6 +54,13 @@ def _cosine_sim(a: list[float], b) -> float:
     if mag_a == 0 or mag_b == 0:
         return 0.0
     return dot / (mag_a * mag_b)
+
+
+def _prompt_looks_like_resume(prompt: str) -> bool:
+    prompt_normalized = " ".join(str(prompt or "").lower().split())
+    if not prompt_normalized:
+        return False
+    return any(cue in prompt_normalized for cue in _RESUME_TEXT_CUES)
 
 
 def _prompt_requests_recent_episode_summary(prompt_vec: list[float]) -> bool:

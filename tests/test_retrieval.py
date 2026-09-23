@@ -59,6 +59,50 @@ class TestBuildWakeUpInjection(unittest.TestCase):
         self.assertIn("Remembered fact: user.name = Yash.", result)
         self.assertNotIn("Related prior session", result)
 
+    def test_includes_pending_session_enrichment_fallback(self):
+        result = build_wake_up_injection(
+            WakeUpContext(
+                None,
+                None,
+                [{
+                    "id": "session-enrichment:sess-1",
+                    "session_id": "sess-1",
+                    "excerpt": "user: which tickets did we merge? assistant: DCPSERV-81776 and DCPSERV-83504 were merged into main.",
+                    "repo_root": "/tmp/demo-repo",
+                    "memory_processing": True,
+                }],
+                [],
+                [],
+                [],
+            )
+        )
+        self.assertIn("Pending memory extraction from a matching session in /tmp/demo-repo.", result)
+        self.assertIn("Raw session fallback: user: which tickets did we merge? assistant: DCPSERV-81776", result)
+
+    def test_task_intent_omits_handoff_lines_from_session_memory(self):
+        result = build_wake_up_injection(
+            WakeUpContext(
+                None,
+                None,
+                [],
+                [],
+                [],
+                [],
+                session_memory=[{
+                    "id": "sm-1",
+                    "title": "Auth middleware refactor",
+                    "summary": "Moved token validation into shared middleware.",
+                    "left_off_at": "Regression coverage still needs to be written",
+                    "next_steps": ["Add regression coverage"],
+                    "similarity": 0.9,
+                }],
+                prompt_intent="task",
+            )
+        )
+        self.assertIn("Relevant prior session: Auth middleware refactor. Moved token validation into shared middleware.", result)
+        self.assertNotIn("Left off at:", result)
+        self.assertNotIn("Next session:", result)
+
 
 class TestRetrieveWakeUpContext(unittest.TestCase):
     def test_retrieval_fetches_episodic_facts_and_procedural_memory(self):
@@ -255,6 +299,88 @@ class TestRetrieveWakeUpContext(unittest.TestCase):
             exclude_session_id="session-123",
             session_ids=None,
         )
+
+    def test_task_prompt_clears_working_memory_and_prunes_weak_session_handoff_rows(self):
+        conn = MagicMock()
+
+        with patch("memory.retrieval._fetch._prompt_looks_like_resume", return_value=False), \
+             patch("memory.retrieval._fetch._retrieve_wm", return_value={
+                 "id": "wm-1",
+                 "session_id": "session-123",
+                 "current_goal": "Finish auth middleware refactor",
+                 "current_focus": "Regression coverage",
+                 "next_step": "Write regression tests",
+                 "status": "ready_to_resume",
+             }), \
+             patch("memory.retrieval._fetch.retrieve_episodic_memories", return_value=[]), \
+             patch("memory.retrieval._fetch.search_episodic_fts", return_value=[]), \
+             patch("memory.retrieval._fetch.search_facts_semantic", return_value=[]), \
+             patch("memory.retrieval._fetch.retrieve_procedural_memories", return_value=[]), \
+             patch("memory.retrieval._fetch.search_procedural_fts", return_value=[]), \
+             patch("memory.retrieval._fetch.retrieve_session_memories", return_value=[
+                 {
+                     "id": "sm-1",
+                     "session_id": "session-old",
+                     "title": "Auth middleware refactor",
+                     "summary": "Moved token validation into shared middleware.",
+                     "left_off_at": "Regression coverage is still missing",
+                     "next_steps": ["Add regression coverage"],
+                     "similarity": 0.61,
+                 }
+             ]), \
+             patch("memory.retrieval._fetch.search_session_fts", return_value=[]), \
+             patch("memory.retrieval._fetch.search_session_memory_fts", return_value=[]):
+            context = retrieve_wake_up_context(
+                conn,
+                "how are these related?",
+                include_working_memory=True,
+                session_id="session-123",
+                embed_fn=lambda prompt: [0.1],
+            )
+
+        self.assertIsNone(context.working_mem)
+        self.assertEqual(context.session_memory, [])
+        self.assertEqual(context.prompt_intent, "task")
+
+    def test_task_prompt_prunes_weak_semantic_contextual_matches(self):
+        conn = MagicMock()
+
+        with patch("memory.retrieval._fetch._prompt_looks_like_resume", return_value=False), \
+             patch("memory.retrieval._fetch.retrieve_episodic_memories", return_value=[
+                 {
+                     "id": "ep-1",
+                     "title": "Recent repo work",
+                     "abstract": "Did some unrelated maintenance work.",
+                     "decisions": ["Tuned an installer script"],
+                     "outcomes": ["Passed tests"],
+                     "similarity": 0.62,
+                 }
+             ]), \
+             patch("memory.retrieval._fetch.search_episodic_fts", return_value=[]), \
+             patch("memory.retrieval._fetch.search_facts_semantic", return_value=[]), \
+             patch("memory.retrieval._fetch.retrieve_procedural_memories", return_value=[
+                 {
+                     "id": "proc-1",
+                     "title": "Recent installer workflow",
+                     "summary": "Run the installer smoke test.",
+                     "steps": ["Run ./install.sh"],
+                     "similarity": 0.6,
+                 }
+             ]), \
+             patch("memory.retrieval._fetch.search_procedural_fts", return_value=[]), \
+             patch("memory.retrieval._fetch.retrieve_session_memories", return_value=[]), \
+             patch("memory.retrieval._fetch.search_session_fts", return_value=[]), \
+             patch("memory.retrieval._fetch.search_session_memory_fts", return_value=[]):
+            context = retrieve_wake_up_context(
+                conn,
+                "how are these related?",
+                include_working_memory=False,
+                embed_fn=lambda prompt: [0.1],
+            )
+
+        self.assertEqual(context.episodic, [])
+        self.assertEqual(context.procedural, [])
+        self.assertEqual(context.prompt_intent, "task")
 
     def test_retrieval_searches_broadly_without_prompt_gating(self):
         conn = MagicMock()
@@ -946,6 +1072,48 @@ class TestProjectAwareRetrieval(unittest.TestCase):
         self.assertEqual(context.session_memory, [])
         self.assertEqual(context.episodic, [])
         self.assertEqual(context.procedural, [])
+
+    def test_pending_session_transcript_is_used_as_enrichment_fallback(self):
+        upsert_session(
+            self.conn,
+            "alpha-current",
+            "claude",
+            [{"role": "user", "content": "Please remind me which tickets we merged together."}],
+            "2026-02-01T10:00:00Z",
+            "2026-02-01T10:05:00Z",
+            project_context=self._project_context("project-alpha"),
+        )
+        upsert_session(
+            self.conn,
+            "alpha-previous",
+            "claude",
+            [
+                {"role": "user", "content": "which tickets did we merge?"},
+                {"role": "assistant", "content": "DCPSERV-81776 and DCPSERV-83504 were merged into main."},
+            ],
+            "2026-02-01T09:00:00Z",
+            "2026-02-01T09:15:00Z",
+            project_context=self._project_context("project-alpha"),
+        )
+
+        context = retrieve_wake_up_context(
+            self.conn,
+            "which jira tickets were merged together",
+            include_working_memory=False,
+            session_id="alpha-current",
+            project_context=self._project_context("project-alpha"),
+            embed_fn=self.embed_fn,
+        )
+
+        self.assertEqual(context.session_memory, [])
+        self.assertEqual(context.episodic, [])
+        self.assertEqual(context.procedural, [])
+        self.assertEqual([row["session_id"] for row in context.enrichment], ["alpha-previous"])
+        self.assertTrue(context.enrichment[0].get("memory_processing"))
+        self.assertIn("DCPSERV-81776", context.enrichment[0]["excerpt"])
+        injection = build_wake_up_injection(context)
+        self.assertIn("Pending memory extraction from a matching session", injection)
+        self.assertIn("DCPSERV-83504", injection)
 
 
 if __name__ == "__main__":

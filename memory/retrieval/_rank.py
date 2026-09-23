@@ -16,6 +16,12 @@ from memory.retrieval._text import WORD_RE, _memory_text, _normalize_text
 
 _RECENCY_DECAY_DAYS = 90.0
 
+_TASK_MIN_ROW_SCORE_BY_KIND = {
+    "episodic": 0.72,
+    "procedural": 0.72,
+    "session_memory": 0.78,
+}
+
 
 def _filter_by_similarity(rows: list[dict], threshold: float | None) -> list[dict]:
     if threshold is None:
@@ -99,6 +105,22 @@ def _row_score(item: dict, kind: str, prompt_tokens: set[str], *, project_contex
     if kind == "episodic" and _looks_like_missing_memory_episode(item):
         score -= 0.25
     return score
+
+
+def _is_task_relevant_context_row(
+    item: dict,
+    kind: str,
+    prompt: str,
+    *,
+    project_context: dict | None = None,
+) -> bool:
+    if item.get("keyword_hit") or item.get("session_hit"):
+        return True
+    threshold = _TASK_MIN_ROW_SCORE_BY_KIND.get(kind)
+    if threshold is None:
+        return True
+    prompt_tokens = _tokenize(prompt)
+    return _row_score(item, kind, prompt_tokens, project_context=project_context) >= threshold
 
 
 def _rank_rows(rows: list[dict], kind: str, prompt: str, *, limit: int, project_context: dict | None = None) -> list[dict]:

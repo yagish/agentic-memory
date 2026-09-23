@@ -34,10 +34,11 @@ from memory.retrieval._project import (
 from memory.retrieval._rank import (
     _filter_by_similarity,
     _is_substantive_episode,
+    _is_task_relevant_context_row,
     _looks_like_missing_memory_episode,
     _rank_rows,
 )
-from memory.retrieval._intent import _prompt_requests_recent_episode_summary
+from memory.retrieval._intent import _prompt_looks_like_resume, _prompt_requests_recent_episode_summary
 
 from memory.db import (
     search_episodic_fts,
@@ -46,6 +47,7 @@ from memory.db import (
     search_session_fts,
     search_session_memory_fts,
 )
+from memory.db._utils import _json_loads, _session_text_from_turns
 from memory.episodic.repository import list_recent_episodic_memories, list_session_episodes, retrieve_episodic_memories
 from memory.llm.inference import embed_text
 from memory.procedural.repository import list_session_procedures, retrieve_procedural_memories
@@ -74,6 +76,22 @@ def _search_session_hits(
         ]
     except Exception as exc:
         _append_warning(warnings, "session_keyword", exc)
+        return []
+
+
+def _search_current_session_hit(
+    conn,
+    prompt: str,
+    warnings: list[RetrievalWarning],
+    *,
+    session_id: str | None,
+) -> list[dict]:
+    if not session_id:
+        return []
+    try:
+        return search_session_fts(conn, prompt, limit=1, session_ids={session_id})
+    except Exception as exc:
+        _append_warning(warnings, "current_session_keyword", exc)
         return []
 
 
@@ -124,6 +142,85 @@ def _expand_session_hits(
     except Exception as exc:
         _append_warning(warnings, "session_memory_session_keyword", exc)
     return expanded
+
+
+def _session_turns(transcript_payload) -> list[dict]:
+    turns = transcript_payload if isinstance(transcript_payload, list) else _json_loads(transcript_payload, [])
+    return turns if isinstance(turns, list) else []
+
+
+def _session_text_excerpt(transcript_payload, *, limit_chars: int = 1600) -> str:
+    transcript_text = _session_text_from_turns(_session_turns(transcript_payload))
+    excerpt = " ".join(str(transcript_text or "").split())
+    if len(excerpt) <= limit_chars:
+        return excerpt
+    return excerpt[: limit_chars - 1].rstrip() + "…"
+
+
+def _retrieve_pending_session_enrichment(
+    conn,
+    session_hits: list[dict],
+    warnings: list[RetrievalWarning],
+    *,
+    ambient_project: dict | None,
+    session_projects: dict[str, dict[str, str]],
+) -> list[MemoryRow]:
+    session_ids = tuple(sorted({row.get("session_id") for row in session_hits if row.get("session_id")}))
+    if not session_ids:
+        return []
+    placeholders = ", ".join("?" for _ in session_ids)
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT session_id, updated_at, transcript, daemon_processed_at,
+                   project_id, repo_root, cwd, git_remote, git_branch
+            FROM sessions
+            WHERE session_id IN ({placeholders})
+            ORDER BY updated_at DESC
+            """,
+            session_ids,
+        ).fetchall()
+    except Exception as exc:
+        _append_warning(warnings, "session_enrichment", exc)
+        return []
+
+    pending_rows: list[MemoryRow] = []
+    for row in rows:
+        if row["daemon_processed_at"] is not None:
+            continue
+        turns = _session_turns(row["transcript"])
+        if not any(str(turn.get("role", "")) == "assistant" and str(turn.get("content", "")).strip() for turn in turns):
+            continue
+        excerpt = _session_text_excerpt(turns)
+        if not excerpt:
+            continue
+        pending_rows.append(
+            {
+                "id": f"session-enrichment:{row['session_id']}",
+                "session_id": row["session_id"],
+                "updated_at": row["updated_at"],
+                "excerpt": excerpt,
+                "memory_processing": True,
+                "processing_state": "pending_extraction",
+                "project_id": row["project_id"],
+                "repo_root": row["repo_root"],
+                "cwd": row["cwd"],
+                "git_remote": row["git_remote"],
+                "git_branch": row["git_branch"],
+            }
+        )
+
+    enriched = enrich_rows_with_project_metadata(
+        pending_rows,
+        ambient_project=ambient_project,
+        session_projects=session_projects,
+        kind="session_memory",
+    )
+    return [
+        row
+        for row in enriched
+        if is_row_allowed_for_project_policy(row, "session_memory", ambient_project)
+    ][:2]
 
 
 def _retrieve_episodic(
@@ -362,6 +459,7 @@ def retrieve_wake_up_context(
     overall_started = time.perf_counter()
     embed_started = overall_started
     prompt_vec = embed_fn(prompt)
+    prompt_intent = "resume" if _prompt_looks_like_resume(prompt) else "task"
     embed_ms = round((time.perf_counter() - embed_started) * 1000, 3)
 
     search_started = time.perf_counter()
@@ -372,6 +470,12 @@ def retrieve_wake_up_context(
         warnings,
         session_id=session_id,
         same_project_session_ids=scoped_session_ids,
+    )
+    current_session_hits = _search_current_session_hit(
+        conn,
+        prompt,
+        warnings,
+        session_id=session_id,
     )
     session_hit_rows = _expand_session_hits(conn, session_hits, warnings)
 
@@ -460,7 +564,32 @@ def retrieve_wake_up_context(
         project_context=ambient_project,
     )
 
-    if not episodic and not session_memory and _prompt_requests_recent_episode_summary(prompt_vec):
+    if prompt_intent != "resume":
+        working_mem = None
+        episodic = [
+            row for row in episodic
+            if _is_task_relevant_context_row(row, "episodic", prompt, project_context=ambient_project)
+        ]
+        procedural = [
+            row for row in procedural
+            if _is_task_relevant_context_row(row, "procedural", prompt, project_context=ambient_project)
+        ]
+        session_memory = [
+            row for row in session_memory
+            if _is_task_relevant_context_row(row, "session_memory", prompt, project_context=ambient_project)
+        ]
+
+    enrichment: list[MemoryRow] = []
+    if not episodic and not session_memory and not procedural:
+        enrichment = _retrieve_pending_session_enrichment(
+            conn,
+            session_hits + current_session_hits,
+            warnings,
+            ambient_project=ambient_project,
+            session_projects=session_projects,
+        )
+
+    if not episodic and not session_memory and prompt_intent == "resume" and _prompt_requests_recent_episode_summary(prompt_vec):
         episodic = _rank_rows(
             _retrieve_recent_episodic(
                 conn,
@@ -480,13 +609,14 @@ def retrieve_wake_up_context(
     return WakeUpContext(
         cache_hit=None,
         working_mem=working_mem,
-        enrichment=[],
+        enrichment=enrichment,
         episodic=episodic,
         facts=facts,
         procedural=procedural,
         session_memory=session_memory,
         warnings=warnings,
         prompt_vec=prompt_vec,
+        prompt_intent=prompt_intent,
         timings={
             "prompt_embedding_ms": embed_ms,
             "memory_search_ms": search_ms,

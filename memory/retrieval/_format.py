@@ -31,7 +31,21 @@ def _format_episodic(episodic: list[MemoryRow]) -> str:
     return " ".join(_format_episode(item) for item in episodic[:2] if _format_episode(item))
 
 
-def _format_working_memory(item: MemoryRow | None) -> str:
+def _format_enrichment(items: list[MemoryRow]) -> str:
+    fragments: list[str] = []
+    for item in items[:1]:
+        excerpt = _normalize_text(item.get("excerpt", ""))
+        if not excerpt:
+            continue
+        repo = _normalize_text(item.get("repo_root", "") or item.get("project_id", "") or item.get("git_remote", ""))
+        prefix = "Pending memory extraction from a matching session"
+        if repo:
+            prefix += f" in {repo}"
+        fragments.append(f"{prefix}. Raw session fallback: {excerpt}")
+    return " ".join(fragments)
+
+
+def _format_working_memory(item: MemoryRow | None, *, include_handoff: bool = True) -> str:
     if not item:
         return ""
     goal = _normalize_text(item.get("current_goal", ""))
@@ -49,10 +63,11 @@ def _format_working_memory(item: MemoryRow | None) -> str:
         fragments.append(f"Active tasks: {'; '.join(active_tasks[:3])}.")
     if constraints:
         fragments.append(f"Constraints: {'; '.join(constraints[:2])}.")
-    if next_step:
-        fragments.append(f"Next step: {next_step}.")
-    if status:
-        fragments.append(f"Status: {status}.")
+    if include_handoff:
+        if next_step:
+            fragments.append(f"Next step: {next_step}.")
+        if status:
+            fragments.append(f"Status: {status}.")
     return " ".join(fragments)
 
 
@@ -82,7 +97,7 @@ def _format_procedural(procedural: list[MemoryRow]) -> str:
     return " ".join(fragments)
 
 
-def _format_session_memory(items: list[MemoryRow]) -> str:
+def _format_session_memory(items: list[MemoryRow], *, include_handoff: bool = True) -> str:
     fragments: list[str] = []
     for item in items[:2]:
         title = _normalize_text(item.get("title", ""))
@@ -95,17 +110,18 @@ def _format_session_memory(items: list[MemoryRow]) -> str:
             fragments.append(f"Relevant prior session: {summary}")
         elif title:
             fragments.append(f"Relevant prior session: {title}.")
-        if left_off_at:
+        if include_handoff and left_off_at:
             fragments.append(f"Left off at: {left_off_at}.")
-        if next_steps:
+        if include_handoff and next_steps:
             fragments.append(f"Next session: {'; '.join(next_steps[:2])}.")
     return " ".join(fragments)
 
 
-def _context_sections(context: WakeUpContext) -> list[str]:
+def _context_sections(context: WakeUpContext, *, include_handoff: bool = True) -> list[str]:
     return [
-        _format_working_memory(context.working_mem),
-        _format_session_memory(context.session_memory),
+        _format_working_memory(context.working_mem, include_handoff=include_handoff),
+        _format_enrichment(context.enrichment),
+        _format_session_memory(context.session_memory, include_handoff=include_handoff),
         _format_episodic(context.episodic),
         _format_procedural(context.procedural),
         _format_facts(context.facts),
@@ -141,12 +157,19 @@ def build_wake_up_injection(context: WakeUpContext) -> str:
     Uses resume-intent detection to expand the budget to 1500 tokens for
     session-handoff prompts; falls back to 500 tokens for regular tasks.
     """
-    if context.prompt_vec is not None:
+    intent = context.prompt_intent
+    if intent is None and context.prompt_vec is not None:
         intent = _classify_prompt_intent(context.prompt_vec)
+    if intent is not None:
         char_budget = _BUDGET_BY_INTENT[intent]
+        include_handoff = intent == "resume"
     else:
         char_budget = CHARS_BUDGET
-    body = _fit_context_to_budget(_context_sections(context), char_budget=char_budget)
+        include_handoff = True
+    body = _fit_context_to_budget(
+        _context_sections(context, include_handoff=include_handoff),
+        char_budget=char_budget,
+    )
     if not body:
         return ""
     return _build_context_envelope(body)
