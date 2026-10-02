@@ -256,27 +256,71 @@ def _log_response_fact_lookup_details(response: dict) -> None:
     _log_info(f"agent={AGENT_NAME} fact lookup results={json.dumps(results, ensure_ascii=False)}")
 
 
-def _log_context_details(context) -> None:
-    if getattr(context, "working_mem", None):
-        _log_info(f"agent={AGENT_NAME} working_mem=" + json.dumps(context.working_mem, ensure_ascii=False))
-    if context.episodic:
-        _log_info(f"agent={AGENT_NAME} episodic=" + json.dumps(context.episodic, ensure_ascii=False))
-    if context.procedural:
-        _log_info(f"agent={AGENT_NAME} procedural=" + json.dumps(context.procedural, ensure_ascii=False))
-    if getattr(context, "session_memory", None):
-        _log_info(f"agent={AGENT_NAME} session_memory=" + json.dumps(context.session_memory, ensure_ascii=False))
+_MEMORY_KINDS = (
+    ("facts", "fact"),
+    ("episodic", "episodic"),
+    ("procedural", "procedural"),
+    ("session_memory", "session_memory"),
+)
 
 
-def _log_response_context_details(response: dict) -> None:
-    context = response.get("context", {})
-    if context.get("working_mem"):
-        _log_info(f"agent={AGENT_NAME} working_mem=" + json.dumps(context["working_mem"], ensure_ascii=False))
-    if context.get("episodic"):
-        _log_info(f"agent={AGENT_NAME} episodic=" + json.dumps(context["episodic"], ensure_ascii=False))
-    if context.get("procedural"):
-        _log_info(f"agent={AGENT_NAME} procedural=" + json.dumps(context["procedural"], ensure_ascii=False))
-    if context.get("session_memory"):
-        _log_info(f"agent={AGENT_NAME} session_memory=" + json.dumps(context["session_memory"], ensure_ascii=False))
+def _row_label(row: dict) -> str:
+    """Short human-readable label for a memory row (first non-empty text field)."""
+    for key in ("title", "content", "name", "summary", "abstract", "text"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value if len(value) <= 120 else value[:117] + "..."
+    return str(row.get("id") or "?")
+
+
+def _match_method(kind: str, row: dict) -> str:
+    """Describe how a row was retrieved: semantic (embedding), keyword (FTS text) or session."""
+    if kind == "facts":
+        return "semantic"  # facts are only searched by embedding
+    sources = row.get("rrf_sources")
+    if not sources:
+        sources = [
+            name
+            for name, flag in (
+                ("semantic", row.get("similarity")),
+                ("keyword", row.get("keyword_hit")),
+                ("session", row.get("session_hit")),
+            )
+            if flag
+        ]
+    return "+".join(sources) or "unknown"
+
+
+def _format_memory_used(context: dict) -> list[str]:
+    """One line per memory row that was retrieved, with its match method and scores."""
+    lines = []
+    working = context.get("working_mem")
+    if working:
+        lines.append(f"  [working_memory] {_row_label(working)}  (method=session start, not searched)")
+    for key, label in _MEMORY_KINDS:
+        for row in context.get(key) or []:
+            sim = row.get("similarity")
+            parts = [f"method={_match_method(key, row)}"]
+            if sim is not None:
+                parts.append(f"similarity={float(sim):.2f}")
+            if row.get("keyword_hit"):
+                parts.append(f"keyword_score={float(row.get('keyword_score') or 0.0):.2f}")
+            lines.append(f"  [{label}] {_row_label(row)}  ({', '.join(parts)})")
+    return lines
+
+
+def _log_recall_summary(request: HookRequest, response: dict, *, action: str, output: str) -> None:
+    """Log one readable block: user prompt, what went into the prompt, then which memory was used and how."""
+    memory_lines = _format_memory_used(response.get("context", {})) or ["  (none)"]
+    lines = [
+        f"agent={AGENT_NAME} RECALL SUMMARY session={request.session_id} action={action}",
+        f"USER PROMPT: {request.prompt}",
+        "INJECTED INTO PROMPT:" if action != "answer" else "ANSWERED FROM FACTS (prompt blocked):",
+        output.strip() or "  (nothing injected)",
+        "MEMORY USED:",
+        *memory_lines,
+    ]
+    _log_info("\n".join(lines))
 
 
 def _compose_enriched_prompt(prompt: str, injection: str) -> str:
@@ -287,14 +331,6 @@ def _compose_enriched_prompt(prompt: str, injection: str) -> str:
     if not prompt:
         return injection
     return f"{injection}\n\n[User prompt]\n{prompt}"
-
-
-def _log_prompt_enrichment(request: HookRequest, injection: str) -> None:
-    if not injection:
-        return
-    _log_info(f"agent={AGENT_NAME} prompt enrichment context for session={request.session_id}: {injection}")
-    enriched_prompt = _compose_enriched_prompt(request.prompt, injection)
-    _log_info(f"agent={AGENT_NAME} effective prompt to Claude=" + repr(enriched_prompt))
 
 
 def _log_retrieval_metrics(
@@ -357,7 +393,6 @@ def main() -> None:
     try:
         _log_response_warnings(server_response)
         _log_response_fact_lookup_details(server_response)
-        _log_response_context_details(server_response)
 
         if server_response.get("action") == "answer":
             answer = str(server_response.get("answer", ""))
@@ -367,7 +402,7 @@ def main() -> None:
                 if str(fact.get("content", "")).strip()
             ]
             _log_info(f"agent={AGENT_NAME} fact renderer input={json.dumps(canonical_facts, ensure_ascii=False)}")
-            _log_info(f"agent={AGENT_NAME} fact renderer output={answer!r}")
+            _log_recall_summary(request, server_response, action="answer", output=answer)
             _log_info(f"agent={AGENT_NAME} fact lookup hit; rendered answer deterministically from stored facts")
             if conn is not None:
                 _log_retrieval_metrics(
@@ -382,7 +417,7 @@ def main() -> None:
 
         injection = str(server_response.get("injection", ""))
         if injection:
-            _log_prompt_enrichment(request, injection)
+            _log_recall_summary(request, server_response, action="inject", output=injection)
             if conn is not None:
                 _log_retrieval_metrics(
                     conn,
@@ -394,7 +429,7 @@ def main() -> None:
                 )
             _respond_with_additional_context(injection)
         else:
-            _log_info(f"agent={AGENT_NAME} no wake-up memory found; allowing prompt through")
+            _log_recall_summary(request, server_response, action="pass_through", output="")
             if conn is not None:
                 _log_retrieval_metrics(
                     conn,

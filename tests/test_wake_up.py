@@ -195,11 +195,13 @@ class TestMainIntegration(unittest.TestCase):
                 main()
 
         logged_messages = [call.args[0] for call in log_info.call_args_list]
-        self.assertTrue(any("prompt enrichment context for session=test-sess:" in msg for msg in logged_messages))
-        self.assertTrue(any("Recent related episode: Resolved auth bug. Fixed the login loop." in msg for msg in logged_messages))
-        self.assertTrue(any("effective prompt to Claude=" in msg for msg in logged_messages))
+        summary = next(msg for msg in logged_messages if "RECALL SUMMARY" in msg)
+        self.assertLess(summary.index("USER PROMPT: continue fixing auth"), summary.index("INJECTED INTO PROMPT:"))
+        self.assertLess(summary.index("INJECTED INTO PROMPT:"), summary.index("MEMORY USED:"))
+        self.assertIn("Recent related episode: Resolved auth bug. Fixed the login loop.", summary)
+        self.assertIn("[episodic] Resolved auth bug", summary)
+        self.assertIn("method=semantic", summary)
         self.assertTrue(any("returning hook response={\"hookSpecificOutput\": {\"hookEventName\": \"UserPromptSubmit\"" in msg for msg in logged_messages))
-        self.assertTrue(any("[User prompt]" in msg and "continue fixing auth" in msg for msg in logged_messages))
 
     def test_logs_fact_lookup_query_results_and_renderer_io(self):
         payload = json.dumps({"session_id": "test-sess", "prompt": "what is my name and where do i live?"})
@@ -236,7 +238,9 @@ class TestMainIntegration(unittest.TestCase):
         logged_messages = [call.args[0] for call in log_info.call_args_list]
         self.assertTrue(any('fact lookup results=[{"content": "user.name = Yash"' in msg for msg in logged_messages))
         self.assertTrue(any('fact renderer input=["user.name = Yash", "user.location = Seattle"]' in msg for msg in logged_messages))
-        self.assertTrue(any("fact renderer output='Your name is Yash and you live in Seattle.'" in msg for msg in logged_messages))
+        summary = next(msg for msg in logged_messages if "RECALL SUMMARY" in msg)
+        self.assertIn("Your name is Yash and you live in Seattle.", summary)
+        self.assertIn("[fact] user.name = Yash", summary)
 
     def test_recall_server_is_called_with_first_message_flag(self):
         first = self._run_main(prompt="hello there", first_message=True)
